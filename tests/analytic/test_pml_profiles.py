@@ -16,6 +16,13 @@ def test_pml_ranges():
     assert torch.all(b[:10] < 1.0) and torch.all(b[:10] > 0.0)
     assert torch.all(a[:5] < 0.0)          # a = sigma*(b-1)/... < 0 where sigma>0
     assert torch.allclose(b[:10], b[-10:].flip(0))  # symmetric ends
+    # exact symmetry cell-by-cell: position i and position (n-1-i) carry equal u
+    assert torch.allclose(b, b.flip(0), atol=0, rtol=0)
+    assert torch.allclose(a, a.flip(0), atol=0, rtol=0)
+    # innermost PML cells (index npml-1 and n-npml) are the shallowest, absorb least
+    assert b[9] > b[0] and b[-10] > b[-1]
+    # first interior cell outside PML is exactly identity
+    assert b[10] == 1.0 and a[10] == 0.0 and b[-11] == 1.0 and a[-11] == 0.0
 
 
 def test_npml_zero_degenerates():

@@ -32,7 +32,7 @@ def cpml_profiles(
     if npml > 0:
         sigma_max = -(m + 1) * math.log(R0) / (2.0 * npml * dx)
     sigma = sigma_max * u**m
-    alpha = alpha_max * (1.0 - u) * (u > 0)
+    alpha = torch.where(u > 0, alpha_max * (1.0 - u), torch.zeros_like(u))
     kappa = torch.ones_like(u)
     b = torch.exp(-(sigma / kappa + alpha) * dt)
     denom = kappa * (sigma + kappa * alpha)
