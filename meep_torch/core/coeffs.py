@@ -98,3 +98,105 @@ def build_tm_coeffs(
         b_ex=b_ex[:, None], a_ex=a_ex[:, None], k_ex=k_ex[:, None],
         b_ey=b_ey[None, :], a_ey=a_ey[None, :], k_ey=k_ey[None, :],
     )
+
+
+class TECoeffs(NamedTuple):
+    dt: float
+    dx: float
+    eps_x: torch.Tensor    # (nx-1, ny)   at Ex positions
+    eps_y: torch.Tensor    # (nx, ny-1)   at Ey positions
+    chi3_x: torch.Tensor   # (nx-1, ny)
+    chi3_y: torch.Tensor   # (nx, ny-1)
+    has_kerr: bool
+    c1x: torch.Tensor      # (np, nx-1, ny)
+    c2x: torch.Tensor
+    c3x: torch.Tensor
+    c1y: torch.Tensor      # (np, nx, ny-1)
+    c2y: torch.Tensor
+    c3y: torch.Tensor
+    b_hx: torch.Tensor     # (nx-1, 1)  half-x, Hz update dEy/dx
+    a_hx: torch.Tensor
+    k_hx: torch.Tensor
+    b_hy: torch.Tensor     # (1, ny-1)  half-y, Hz update dEx/dy
+    a_hy: torch.Tensor
+    k_hy: torch.Tensor
+    b_ey: torch.Tensor     # (1, ny-2)  integer-y interior, Dx update dHz/dy
+    a_ey: torch.Tensor
+    k_ey: torch.Tensor
+    b_ex: torch.Tensor     # (nx-2, 1)  integer-x interior, Dy update dHz/dx
+    a_ex: torch.Tensor
+    k_ex: torch.Tensor
+
+
+def _avg_to_ex(v: torch.Tensor) -> torch.Tensor:
+    # cell centers (nx, ny) -> Ex positions (nx-1, ny)
+    return 0.5 * (v[:-1, :] + v[1:, :])
+
+
+def _avg_to_ey(v: torch.Tensor) -> torch.Tensor:
+    # cell centers (nx, ny) -> Ey positions (nx, ny-1)
+    return 0.5 * (v[:, :-1] + v[:, 1:])
+
+
+def build_te_coeffs(
+    grid: Grid,
+    eps_inf=None,
+    poles: Sequence = (),
+    pole_masks: Sequence[torch.Tensor] | None = None,
+    chi3=None,
+    npml: int = 0,
+) -> TECoeffs:
+    dt, dx = grid.dt, grid.dx
+    eps = _as_field(eps_inf, grid, 1.0)
+    x3 = _as_field(chi3, grid, 0.0)
+    has_kerr = bool((x3 != 0).any())
+
+    eps_x, eps_y = _avg_to_ex(eps), _avg_to_ey(eps)
+    chi3_x, chi3_y = _avg_to_ex(x3), _avg_to_ey(x3)
+
+    n_poles = len(poles)
+    c1x = grid.zeros(n_poles, grid.nx - 1, grid.ny)
+    c2x = grid.zeros(n_poles, grid.nx - 1, grid.ny)
+    c3x = grid.zeros(n_poles, grid.nx - 1, grid.ny)
+    c1y = grid.zeros(n_poles, grid.nx, grid.ny - 1)
+    c2y = grid.zeros(n_poles, grid.nx, grid.ny - 1)
+    c3y = grid.zeros(n_poles, grid.nx, grid.ny - 1)
+    for k, pole in enumerate(poles):
+        fn, gamma, sigma = pole[0], pole[1], pole[2]
+        w0 = 2 * math.pi * fn
+        G = 2 * math.pi * gamma
+        den = 1.0 + G * dt / 2.0
+        mask = pole_masks[k] if pole_masks is not None else torch.ones_like(eps)
+        mask = mask.to(eps)
+        c1x[k] = (2.0 - w0 * w0 * dt * dt) / den * torch.ones_like(eps_x)
+        c2x[k] = -(1.0 - G * dt / 2.0) / den * torch.ones_like(eps_x)
+        c3x[k] = (sigma * w0 * w0 * dt * dt / den) * _avg_to_ex(mask)
+        c1y[k] = (2.0 - w0 * w0 * dt * dt) / den * torch.ones_like(eps_y)
+        c2y[k] = -(1.0 - G * dt / 2.0) / den * torch.ones_like(eps_y)
+        c3y[k] = (sigma * w0 * w0 * dt * dt / den) * _avg_to_ey(mask)
+
+    if npml * 2 >= grid.nx or npml * 2 >= grid.ny:
+        raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
+
+    def prof(n, offset):
+        return cpml_profiles(n, npml, offset, dt, dx, dtype=grid.dtype, device=grid.device)
+
+    # Hz update: dEy/dx at half-x (nx-1); dEx/dy at half-y (ny-1)
+    b_hx, a_hx, k_hx = prof(grid.nx - 1, 0.5)
+    b_hy, a_hy, k_hy = prof(grid.ny - 1, 0.5)
+    # Dx update: dHz/dy at interior integer y (positions 1..ny-2)
+    b_ey_f, a_ey_f, k_ey_f = prof(grid.ny, 0.0)
+    b_ey, a_ey, k_ey = b_ey_f[1:-1], a_ey_f[1:-1], k_ey_f[1:-1]
+    # Dy update: dHz/dx at interior integer x (positions 1..nx-2)
+    b_ex_f, a_ex_f, k_ex_f = prof(grid.nx, 0.0)
+    b_ex, a_ex, k_ex = b_ex_f[1:-1], a_ex_f[1:-1], k_ex_f[1:-1]
+
+    return TECoeffs(
+        dt=dt, dx=dx,
+        eps_x=eps_x, eps_y=eps_y, chi3_x=chi3_x, chi3_y=chi3_y, has_kerr=has_kerr,
+        c1x=c1x, c2x=c2x, c3x=c3x, c1y=c1y, c2y=c2y, c3y=c3y,
+        b_hx=b_hx[:, None], a_hx=a_hx[:, None], k_hx=k_hx[:, None],
+        b_hy=b_hy[None, :], a_hy=a_hy[None, :], k_hy=k_hy[None, :],
+        b_ey=b_ey[None, :], a_ey=a_ey[None, :], k_ey=k_ey[None, :],
+        b_ex=b_ex[:, None], a_ex=a_ex[:, None], k_ex=k_ex[:, None],
+    )
