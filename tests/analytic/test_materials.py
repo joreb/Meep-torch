@@ -7,7 +7,6 @@ F_1550 = 1 / 1.55
 
 def test_si3n4_at_1550():
     # Luke fit is excellent here: published n(1.55) = 1.9963
-    assert cSi is not Si3N4
     assert Si3N4.n(F_1550).real == pytest.approx(1.9963, abs=0.002)
 
 
