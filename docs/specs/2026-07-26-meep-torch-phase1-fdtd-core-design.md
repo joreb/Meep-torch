@@ -89,6 +89,7 @@ All mutable simulation state (E, H, per-pole ADE polarizations, PML auxiliaries)
 ### Precision & device
 
 - Default float32, on whatever device the tensors were created (CPU/CUDA).
+  - **Amended (Phase 1 final review):** `Grid` defaults to float64 in Phase 1 (correctness-first; every analytic test runs float64 without ceremony). float32 is opt-in and validated at production scale (2000×2000, 2000 steps). The float32-by-default decision moves to the Phase 3 user-facing API layer.
 - float64 mode for validation runs (real meep is double); correctness tests run float64 to separate "physics right?" from "float32 adequate?". A dedicated test confirms float32 stability at target 2D grid sizes.
 
 ## Validation & testing
