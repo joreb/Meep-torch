@@ -21,3 +21,5 @@ pr.ps1
 
 # tidy3d reference clone (MIT mode-solver files ported with attribution; clone itself never committed)
 tidy3d/
+tidy3d_extras/
+mpb/
