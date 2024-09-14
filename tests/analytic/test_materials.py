@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 meep-torch contributors (original code)
 import pytest
 
 from meep_torch.core.materials import Si3N4, SiO2, cSi
