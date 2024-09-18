@@ -55,4 +55,21 @@ def coverage(poly: Polygon, grid: Grid, origin=(0.0, 0.0)) -> torch.Tensor:
         # prefix areas at cell boundaries i0..i1 (vector of i1-i0+1 evaluations)
         prefix = [_area_left_of(strip, i * dx) for i in range(i0, i1 + 1)]
         cov[i0:i1, j] = np.diff(prefix) / (dx * dx)
-    return torch.tensor(np.clip(cov, 0.0, 1.0), dtype=torch.float64)
+    cov = np.clip(cov, 0.0, 1.0)
+    # Snap FP noise: fully-covered/empty cells must be exactly 1.0/0.0 so that
+    # boundary masks (0 < cov < 1) and interface-normal gradients treat them as
+    # interior/exterior. Strip-shoelace noise is ~1e-15; 1e-9 threshold is far
+    # below the smallest genuine fractional coverage (~dx-scaled, O(0.01)).
+    cov[np.isclose(cov, 1.0, atol=1e-9)] = 1.0
+    cov[np.isclose(cov, 0.0, atol=1e-9)] = 0.0
+    return torch.tensor(cov, dtype=torch.float64)
+
+
+def normals(cov: torch.Tensor) -> torch.Tensor:
+    padded = torch.nn.functional.pad(cov[None, None], (1, 1, 1, 1), mode="replicate")[0, 0]
+    gx = (padded[2:, 1:-1] - padded[:-2, 1:-1]) * 0.5
+    gy = (padded[1:-1, 2:] - padded[1:-1, :-2]) * 0.5
+    g = torch.stack([-gx, -gy], dim=-1)          # inside -> outside
+    length = torch.linalg.norm(g, dim=-1, keepdim=True)
+    boundary = ((cov > 0) & (cov < 1)).unsqueeze(-1)
+    return torch.where(boundary & (length > 0), g / length.clamp(min=1e-300), torch.zeros_like(g))
