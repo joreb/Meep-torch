@@ -2,6 +2,7 @@
 # Copyright (c) 2021 Flexcompute
 # Copyright (c) 2019 Tyler Hughes
 # Derived from the ceviche package (https://github.com/fancompute/ceviche).
+# Adaptations (c) 2026 meep-torch contributors, MIT.
 import numpy as np
 import scipy.sparse as sp
 
