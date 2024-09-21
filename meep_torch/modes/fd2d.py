@@ -21,6 +21,7 @@ import scipy.sparse.linalg as spl
 import torch
 
 from .derivatives import C_0, ETA_0, create_d_matrices as d_mats, create_s_matrices as s_mats
+from .transforms import bend_dwdz
 
 # Numerical tolerances (ported from tidy3d.components.mode.solver).
 fp_eps = np.finfo(np.float32).eps
@@ -344,14 +345,22 @@ def solve_2d(
     dmin_pmc: tuple[bool, bool] = (False, False),
     dmax_pmc: tuple[bool, bool] | None = None,
     target_neff: float | None = None,
+    bend_radius: float | None = None,
+    bend_center: float | None = None,
 ) -> Modes2D:
     """Full-vector 2D FD mode solver (diagonal eps/mu).
 
     ``eps_cc`` is the cell-center permittivity, shape ``(Nx, Ny)``; ``dx`` uniform
-    grid step (um); ``f`` frequency (Hz). Returns the ``k`` modes sorted by
-    descending Re(neff). PEC on all walls by default; set ``dmin_pmc``/``dmax_pmc``
-    to impose PMC at the low-/high-index side of an axis (``dmax_pmc`` defaults to
-    ``dmin_pmc``, giving symmetric BCs).
+    grid step (um); ``f`` spatial frequency (1/um, matching ``fd1d``). Returns the
+    ``k`` modes sorted by descending Re(neff). PEC on all walls by default; set
+    ``dmin_pmc``/``dmax_pmc`` to impose PMC at the low-/high-index side of an axis
+    (``dmax_pmc`` defaults to ``dmin_pmc``, giving symmetric BCs).
+
+    If ``bend_radius`` is set, a cylindrical (bend) coordinate transform is applied
+    before matrix assembly: the diagonal Jacobian ``J = diag(1, 1, R/u)`` with
+    ``u = R + (x - bend_center)`` contracts eps/mu per-component
+    (``eps_xx /= dwdz``, ``eps_yy /= dwdz``, ``eps_zz *= dwdz``, mu likewise).
+    ``bend_center`` defaults to the domain center ``Nx * dx / 2``.
     """
     eps_np = np.asarray(eps_cc)
     if eps_np.dtype == np.float64:
@@ -374,6 +383,20 @@ def solve_2d(
     mu_tensor = np.zeros((3, 3, N), dtype=np.complex128)
     for i in range(3):
         mu_tensor[i, i, :] = 1.0
+
+    # Optional bend (cylindrical coordinate transform): apply the diagonal
+    # Jacobian contraction eps' = J eps J^T / det(J), J = diag(1, 1, dwdz), to
+    # eps and mu per component before matrix assembly.
+    if bend_radius is not None:
+        if bend_center is None:
+            bend_center = Nx * dx / 2.0
+        dwdz = bend_dwdz(Nx, Ny, dx, float(bend_radius), float(bend_center)).ravel()
+        eps_tensor[0, 0, :] = eps_tensor[0, 0, :] / dwdz
+        eps_tensor[1, 1, :] = eps_tensor[1, 1, :] / dwdz
+        eps_tensor[2, 2, :] = eps_tensor[2, 2, :] * dwdz
+        mu_tensor[0, 0, :] = mu_tensor[0, 0, :] / dwdz
+        mu_tensor[1, 1, :] = mu_tensor[1, 1, :] / dwdz
+        mu_tensor[2, 2, :] = mu_tensor[2, 2, :] * dwdz
 
     dl_f = (np.full(Nx, dx), np.full(Ny, dx))
     dl_b = (np.full(Nx, dx), np.full(Ny, dx))
