@@ -252,6 +252,9 @@ def _set_initial_vec(Nx, Ny):
 # --------------------------------------------------------------------------- #
 def _solver_diagonal(eps_tensor, mu_tensor, der_mats, num_modes, neff_guess, vec_init):
     N = eps_tensor.shape[-1]
+    # Phase 2 scope: dielectric eps only. tidy3d's "good conductor" branch
+    # (replaces |eps| > 0.9*|pec_val| cells with a PEC sentinel eps and enables
+    # a preconditioner) is intentionally NOT ported -- no metals in Phase 2.
     eps_xx = eps_tensor[0, 0, :]
     eps_yy = eps_tensor[1, 1, :]
     eps_zz = eps_tensor[2, 2, :]
@@ -351,10 +354,14 @@ def solve_2d(
     """Full-vector 2D FD mode solver (diagonal eps/mu).
 
     ``eps_cc`` is the cell-center permittivity, shape ``(Nx, Ny)``; ``dx`` uniform
-    grid step (um); ``f`` spatial frequency (1/um, matching ``fd1d``). Returns the
-    ``k`` modes sorted by descending Re(neff). PEC on all walls by default; set
-    ``dmin_pmc``/``dmax_pmc`` to impose PMC at the low-/high-index side of an axis
-    (``dmax_pmc`` defaults to ``dmin_pmc``, giving symmetric BCs).
+    grid step (um); ``f`` spatial frequency in 1/um (matching ``fd1d``), so the
+    vacuum wavenumber is ``k0 = 2*pi*f``. ``omega = k0*C_0`` (SI rad/s) is used ONLY
+    to feed the PML S-factor (so ``sigma/(omega*EPSILON_0)`` is dimensionless); it
+    is not the input frequency convention. Returns the ``k`` modes sorted by
+    descending Re(neff), with ``neff = neff_re + 1j*keff`` (keff carried into the
+    imaginary part). PEC on all walls by default; set ``dmin_pmc``/``dmax_pmc`` to
+    impose PMC at the low-/high-index side of an axis (``dmax_pmc`` defaults to
+    ``dmin_pmc``, giving symmetric BCs).
 
     If ``bend_radius`` is set, a cylindrical (bend) coordinate transform is applied
     before matrix assembly: the diagonal Jacobian ``J = diag(1, 1, R/u)`` with
@@ -449,7 +456,7 @@ def solve_2d(
                                        TOL_NEEDS_ORTHOGONALIZATION)
     E, H = _orthogonalize_degenerate(E, H, neff, keff, dl_f, dl_b, self_orth)
 
-    neff_t = torch.from_numpy(neff.astype(np.complex128))
+    neff_t = torch.from_numpy((neff + 1j * keff).astype(np.complex128))
     Ex_t = torch.from_numpy(np.ascontiguousarray(E[0]).astype(np.complex128))
     Ey_t = torch.from_numpy(np.ascontiguousarray(E[1]).astype(np.complex128))
     return Modes2D(neff=neff_t, Ex=Ex_t, Ey=Ey_t)
