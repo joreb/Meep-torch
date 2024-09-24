@@ -76,11 +76,21 @@ def _left_eigenvector(mat, lam: float, v: np.ndarray) -> np.ndarray:
     sigma = lam + 1e-7 * (abs(lam) + 1.0)
     mat_t = mat.T.tocsr()
     try:
-        _, vecs_w = spl.eigs(mat_t, k=1, sigma=sigma, tol=TOL_EIGS, v0=v)
+        vals_w, vecs_w = spl.eigs(mat_t, k=1, sigma=sigma, tol=TOL_EIGS, v0=v)
     except spl.ArpackNoConvergence:
         # Retry with the exact eigenvalue as the shift (scipy handles the
         # near-singular factorization internally in some builds).
-        _, vecs_w = spl.eigs(mat_t, k=1, sigma=lam, tol=TOL_EIGS, v0=v)
+        vals_w, vecs_w = spl.eigs(mat_t, k=1, sigma=lam, tol=TOL_EIGS, v0=v)
+    # Pairing guard: the shift-invert on A.T must converge back to lam_i, not a
+    # neighboring eigenvalue. A silent wrong target would feed an incorrect IFT
+    # denominator (w^T v) and produce wrong gradients for future k>1 callers.
+    lam_found = float(vals_w[0].real)
+    if abs(lam_found - lam) > 1e-3 * (abs(lam) + 1.0):
+        raise RuntimeError(
+            "left-eigenvector solve converged to wrong eigenvalue "
+            f"(lam_found={lam_found:.6g}, expected={lam:.6g}); "
+            "shift-invert drifted to a neighbor"
+        )
     w = vecs_w[:, 0]
     # Strip a global phase by aligning the dominant entry of w to that of v.
     k_dom = int(np.argmax(np.abs(w)))
@@ -284,6 +294,9 @@ class EigsNeff(torch.autograd.Function):
             dlam_dey = v1 * Pt0 / denom              # (N,)
             qv0 = eps_yy * v1
             qv1 = -eps_xx * v0
+            # c = lower half of (q_ep @ v): the eps-weighted tangential-E
+            # combination q_ep_10 v0 + q_ep_11 v1 = dxb@(eps_xx v0) + dyb@(eps_yy v1)
+            # (the minus sign on qv1 flips -eps_xx*v0 to +eps_xx*v0 under dxb).
             c = (dyb @ qv0) - (dxb @ qv1)            # (N,)
             s = (dxf.T @ w0) + (dyf.T @ w1)          # (N,)
             dlam_dez = c * s / (eps_zz ** 2) / denom  # (N,)
