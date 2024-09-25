@@ -46,4 +46,4 @@ def test_lossy_material_rejected():
         def n(self, f):
             return 2.0 + 0.5j
     with pytest.raises(ValueError, match="loss"):
-        neff_table([(1.0, Fake())], [1 / 1.55], pol="tm")
+        neff_table([(1.0, SiO2), (1.0, Fake())], [1 / 1.55], pol="tm")

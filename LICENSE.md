@@ -6,10 +6,10 @@ license of its source. Full license texts live in `LICENSES/`.
 
 | Component | License | Origin |
 | --- | --- | --- |
-| Original meep-torch code (Phase 1 engine: `meep_torch/core/*`, tests) | MIT | this project |
-| `meep_torch/modes/` FD solvers and transforms (planned, Phase 2) | MIT | tidy3d `components/mode/` (© Flexcompute / Tyler Hughes, ceviche-derived) |
+| Original meep-torch code (Phase 1 engine `meep_torch/core/*`; Phase 2 `meep_torch/geometry/*` and `meep_torch/modes/{fd1d,effindex,eigengrad,__init__}.py`; tests) | MIT | this project |
+| `meep_torch/modes/{fd2d,fd2d_tensor,transforms,derivatives}.py` FD solvers and transforms (shipped, Phase 2) | MIT | tidy3d `components/mode/` (© Flexcompute / Tyler Hughes, ceviche-derived) |
 | Reversible-gradient engine, S-param scaffold (planned, Q2/Phase 4) | MIT | fdtdx (© 2025 Yannik Mahlau) |
-| Kottke smoothing translated from `maxwell_eps.c`, plane-wave port (planned, Phase 2/Q1) | GPL-2.0-or-later | MPB (NanoComp) |
+| Kottke diagonal-projected averaging `meep_torch/geometry/smoothing.py` (shipped, Phase 2) | MIT | original from-paper implementation of Kottke, Farjadpour & Johnson, Phys. Rev. E 77, 036611 (2008); not a translation of MPB source |
 | Overlap/effective-area calculators (if ported, Phase 4) | GPL-3.0-only | femwell (© Helge Gehring) |
 
 Every ported file carries an attribution header naming the source project, its
