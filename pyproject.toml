@@ -12,11 +12,17 @@ dependencies = [
     "scipy>=1.11",
 ]
 
+[project.optional-dependencies]
+gds = [
+    "gdstk>=1.0.1",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
     "psutil>=5.9",
     "matplotlib>=3.10.9",
+    "gdstk>=1.0.1",
 ]
 
 [build-system]
