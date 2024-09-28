@@ -2,7 +2,7 @@
 name = "meep-torch"
 version = "0.1.0"
 description = "Differentiable 2D FDTD engine in PyTorch (meep-inspired)"
-license = "MIT AND GPL-2.0-or-later AND GPL-3.0-only"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.6",
