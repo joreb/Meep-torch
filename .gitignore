@@ -25,3 +25,7 @@ tidy3d_extras/
 mpb/
 fdtdx/
 femwell/
+
+# all dot-directories (agent tooling, caches, venvs)
+.*/
+!.git/
