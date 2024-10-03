@@ -12,7 +12,14 @@ def _run_chunk(step_fn, state, coeffs, step0: int, k: int, source, monitors):
     for s in range(k):
         t_idx = step0 + s
         if source is not None:
-            state = step_fn(state, coeffs, source.amplitude(t_idx), source.mask)
+            h_masks = getattr(source, "h_masks", None)
+            if h_masks:
+                state = step_fn(
+                    state, coeffs, source.amplitude(t_idx), source.mask,
+                    source.h_amplitude(t_idx), **h_masks,
+                )
+            else:
+                state = step_fn(state, coeffs, source.amplitude(t_idx), source.mask)
         else:
             state = step_fn(state, coeffs)
         for i, mon in enumerate(monitors):
