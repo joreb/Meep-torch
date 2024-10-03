@@ -8,7 +8,7 @@ import torch
 
 from ..core.grid import Grid
 from ..modes.fd1d import solve_1d
-from .port import Port
+from .port import Port, SRC_OFFSET
 
 _H_SIGN = -1.0  # relative sign of the magnetic sheet; fixed by the one-way test
 
@@ -35,20 +35,25 @@ class ModeSourceTM:
         # half-cell propagation delay to the J sheet is direction-independent.
         self.delay = neff * dx / 2.0
 
+        # Source sheets sit SRC_OFFSET cells UPSTREAM of the monitor plane
+        # (port.index) so the monitor reads the radiated mode, not the injected
+        # current. M sheet is 0.5 cell upstream of J (launch side) in both
+        # directions; shifting both by -d*SRC_OFFSET keeps that relative placement.
+        j_idx = port.index - self.d * SRC_OFFSET
         mask = grid.zeros(grid.nx, grid.ny)
         if port.axis == "x":
-            mask[port.index, port.lo:port.hi] = neff * prof / dx      # Jz ∝ Hy_m
+            mask[j_idx, port.lo:port.hi] = neff * prof / dx          # Jz ∝ Hy_m
             hy = grid.zeros(grid.nx - 1, grid.ny)
-            col = port.index - 1 if self.d > 0 else port.index
-            hy[col, port.lo:port.hi] = self.d * prof / dx             # My ∝ Ez_m
+            col = j_idx - 1 if self.d > 0 else j_idx
+            hy[col, port.lo:port.hi] = self.d * prof / dx            # My ∝ Ez_m
             self.h_masks = {"src_hy_mask": hy}
         else:
             # y-normal TM: transverse pair is Ez/Hx with S_y = +Ez*Hx; the Jz
             # sheet carries -neff*prof so its sign matches decompose's
             # axis_sign=-1 (stored Hx sign) in tasks 5-6.
-            mask[port.lo:port.hi, port.index] = -neff * prof / dx     # Jz ∝ -Hx_m
+            mask[port.lo:port.hi, j_idx] = -neff * prof / dx         # Jz ∝ -Hx_m
             hx = grid.zeros(grid.nx, grid.ny - 1)
-            row = port.index - 1 if self.d > 0 else port.index
+            row = j_idx - 1 if self.d > 0 else j_idx
             hx[port.lo:port.hi, row] = self.d * prof / dx
             self.h_masks = {"src_hx_mask": hx}
         self.mask = mask

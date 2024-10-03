@@ -7,7 +7,7 @@ from meep_torch.core.stepper import init_tm_state
 from meep_torch.ports.port import Port
 from meep_torch.ports.mode_source import ModeSourceTM
 
-FCEN, FWIDTH = 0.15, 0.05
+FCEN, FWIDTH = 0.15, 0.1
 
 
 def _waveguide():
