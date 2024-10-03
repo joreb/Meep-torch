@@ -30,7 +30,10 @@ class ModeSourceTM:
             raise ValueError(f"no guided mode at port (neff={neff:.4f} <= cladding {clad:.4f})")
         prof = modes.profiles[mode].to(grid.dtype)
         self.neff = neff
-        self.delay = self.d * neff * dx / 2.0
+        # M sheet sits one cell upstream of the J sheet in BOTH directions
+        # (the col/row choice below already places it on the launch side), so the
+        # half-cell propagation delay to the J sheet is direction-independent.
+        self.delay = neff * dx / 2.0
 
         mask = grid.zeros(grid.nx, grid.ny)
         if port.axis == "x":
@@ -40,6 +43,9 @@ class ModeSourceTM:
             hy[col, port.lo:port.hi] = self.d * prof / dx             # My ∝ Ez_m
             self.h_masks = {"src_hy_mask": hy}
         else:
+            # y-normal TM: transverse pair is Ez/Hx with S_y = +Ez*Hx; the Jz
+            # sheet carries -neff*prof so its sign matches decompose's
+            # axis_sign=-1 (stored Hx sign) in tasks 5-6.
             mask[port.lo:port.hi, port.index] = -neff * prof / dx     # Jz ∝ -Hx_m
             hx = grid.zeros(grid.nx, grid.ny - 1)
             row = port.index - 1 if self.d > 0 else port.index
