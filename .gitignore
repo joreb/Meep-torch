@@ -24,7 +24,9 @@ tidy3d/
 tidy3d_extras/
 mpb/
 fdtdx/
+fdtd/
 femwell/
+meep/
 
 # all dot-directories (agent tooling, caches, venvs)
 .*/

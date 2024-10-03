@@ -55,7 +55,8 @@ def _avg4_to_ey(Ex: torch.Tensor) -> torch.Tensor:
     return 0.25 * (Exp[:-1, :-1] + Exp[:-1, 1:] + Exp[1:, :-1] + Exp[1:, 1:])
 
 
-def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = None) -> TEState:
+def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = None,
+            src_h_amp: float = 0.0, src_hz_mask: torch.Tensor | None = None) -> TEState:
     # Update order mirrors step_tm under the duality Hz<->Ez, (Ex,Ey)<->(-Hx,-Hy):
     # the E fields (dual of TM's H) advance first from Hz(n), then Hz (dual of
     # TM's Ez) advances from E(n+1/2). This makes the discrete TE Hz update
@@ -97,6 +98,10 @@ def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = N
     Hz = state.Hz - dt * (
         dEy_dx / m.k_hx + psi_Eyx - dEx_dy / m.k_hy - psi_Exy
     )
+
+    # --- magnetic-current injection (TFSF): Hz at n+1 seen by next step's E/D ---
+    if src_hz_mask is not None:
+        Hz = Hz + dt * src_h_amp * src_hz_mask
 
     return TEState(
         Hz, Ex, Ey, Dx, Dy,

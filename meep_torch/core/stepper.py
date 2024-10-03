@@ -44,6 +44,9 @@ def step_tm(
     m: TMCoeffs,
     src_amp=0.0,
     src_mask: torch.Tensor | None = None,
+    src_h_amp: float = 0.0,
+    src_hy_mask: torch.Tensor | None = None,
+    src_hx_mask: torch.Tensor | None = None,
 ) -> TMState:
     dt, dx = m.dt, m.dx
 
@@ -55,6 +58,12 @@ def step_tm(
     dEz_dx = (state.Ez[1:, :] - state.Ez[:-1, :]) / dx            # (nx-1, ny)
     psi_Ezx = m.b_hx * state.psi_Ezx + m.a_hx * dEz_dx
     Hy = state.Hy + dt * (dEz_dx / m.k_hx + psi_Ezx)
+
+    # --- magnetic-current injection (TFSF): seen by this step's D update ---
+    if src_hy_mask is not None:
+        Hy = Hy + dt * src_h_amp * src_hy_mask
+    if src_hx_mask is not None:
+        Hx = Hx + dt * src_h_amp * src_hx_mask
 
     # --- D update (from H at n+1/2) ---
     if m.y_pmc:
