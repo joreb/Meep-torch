@@ -16,6 +16,14 @@ dependencies = [
 gds = [
     "gdstk>=1.0.1",
 ]
+# femwell is the FEM mode-solver oracle (GPL-3.0). Test-only -- it is NOT a
+# runtime dep and never enters the wheel. Its setup.py hard-bounds Python
+# <3.10, so the marker makes this extra a no-op on this project's >=3.10 floor
+# (the guarded tests importorskip). Install it on a <3.10 box to run the
+# femwell parity/overlap tests live: uv pip install '.[femwell]'
+femwell = [
+    "femwell; python_version < '3.10'",
+]
 
 [dependency-groups]
 dev = [
