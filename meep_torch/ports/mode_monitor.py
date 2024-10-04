@@ -5,10 +5,10 @@
 Bi-orthogonal <E1 x H2> convention, no conjugate (lossy-correct).
 Forward-only: mode profiles detached.
 
-axis_sign defaults to -1.0: step_tm stores Hy/Hx with the opposite sign to
-the fd1d eigenmode (Hy_m = +neff*Ez_m), so the monitor's accumulated H for a
-+axis wave equals -neff*Ez; axis_sign=-1 (Hm = -neff*Em) aligns the overlap
-so a +axis forward wave maps to a_plus. Same sign for y-normal (S_y = +Ez*Hx).
+axis_sign: TM Poynting S = -Ez*Hy x^ + Ez*Hx y^, so a +x wave stores
+Hy = -neff*Ez (axis_sign=-1, the default) while a +y wave stores
+Hx = +neff*Ez (pass axis_sign=+1 for y-normal monitors). With the matching
+sign, a +axis forward wave maps to a_plus.
 """
 from typing import Sequence
 

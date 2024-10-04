@@ -82,3 +82,19 @@ def test_reciprocity_taper():
                          freqs=[FCEN], n_steps=3500, npml=10)
     s21, s12 = sm.s[0, 1, 0], sm.s[0, 0, 1]
     assert abs(abs(s21) - abs(s12)) < 5e-3
+
+def test_y_normal_straight_guide():
+    # vertical guide, y-normal ports: catches the axis_sign convention for the
+    # Ez/Hx transverse pair (S_y = +Ez*Hx, so stored Hx = +neff*Ez for +y)
+    grid = Grid(nx=80, ny=200, dx=0.1)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps[35:45, :] = 12.0
+    ports = [
+        Port(axis="y", index=40, lo=20, hi=60, direction=+1),
+        Port(axis="y", index=160, lo=20, hi=60, direction=-1),
+    ]
+    sm = compute_smatrix(eps, grid, ports, pol="tm", fcen=FCEN, fwidth=FWIDTH,
+                         freqs=FREQS, n_steps=3000, npml=10)
+    for i in range(len(FREQS)):
+        assert abs(abs(sm.s[i, 1, 0]) - 1.0) < 1e-2
+        assert abs(sm.s[i, 0, 0]) < 5e-2

@@ -53,9 +53,8 @@ class ModeSourceTM:
             hy[col, port.lo:port.hi] = self.d * prof / dx            # My ∝ Ez_m
             self.h_masks = {"src_hy_mask": hy}
         else:
-            # y-normal TM: transverse pair is Ez/Hx with S_y = +Ez*Hx; the Jz
-            # sheet carries -neff*prof so its sign matches decompose's
-            # axis_sign=-1 (stored Hx sign) in tasks 5-6.
+            # y-normal TM: transverse pair is Ez/Hx with S_y = +Ez*Hx
+            # (decompose uses axis_sign=+1 for y-normal).
             mask[port.lo:port.hi, j_idx] = -neff * prof / dx         # Jz ∝ -Hx_m
             hx = grid.zeros(grid.nx, grid.ny - 1)
             row = j_idx - 1 if self.d > 0 else j_idx

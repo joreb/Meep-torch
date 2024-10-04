@@ -47,7 +47,9 @@ def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
         mon_fn = lambda p: FluxMonitorTM(grid, freqs, x_normal=(p.axis == "x"),
                                          idx=p.index, lo=p.lo, hi=p.hi)
         eps_fn = lambda p: _eps_line(eps, p)
-        axis_sign = -1.0
+        # S = -Ez*Hy x^ + Ez*Hx y^: +x wave stores Hy=-neff*Ez (sign -1),
+        # +y wave stores Hx=+neff*Ez (sign +1).
+        sign_fn = lambda p: -1.0 if p.axis == "x" else +1.0
     elif pol == "te":
         if any(p.axis != "x" for p in ports):
             raise NotImplementedError("TE y-normal not supported (FluxMonitorTE is x-normal only)")
@@ -57,7 +59,7 @@ def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
         src_cls = ModeSourceTE
         mon_fn = lambda p: FluxMonitorTE(grid, freqs, ix=p.index, lo=p.lo, hi=p.hi)
         eps_fn = lambda p: _eps_line_te(eps, p)
-        axis_sign = -1.0  # unused for te (decompose te branch ignores axis_sign)
+        sign_fn = lambda p: -1.0  # unused for te (decompose te branch ignores axis_sign)
     else:
         raise ValueError(f"pol must be 'tm' or 'te', got {pol!r}")
 
@@ -72,7 +74,7 @@ def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
         _, accs = run(init(grid), coeffs, n_steps, source=src,
                       monitors=monitors, checkpoint_every=checkpoint_every)
         coeff = [decompose(acc, eps_fn(p), grid.dx, freqs, pol, p.n_modes,
-                           axis_sign=axis_sign)
+                           axis_sign=sign_fn(p))
                  for p, acc in zip(ports, accs)]
         a_p, a_m = coeff[j]
         a_in = a_p[:, n] if ports[j].direction > 0 else a_m[:, n]
