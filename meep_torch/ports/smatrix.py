@@ -8,14 +8,15 @@ from typing import NamedTuple, Sequence
 
 import torch
 
-from ..core.coeffs import build_tm_coeffs
+from ..core.coeffs import build_te_coeffs, build_tm_coeffs
 from ..core.grid import Grid
-from ..core.monitors import FluxMonitorTM
-from ..core.run import run_tm
+from ..core.monitors import FluxMonitorTE, FluxMonitorTM
+from ..core.run import run_te, run_tm
 from ..core.sources import GaussianPulse
 from ..core.stepper import init_tm_state
+from ..core.stepper_te import init_te_state
 from .mode_monitor import decompose
-from .mode_source import ModeSourceTM
+from .mode_source import ModeSourceTE, ModeSourceTM
 from .port import Port, validate_ports
 
 
@@ -29,36 +30,50 @@ def _eps_line(eps, p: Port):
     return eps[p.index, p.lo:p.hi] if p.axis == "x" else eps[p.lo:p.hi, p.index]
 
 
-def _monitor(grid, freqs, p: Port):
-    return FluxMonitorTM(grid, freqs, x_normal=(p.axis == "x"),
-                         idx=p.index, lo=p.lo, hi=p.hi)
+def _eps_line_te(eps, p: Port):
+    # eps at Ey half-y nodes (nx, ny-1): average adjacent cell-center rows.
+    return 0.5 * (eps[p.index, p.lo:p.hi] + eps[p.index, p.lo + 1:p.hi + 1])
 
 
 def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
                     fcen: float, fwidth: float, freqs: Sequence[float],
                     n_steps: int, npml: int, checkpoint_every: int = 0) -> SMatrix:
-    if pol != "tm":
-        raise NotImplementedError("pol='te' lands in Task 7")
     validate_ports(ports, grid, npml)
-    coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=npml)
+    if pol == "tm":
+        coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=npml)
+        run = run_tm
+        init = init_tm_state
+        src_cls = ModeSourceTM
+        mon_fn = lambda p: FluxMonitorTM(grid, freqs, x_normal=(p.axis == "x"),
+                                         idx=p.index, lo=p.lo, hi=p.hi)
+        eps_fn = lambda p: _eps_line(eps, p)
+        axis_sign = -1.0
+    elif pol == "te":
+        if any(p.axis != "x" for p in ports):
+            raise NotImplementedError("TE y-normal not supported (FluxMonitorTE is x-normal only)")
+        coeffs = build_te_coeffs(grid, eps_inf=eps, npml=npml)
+        run = run_te
+        init = init_te_state
+        src_cls = ModeSourceTE
+        mon_fn = lambda p: FluxMonitorTE(grid, freqs, ix=p.index, lo=p.lo, hi=p.hi)
+        eps_fn = lambda p: _eps_line_te(eps, p)
+        axis_sign = -1.0  # unused for te (decompose te branch ignores axis_sign)
+    else:
+        raise ValueError(f"pol must be 'tm' or 'te', got {pol!r}")
+
     index = [(j, n) for j, p in enumerate(ports) for n in range(p.n_modes)]
     nf, dim = len(freqs), len(index)
     s = torch.zeros(nf, dim, dim, dtype=torch.complex128)
 
     # ponytail: fixed n_steps; field-decay auto-stop when someone needs it
     for col, (j, n) in enumerate(index):
-        src = ModeSourceTM(grid, coeffs, ports[j], GaussianPulse(fcen, fwidth),
-                           fcen, mode=n)
-        monitors = [_monitor(grid, freqs, p) for p in ports]
-        _, accs = run_tm(init_tm_state(grid), coeffs, n_steps, source=src,
-                         monitors=monitors, checkpoint_every=checkpoint_every)
-        coeff = []
-        for p, acc in zip(ports, accs):
-            # axis_sign=-1 for both x- and y-normal TM: step_tm stores Hy/Hx with
-            # the opposite sign to the fd1d eigenmode (see mode_monitor.decompose).
-            sign = -1.0
-            coeff.append(decompose(acc, _eps_line(eps, p), grid.dx, freqs,
-                                   "tm", p.n_modes, axis_sign=sign))
+        src = src_cls(grid, coeffs, ports[j], GaussianPulse(fcen, fwidth), fcen, mode=n)
+        monitors = [mon_fn(p) for p in ports]
+        _, accs = run(init(grid), coeffs, n_steps, source=src,
+                      monitors=monitors, checkpoint_every=checkpoint_every)
+        coeff = [decompose(acc, eps_fn(p), grid.dx, freqs, pol, p.n_modes,
+                           axis_sign=axis_sign)
+                 for p, acc in zip(ports, accs)]
         a_p, a_m = coeff[j]
         a_in = a_p[:, n] if ports[j].direction > 0 else a_m[:, n]
         for row, (i, m) in enumerate(index):

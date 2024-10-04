@@ -6,6 +6,8 @@ from typing import Sequence
 from ..core.grid import Grid
 
 SRC_OFFSET = 3  # cells between monitor plane (port.index) and TFSF source plane
+# (TM). validate_ports uses this minimum. ModeSourceTE uses a larger offset
+# (weakly-guided TE mode has a long evanescent tail).
 
 
 @dataclass(frozen=True)

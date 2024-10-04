@@ -30,11 +30,20 @@ def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,
     nf = len(freqs)
     a_p = torch.zeros(nf, n_modes, dtype=torch.complex128)
     a_m = torch.zeros(nf, n_modes, dtype=torch.complex128)
+    eps_line = eps_line.detach()
     for i, f in enumerate(freqs):
-        modes = solve_1d(eps_line.detach(), dx, f, pol, k=n_modes)
+        modes = solve_1d(eps_line, dx, f, pol, k=n_modes)
         for m in range(n_modes):
-            Em = modes.profiles[m]
-            Hm = axis_sign * float(modes.neff[m]) * Em
+            prof = modes.profiles[m]
+            neff = float(modes.neff[m])
+            if pol == "tm":
+                Em = prof
+                Hm = axis_sign * neff * Em                  # stored Hy = -Hy_m for +x
+            else:  # te (x-normal): prof is Hz_m, Em = Ey_m = neff*Hz_m/eps.
+                # stored Hz is NOT sign-flipped vs the mode (unlike TM's Hy), so
+                # Hm = +prof; axis_sign is unused here.
+                Hm = prof
+                Em = neff * prof / eps_line.to(prof.dtype)
             N = float((Em * Hm).sum()) * dx
             if abs(N) < _NORM_FLOOR:
                 raise ValueError(f"degenerate/leaky mode {m} at f={f}: norm {N:.3e}")
