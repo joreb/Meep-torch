@@ -40,6 +40,13 @@ def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,
                 raise ValueError(f"degenerate/leaky mode {m} at f={f}: norm {N:.3e}")
             ovl_EH = (Ec[i] * Hm.to(torch.complex128)).sum() * dx
             ovl_HE = (Em.to(torch.complex128) * Hc[i]).sum() * dx
-            a_p[i, m] = (ovl_EH + ovl_HE) / (2.0 * N)
-            a_m[i, m] = (ovl_EH - ovl_HE) / (2.0 * N)
+            # Power-normalize: fd1d L2-normalizes profiles, so |a|^2 = P/P_m with
+            # P_m = mode power proportional to |N|. Multiplying by sqrt(|N|) makes
+            # |a|^2 proportional to power, so |S_ij|^2 is the power transmission
+            # and |S21|=|S12| for reciprocal devices with different port modes
+            # (e.g. a taper). The sqrt(|N|) factor is real, so S-matrix phase
+            # (group index) is unaffected.
+            pn = float(abs(N)) ** 0.5
+            a_p[i, m] = (ovl_EH + ovl_HE) / (2.0 * N) * pn
+            a_m[i, m] = (ovl_EH - ovl_HE) / (2.0 * N) * pn
     return a_p, a_m
