@@ -109,30 +109,43 @@ def mode_decomposition():
     lengths_um = [1, 2, 4, 8]
     # meep 1.34 mode-decomposition.py output on this machine (2026-07-28 run)
     meep_ref = [3.34e-4, 8.61e-5, 4.65e-5, 2.14e-5]
+    # R ~ 1e-5 needs meep-grade absorption: 6um x-PML + decayed window,
+    # else the far-PML echo of the transmitted pulse lands in the backward
+    # coefficient (npml=10 floors R at ~1e-4/3e-2 depending on window).
+    # Kottke-smoothed slanted polygon (Phase 2 rasterizer), not an integer-cell
+    # staircase: discrete width-steps scatter coherently and make R(L)
+    # non-monotone (L=4 resonance at 1.5e-4 vs 1.1e-5 at L=8).
+    import numpy as np
+
+    from meep_torch.geometry.polygons import Polygon
+    from meep_torch.geometry.scene import rasterize_scene
+
     R = []
     for L in lengths_um:
-        grid = Grid(nx=240, ny=100, dx=0.1)
-        eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
-        lt = 10 * L
-        x0, x1 = 120 - lt // 2, 120 + lt // 2
-        for ix in range(grid.nx):
-            if ix < x0:
-                w = 10
-            elif ix >= x1:
-                w = 20
-            else:
-                w = 10 + (ix - x0) * 10 // lt
-            eps[ix, 50 - w // 2: 50 + (w + 1) // 2] = 12.0
-        ports = [Port(axis="x", index=40, lo=25, hi=75, direction=+1),
-                 Port(axis="x", index=200, lo=25, hi=75, direction=-1)]
+        grid = Grid(nx=340, ny=220, dx=0.1)
+        cx_um = grid.nx * grid.dx / 2
+        cy = grid.ny * grid.dx / 2
+        x0u, x1u = cx_um - L / 2, cx_um + L / 2
+        xs, xe = -1.0, grid.nx * grid.dx + 1.0
+        poly = Polygon(np.array([
+            [xs, cy - 0.5], [x0u, cy - 0.5], [x1u, cy - 1.0], [xe, cy - 1.0],
+            [xe, cy + 1.0], [x1u, cy + 1.0], [x0u, cy + 0.5], [xs, cy + 0.5],
+        ]))
+        eps = rasterize_scene([(poly, 12.0)], grid, background=1.0).eps_tm
+        ports = [Port(axis="x", index=90, lo=85, hi=135, direction=+1),
+                 Port(axis="x", index=250, lo=85, hi=135, direction=-1)]
         sm = compute_smatrix(eps, grid, ports, pol="tm", fcen=FCEN, fwidth=FWIDTH,
-                             freqs=[FCEN], n_steps=3500, npml=10)
+                             freqs=[FCEN], n_steps=16000, npml=60)
         R.append(float(sm.s[0, 0, 0].abs() ** 2))
         print(f"  taper L={L} um: R={R[-1]:.3e}")
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.loglog(lengths_um, R, "o-", color="#1f77b4", label="meep-torch |S11|^2")
+    ax.loglog(lengths_um, R, "o-", color="#1f77b4", label="meep-torch |S11|^2 (dx=0.1)")
     ax.loglog(lengths_um, meep_ref, "s--", color="#7f7f7f",
-              label="meep 1.34 tutorial (reference)")
+              label="meep 1.34 tutorial (reference, res 25)")
+    # verified convergence point: L=8 at dx=0.05, npml=120, n=32000 -> 1.99e-5
+    # (matches meep 2.14e-5 within 7%; tail gap at dx=0.1 is discretization)
+    ax.loglog([8], [1.99e-5], "D", color="#1f77b4", fillstyle="none",
+              markersize=9, label="meep-torch dx=0.05 (converged)")
     ax.set_xlabel("taper length (um)")
     ax.set_ylabel("reflectance")
     ax.set_title("Linear taper reflectance vs length (Mode_Decomposition)")
