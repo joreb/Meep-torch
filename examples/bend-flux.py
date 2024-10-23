@@ -15,8 +15,8 @@ meep -> meep-torch mapping:
                                           ->  eps[0:120, 40:50] = 12
   vert  wvg: Block(w=1, sy-pad=28) @ (wvg_xcen=3.5, pad*0.5=2)
                                           ->  eps[110:120, 40:320] = 12
-  port 1 (left,  x-normal @ x=-6.5)       ->  Port(axis="x", index=15, lo=35, hi=55, dir=+1)
-  port 2 (top,   y-normal @ y=14.5)       ->  Port(axis="y", index=305, lo=105, hi=125, dir=+1)
+  port 1 (left,  x-normal @ x=-6.5)       ->  Port(axis="x", index=20, lo=25, hi=65, dir=+1)
+  port 2 (top,   y-normal @ y=14.5)       ->  Port(axis="y", index=280, lo=95, hi=135, dir=-1)
   GaussianSource(fcen=0.15, fwidth=0.1)   ->  GaussianPulse(0.15, 0.1)
 Run: uv run python examples/bend-flux.py
 """

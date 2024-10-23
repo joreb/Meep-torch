@@ -110,6 +110,8 @@ if len(left) and len(right):
     Q = f0 / dfwhm if dfwhm > 0 else float("nan")
 else:
     Q = float("nan")
+# Q is bin-width floored (dfwhm >= freqs[1]-freqs[0]); printed Q is a LOWER
+# bound until W3's harminv replacement (filter-diagonalization) lands.
 
 # --- plot: eps+Ez field, and spectrum ---
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))

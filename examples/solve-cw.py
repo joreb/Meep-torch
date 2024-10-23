@@ -78,11 +78,14 @@ probe = PointProbe(int(round(cx / dx)), int(round((cy + r + 0.1) / dx)))
 n_steps = int(round(700.0 / grid.dt))
 state = init_tm_state(grid)
 samples = np.empty(n_steps, dtype=np.float64)
+# Odd-mode drive: inject +a at the +x source and -a at the -x source
+# simultaneously into Dz (one combined mask through step_tm), so both
+# contribute to the SAME Ez update. (Adding a_neg to Dz after step_tm
+# returned would lag it one step and break the odd symmetry.)
+combined_mask = src_pos.mask - src_neg.mask
 for t in range(n_steps):
-    a_pos = src_pos.amplitude(t)
-    a_neg = -src_neg.amplitude(t)   # odd-sign source (amplitude negated)
-    state = step_tm(state, coeffs, a_pos, src_pos.mask)
-    state = state._replace(Dz=state.Dz + grid.dt * a_neg * src_neg.mask)
+    a = src_pos.amplitude(t)
+    state = step_tm(state, coeffs, a, combined_mask)
     samples[t] = state.Ez[probe.ix, probe.iy].item()
 
 # --- DFT substitute: rfft of the probe time series; peak should sit at fcen ---

@@ -39,7 +39,11 @@ OUT = pathlib.Path(__file__).parent
 
 FCEN = 1.0 / 3.0
 KERR = 1.0  # chi3 strength (meep original sweeps 1e-3 .. 1)
-AMP = 3.0   # source amplitude boost to make 3rd harmonic visible above noise
+AMP = 3.0   # source amplitude boost to make 3rd harmonic visible above noise.
+# NOTE: KERR=1, AMP=3 -> chi3*E^2 ~ 9, a STRONG-drive (non-perturbative) regime
+# chosen only for harmonic visibility in this demo. The perturbative cube-scaling
+# physics (P3 ~ amp^6 ~ P0^3) is verified honestly in tests/examples/test_3rd_harm_1d.py
+# (baseline-subtracted, weak drive).
 
 # 1D via thin 2D + PMC on y; sz reduced 100 -> 30 um for runtime
 sz = 30.0
