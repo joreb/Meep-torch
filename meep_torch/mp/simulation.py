@@ -76,6 +76,12 @@ class Simulation:
         self._state = None
         self._monitors = []          # list of (name, kind, mon, meta)
         self._last_acc = {}
+        # S-param path: an EigenModeSource + mode monitors route to compute_smatrix.
+        self._eig_source = next((s for s in self._sources if isinstance(s, EigenModeSource)),
+                               None)
+        self._mode_ports = []        # list of (name, axis, idx, lo, hi, direction)
+        self._S = None
+        self._port_index = {}       # monitor name -> port index in compute_smatrix
 
     def _build_coeffs(self):
         if self._pol == "tm":
@@ -120,18 +126,56 @@ class Simulation:
         return init_te_state(self.grid, n_poles=n_poles)
 
     def run(self, until=None, until_after_sources=None, n_steps=None):
-        run = run_tm if self._pol == "tm" else run_te
         if n_steps is None:
             T = until if until is not None else (until_after_sources or 0)
             n_steps = max(1, int(round(float(T) / self.grid.dt)))
+        if self._eig_source is not None:
+            self._run_modes(n_steps)
+            return
+        run = run_tm if self._pol == "tm" else run_te
         self._state = self._init_state()
         srcs = self._make_sources()
         monitors = [m for (_, _, m, _) in self._monitors]
-        # W1: single source supported (the 34 examples use one).
         src = srcs[0] if srcs else None
         self._state, outs = run(self._state, self._coeffs, n_steps, source=src, monitors=monitors)
         for (name, kind, mon, meta), acc in zip(self._monitors, outs):
             self._last_acc[name] = (acc, mon, meta)
+
+    def _run_modes(self, n_steps):
+        """S-param path: EigenModeSource + mode monitors -> compute_smatrix.
+
+        Normalization: meep's get_eigenmode_coefficients returns the mode
+        coefficient alpha at a monitor; the S-parameter is alpha_out/alpha_in
+        with the source port's injected alpha as the reference (the 'measured
+        incident' a_in). meep-torch's compute_smatrix builds the per-port
+        S-matrix in this same power-normalized convention (|S|<=1, validated vs
+        meep 1.34), so get_eigenmode_coefficients(name) returns S[:, port, 0]
+        -- the coefficient at monitor `name` when the EigenModeSource port
+        (port 0) is excited. The monitor colocated with the source maps to
+        port 0 (reflection S[0,0]); downstream monitors map to ports 1,2,...
+        (transmission S[k,0]).
+        """
+        from ..ports.port import Port
+        from ..ports.smatrix import compute_smatrix
+        es = self._eig_source
+        _, axis, idx, lo, hi, direction, band, prof, amp = build_mode_source(es, self.gs)
+        src_port = Port(axis=axis, index=idx, lo=lo, hi=hi, direction=es.direction,
+                        n_modes=es.eig_band + 1)
+        ports = [src_port]
+        self._port_index = {}
+        for (name, ax, i, l, h, d) in self._mode_ports:
+            if ax == axis and i == idx and l == lo and h == hi:
+                self._port_index[name] = 0      # colocated with source -> reflection
+                continue
+            self._port_index[name] = len(ports)
+            ports.append(Port(axis=ax, index=i, lo=l, hi=h, direction=d))
+        fcen = float(getattr(es.src, "_fcen", None) or es.src.frequency or 0.0)
+        fwidth = float(getattr(es.src, "_fw", None) or es.src.fwidth or 0.1)
+        freqs = self._mode_freqs or [fcen]
+        sm = compute_smatrix(self._rm.eps_tm if self._pol == "tm" else self._rm.eps_te_xx,
+                             self.grid, ports, pol=self._pol, fcen=fcen, fwidth=fwidth,
+                             freqs=freqs, n_steps=n_steps, npml=self._npml)
+        self._S = sm.s
 
     # --- flux monitors ---
     def add_flux(self, fcen, df, nfreq, region: FluxRegion, name=None):
@@ -142,11 +186,32 @@ class Simulation:
         return name
 
     def add_mode_monitor(self, fcen, df, nfreq, region: FluxRegion, name=None):
-        freqs = (np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq)).tolist()
-        mon, meta = self._line_monitor(region, freqs, kind="mode")
-        name = name or f"mode{len(self._monitors)}"
-        self._monitors.append((name, "mode", mon, meta))
+        # For the S-param path: store the port spec; run() routes an
+        # EigenModeSource + these monitors to compute_smatrix. freqs are kept
+        # for get_flux_freqs parity.
+        axis, idx, lo, hi = self._port_spec(region)
+        name = name or f"mode{len(self._mode_ports)}"
+        self._mode_ports.append((name, axis, idx, lo, hi, region.direction))
+        self._mode_freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
         return name
+
+    def _port_spec(self, region: FluxRegion):
+        c = region.center or Vector3()
+        s = region.size or Vector3(0, 0, 0)
+        gs = self.gs
+        if self.dimensions == 1:
+            return "x", cell_index(c.z, gs), 0, gs.ny
+        if abs(s.x) <= abs(s.y):
+            idx = cell_index(c.x, gs)
+            y0 = c.y - s.y / 2 + gs.sy / 2
+            y1 = c.y + s.y / 2 + gs.sy / 2
+            lo, hi = span_index_range(max(0.0, y0), min(gs.sy, y1), gs, "y")
+            return "x", idx, lo, hi
+        idx = max(0, min(gs.ny, cell_index_y(c.y, gs)))
+        x0 = c.x - s.x / 2 + gs.sx / 2
+        x1 = c.x + s.x / 2 + gs.sx / 2
+        lo, hi = span_index_range(max(0.0, x0), min(gs.sx, x1), gs, "x")
+        return "y", idx, lo, hi
 
     def _line_monitor(self, region: FluxRegion, freqs, kind):
         c = region.center or Vector3()
@@ -180,17 +245,13 @@ class Simulation:
         return mon_freqs(self, name)
 
     def get_eigenmode_coefficients(self, name, n_modes=1):
-        acc, mon, meta = self._last_acc[name]
-        idx, lo, hi = meta["idx"], meta["lo"], meta["hi"]
-        if self._pol == "tm":
-            eps_line = self._coeffs.eps_inf[idx, lo:hi].detach()
-        else:
-            eps_line = 0.5 * (self._coeffs.eps_inf[idx, lo:hi].detach()
-                             + self._coeffs.eps_inf[idx, lo + 1:hi + 1].detach())
-        freqs = mon.freqs.detach().cpu().numpy().tolist()
-        a_p, a_m = decompose(acc, eps_line, self.grid.dx, freqs, self._pol, n_modes,
-                             axis_sign=-1.0)
-        return a_p.detach().cpu().numpy(), a_m.detach().cpu().numpy()
+        """S[:, port_index(name), 0] -- the coefficient at monitor `name` when
+        the EigenModeSource (port 0) is excited (power-normalized S-param; see
+        the _run_modes docstring for the normalization mapping)."""
+        if self._S is None:
+            raise RuntimeError("run() with an EigenModeSource before get_eigenmode_coefficients")
+        j = self._port_index[name]
+        return self._S[:, j, 0].detach().cpu().numpy()
 
     def get_array(self, component=Dielectric, center=None, size=None):
         if component == Dielectric:
