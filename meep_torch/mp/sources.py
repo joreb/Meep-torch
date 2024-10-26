@@ -67,10 +67,19 @@ class ContinuousSource:
         self._fcen = float(self.frequency if self.frequency is not None else self.fcen)
 
     def profile(self):
-        from ..core.sources import CWRamp
-        # W1 basic: ramp over a few periods (width/slowness faithfulness -> W2).
-        t_ramp = (self.width if self.width else 5.0 / self._fcen)
-        return CWRamp(self._fcen, t_ramp)
+        from ..core.sources import ContinuousSource as _CS
+        # W2: faithful is-1-cosine turn-on (width/slowness/cutoff). width=None
+        # falls back to a few periods (W1 CWRamp-equivalent) inside _CS.
+        return _CS(self._fcen, width=self.width, slowness=self.slowness, cutoff=self.cutoff)
+
+
+@dataclass
+class CustomSource:
+    fn: object                                # callable(t) -> float time profile
+
+    def profile(self):
+        from ..core.sources import CustomSource as _CS
+        return _CS(self.fn)
 
 
 @dataclass

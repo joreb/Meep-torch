@@ -23,7 +23,7 @@ from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
-from meep_torch.core.sources import CWRamp, GaussianPulse, LineSource
+from meep_torch.core.sources import CWRamp, ContinuousSource, GaussianPulse, LineSource
 from meep_torch.core.stepper import init_tm_state, step_tm
 from meep_torch.geometry.polygons import Polygon
 from meep_torch.geometry.scene import rasterize_scene
@@ -42,7 +42,7 @@ def test_straight_waveguide():
     poly = Polygon(np.array([[0, 3.5], [16, 3.5], [16, 4.5], [0, 4.5]]))
     eps = rasterize_scene([(poly, 12.0)], g, background=1.0).eps_tm
     c = build_tm_coeffs(g, eps_inf=eps, npml=10)
-    src = LineSource(g, 10, 35, 45, profile=CWRamp(0.15, 5.0 / 0.15))
+    src = LineSource(g, 10, 35, 45, profile=ContinuousSource(0.15))   # matches mp.ContinuousSource
     st = init_tm_state(g)
     for t in range(round(200 / g.dt)):
         st = step_tm(st, c, src.amplitude(t), src.mask)
@@ -66,7 +66,7 @@ def test_bent_waveguide():
     eps = rasterize_scene([(h, 12.0), (v, 12.0)], g, background=1.0).eps_tm
     c = build_tm_coeffs(g, eps_inf=eps, npml=10)
     fcen = 1.0 / (2.0 * math.sqrt(11.0))
-    src = LineSource(g, 10, 40, 50, profile=CWRamp(fcen, 5.0 / fcen))
+    src = LineSource(g, 10, 40, 50, profile=ContinuousSource(fcen, width=20))  # matches mp.ContinuousSource(width=20)
     st = init_tm_state(g)
     for t in range(3000):
         st = step_tm(st, c, src.amplitude(t), src.mask)
@@ -77,7 +77,7 @@ def test_bent_waveguide():
                            material=mp.Medium(epsilon=12)),
                   mp.Block(size=mp.Vector3(1, 12, mp.inf), center=mp.Vector3(3.5, 2, 0),
                            material=mp.Medium(epsilon=12))],
-        sources=[mp.Source(mp.ContinuousSource(frequency=fcen), component=mp.Ez,
+        sources=[mp.Source(mp.ContinuousSource(frequency=fcen, width=20), component=mp.Ez,
                            center=mp.Vector3(-7, -3.5), size=mp.Vector3(0, 1, 0))],
         boundary_layers=[mp.PML(1.0)])
     sim.run(n_steps=3000)

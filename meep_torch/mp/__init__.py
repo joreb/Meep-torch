@@ -14,8 +14,8 @@ from .coords import GridSpec, cell_index, grid_spec, pml_npml, rect_corners, to_
 from .geometry import Block, Cylinder, Prism, build_scene_items
 from .material import LorentzianSusceptibility, Medium, PML
 from .simulation import FluxRegion, Simulation
-from .sources import (ContinuousSource, Dielectric, EigenModeSource, Ex, Ey, Ez,
-                      GaussianSource, Hz, Hy, Source, pol_for)
+from .sources import (ContinuousSource, CustomSource, Dielectric, EigenModeSource,
+                      Ex, Ey, Ez, GaussianSource, Hz, Hy, Source, pol_for)
 from .vec import Vector3, interpolate
 
 inf = math.inf
