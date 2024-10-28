@@ -62,8 +62,19 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
 
     Sources inject the envelope e at a line: src_c/src_s are the c/s temporal
     envelopes times the spatial mask (the caller builds the +x-traveling phase).
+
+    CFL: the standard 2D Yee Courant bound (courant <= 1/sqrt(2)) must hold for
+    the grid derivatives, AND the +i k_y bulk coupling precesses the quadratures
+    at c*|k_y|, which must be temporally resolved: c*dt*|k_y| < 2 (Nyquist; c=1
+    in natural units). We assert the safety margin |k_y| < 1/dt. For a planewave
+    at angle theta, k_y = 2*pi*f*sin(theta); high angles / high f may need a
+    smaller dt (lower courant) or a larger cell -- raise() flags it.
     """
     dt, dx = m.dt, m.dx
+    if abs(ky) >= 1.0 / dt:
+        raise ValueError(
+            f"Bloch k_y={ky:.4f} violates temporal-Nyquist bound |k_y| < 1/dt={1/dt:.2f}; "
+            f"reduce dt (lower courant) or the angle/frequency")
 
     # --- H update (envelope y-derivative + i k_y coupling) ---
     dec_dy = _dy_periodic(state.Ez_c, dx)
@@ -110,15 +121,18 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
         P_cur_c = state.P_cur_c
         P_cur_s = state.P_cur_s
 
-    # --- E from D (Kerr fixed point, per quadrature) ---
+    # --- E from D (instantaneous Kerr via fixed point over the pair jointly) ---
+    # Isotropic Kerr uses the COMPLEX envelope intensity |E|^2 = E_c^2 + E_s^2;
+    # both quadratures share the same nonlinear denominator.
     rhs_c = Dz_c - P_cur_c.sum(0)
     rhs_s = Dz_s - P_cur_s.sum(0)
     Ez_c = rhs_c / m.eps_inf
     Ez_s = rhs_s / m.eps_inf
     if m.has_kerr:
         for _ in range(3):
-            Ez_c = rhs_c / (m.eps_inf + m.chi3 * Ez_c * Ez_c)
-            Ez_s = rhs_s / (m.eps_inf + m.chi3 * Ez_s * Ez_s)
+            denom = m.eps_inf + m.chi3 * (Ez_c * Ez_c + Ez_s * Ez_s)
+            Ez_c = rhs_c / denom
+            Ez_s = rhs_s / denom
 
     return BlochTMState(Ez_c, Ez_s, Hx_c, Hx_s, Hy_c, Hy_s, Dz_c, Dz_s,
                         P_cur_c, P_cur_s, state.P_cur_c, state.P_cur_s,

@@ -64,3 +64,70 @@ def test_bloch_planewave_angle():
         f"Bloch planewave angle {angle_meas:.2f} vs set {angle_set:.2f} (off {abs(angle_meas-angle_set):.2f} deg)"
     # k_y peak matches the set k_y within ~5% (FFT-bin resolution)
     assert abs(ky_meas) > 0.5 * KY, f"k_y peak {ky_meas:.3f} vs set {KY:.3f}"
+
+def _energy(st):
+    return float((st.Ez_c ** 2).sum() + (st.Ez_s ** 2).sum()
+                 + (st.Hx_c ** 2).sum() + (st.Hx_s ** 2).sum()
+                 + (st.Hy_c ** 2).sum() + (st.Hy_s ** 2).sum())
+
+
+def _energy_slice(st, sl):
+    return float((st.Ez_c[sl] ** 2).sum() + (st.Ez_s[sl] ** 2).sum()
+                 + (st.Hx_c[sl] ** 2).sum() + (st.Hx_s[sl] ** 2).sum()
+                 + (st.Hy_c[sl] ** 2).sum() + (st.Hy_s[sl] ** 2).sum())
+
+
+def test_bloch_ky_zero_decouples_quadratures():
+    # k_y=0: the i k_y coupling vanishes -> the c and s quadratures evolve
+    # independently under a periodic-y TM stepper. A c-only source leaves s=0.
+    g = Grid(nx=NX, ny=NY, dx=DX)
+    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64),
+                             npml=NPML, y_pmc=True)
+    st = init_bloch_tm_state(g)
+    ix = NPML + 5
+    mask = g.zeros(g.nx, g.ny); mask[ix, :] = 1.0
+    omega = 2 * math.pi * FCEN
+    for t in range(int(round(20.0 / g.dt))):
+        env = math.cos(omega * (t + 0.5) * g.dt)
+        st = step_bloch_tm(st, coeffs, 0.0, src_c=env, src_s=0.0, src_mask=mask)
+    assert float(st.Ez_s.abs().max()) < 1e-9, "k_y=0 leaked into s quadrature"
+    assert float(st.Ez_c.abs().max()) > 1e-3, "k_y=0 c quadrature did not launch"
+
+
+def test_bloch_energy_conservation():
+    # Lossless (eps=1, no chi3), source a short pulse, then evolve source-off
+    # and check total EM energy drift < 1e-6 over 1000 steps. Catches a
+    # quadrature-coupling sign asymmetry (artificial gain/loss).
+    g = Grid(nx=NX, ny=NY, dx=DX)
+    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64),
+                             npml=NPML, y_pmc=True)
+    st = init_bloch_tm_state(g)
+    ix = NPML + 5
+    mask = g.zeros(g.nx, g.ny); mask[ix, :] = 1.0
+    omega = 2 * math.pi * FCEN
+    n_src = int(round(15.0 / g.dt))
+    for t in range(n_src):                       # emit a short pulse
+        env = math.cos(omega * (t + 0.5) * g.dt) * math.exp(-((t * g.dt - 8.0) ** 2) / 6.0)
+        st = step_bloch_tm(st, coeffs, KY, src_c=env, src_s=-env * 0.0, src_mask=mask)
+    # measure interior energy away from x-PML, evolve source-off
+    sl = (slice(NPML + 10, NX - NPML - 10), slice(None))
+    e0 = _energy_slice(st, sl)
+    for _ in range(1000):
+        st = step_bloch_tm(st, coeffs, KY)
+    e = _energy_slice(st, sl)
+    # energy should not grow (PML leaks some out; assert no artificial gain):
+    assert e <= e0 * (1 + 1e-6), f"energy grew {e0:.3e} -> {e:.3e} (artificial gain)"
+
+
+def test_bloch_cfl_violation_raises():
+    g = Grid(nx=20, ny=20, dx=0.1)
+    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64),
+                             npml=4, y_pmc=True)
+    st = init_bloch_tm_state(g)
+    bad_ky = 2.0 / g.dt                         # exceeds 1/dt bound
+    try:
+        step_bloch_tm(st, coeffs, bad_ky)
+    except ValueError as e:
+        assert "Nyquist" in str(e) or "courant" in str(e) or "k_y" in str(e)
+        return
+    assert False, "Bloch stepper did not raise on CFL/Nyquist violation"

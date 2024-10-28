@@ -13,8 +13,8 @@ from ..core.grid import Grid
 from ..core.monitors import FluxMonitorTE, FluxMonitorTM
 from ..core.run import run_te, run_tm
 from ..core.sources import GaussianPulse
-from ..core.stepper import init_tm_state
-from ..core.stepper_te import init_te_state
+from ..core.stepper import init_tm_state, step_tm
+from ..core.stepper_te import init_te_state, step_te
 from .mode_monitor import decompose
 from .mode_source import ModeSourceTE, ModeSourceTM
 from .port import Port, validate_ports
@@ -37,7 +37,13 @@ def _eps_line_te(eps, p: Port):
 
 def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
                     fcen: float, fwidth: float, freqs: Sequence[float],
-                    n_steps: int, npml: int, checkpoint_every: int = 0) -> SMatrix:
+                    n_steps: int, npml: int, checkpoint_every: int = 0,
+                    decay_probe: tuple[int, int] | None = None,
+                    decay_ratio: float = 1e-6, n_decay: int = 50) -> SMatrix:
+    """If ``decay_probe=(ix, iy)`` is set, each per-port run uses
+    ``run_until_decayed`` (stop_when_fields_decayed) instead of a fixed
+    ``n_steps`` -- replacing the fixed-n_steps ponytail mark. ``n_steps`` is
+    then the max-step cap."""
     validate_ports(ports, grid, npml)
     if pol == "tm":
         coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=npml)
@@ -71,8 +77,17 @@ def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
     for col, (j, n) in enumerate(index):
         src = src_cls(grid, coeffs, ports[j], GaussianPulse(fcen, fwidth), fcen, mode=n)
         monitors = [mon_fn(p) for p in ports]
-        _, accs = run(init(grid), coeffs, n_steps, source=src,
-                      monitors=monitors, checkpoint_every=checkpoint_every)
+        if decay_probe is not None:
+            from ..core.run import run_until_decayed
+            ix, iy = decay_probe
+            probe_fn = lambda st: st.Ez[ix, iy] * st.Ez[ix, iy]
+            _, accs = run_until_decayed(step_tm if pol == "tm" else step_te,
+                                        init(grid), coeffs, src, monitors, probe_fn,
+                                        decay_ratio=decay_ratio, n_decay=n_decay,
+                                        max_steps=n_steps)
+        else:
+            _, accs = run(init(grid), coeffs, n_steps, source=src,
+                          monitors=monitors, checkpoint_every=checkpoint_every)
         coeff = [decompose(acc, eps_fn(p), grid.dx, freqs, pol, p.n_modes,
                            axis_sign=sign_fn(p))
                  for p, acc in zip(ports, accs)]

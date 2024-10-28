@@ -83,3 +83,44 @@ def _make_runner(step_fn, state_cls):
 
 run_tm = _make_runner(step_tm, TMState)
 run_te = _make_runner(step_te, TEState)
+
+
+def run_until_decayed(step_fn, state, coeffs, source, monitors, probe_fn,
+                      decay_ratio: float = 1e-6, n_decay: int = 50,
+                      max_steps: int = 100000):
+    """Step until |probe_fn(state)|^2 decays by ``decay_ratio`` below its peak
+    for ``n_decay`` consecutive steps (meep stop_when_fields_decayed). Returns
+    (state, monitor_outputs). No checkpointing (decay runs are short).
+    """
+    monitors = list(monitors)
+    acc = [None] * len(monitors)
+    peak = 0.0
+    decay_run = 0
+    for t in range(max_steps):
+        h_masks = getattr(source, "h_masks", None) if source is not None else None
+        if h_masks:
+            state = step_fn(state, coeffs, source.amplitude(t), source.mask,
+                            source.h_amplitude(t), **h_masks)
+        elif source is not None:
+            state = step_fn(state, coeffs, source.amplitude(t), source.mask)
+        else:
+            state = step_fn(state, coeffs)
+        outs = [mon.sample(state, t) for mon in monitors]
+        for i, (mon, out) in enumerate(zip(monitors, outs)):
+            if acc[i] is None:
+                acc[i] = out
+            elif mon.reduce == "sum":
+                acc[i] = acc[i] + out
+            else:
+                acc[i] = torch.cat([acc[i], out])
+        v = float(probe_fn(state))
+        if v > peak:
+            peak = v
+            decay_run = 0
+        elif peak > 0 and v < decay_ratio * peak:
+            decay_run += 1
+            if decay_run >= n_decay:
+                break
+        else:
+            decay_run = 0
+    return state, acc
