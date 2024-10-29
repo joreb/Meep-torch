@@ -73,14 +73,16 @@ def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
     nf, dim = len(freqs), len(index)
     s = torch.zeros(nf, dim, dim, dtype=torch.complex128)
 
-    # ponytail: fixed n_steps; field-decay auto-stop when someone needs it
     for col, (j, n) in enumerate(index):
         src = src_cls(grid, coeffs, ports[j], GaussianPulse(fcen, fwidth), fcen, mode=n)
         monitors = [mon_fn(p) for p in ports]
         if decay_probe is not None:
             from ..core.run import run_until_decayed
             ix, iy = decay_probe
-            probe_fn = lambda st: st.Ez[ix, iy] * st.Ez[ix, iy]
+            if pol == "tm":
+                probe_fn = lambda st: st.Ez[ix, iy] * st.Ez[ix, iy]
+            else:
+                probe_fn = lambda st: st.Hz[ix, iy] * st.Hz[ix, iy]
             _, accs = run_until_decayed(step_tm if pol == "tm" else step_te,
                                         init(grid), coeffs, src, monitors, probe_fn,
                                         decay_ratio=decay_ratio, n_decay=n_decay,

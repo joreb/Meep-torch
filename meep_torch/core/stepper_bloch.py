@@ -137,3 +137,14 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
     return BlochTMState(Ez_c, Ez_s, Hx_c, Hx_s, Hy_c, Hy_s, Dz_c, Dz_s,
                         P_cur_c, P_cur_s, state.P_cur_c, state.P_cur_s,
                         psi_Ezx_c, psi_Ezx_s, psi_Hyx_c, psi_Hyx_s)
+
+def bloch_xflux(state: BlochTMState, ix: int, dy: float) -> float:
+    """Time-averaged +x Poynting flux through the column x=ix for the complex
+    envelope field E = (E_c + i E_s) exp(i k_y y). meep-torch TM stores Hy with a
+    sign flip vs the eigenmode convention (S_x = -Ez*Hy), so <S_x> =
+    -0.5 (E_c H_c + E_s H_s). Hy lives on x-edges; average the two around ix.
+    """
+    Hy_c = 0.5 * (state.Hy_c[ix - 1, :] + state.Hy_c[ix, :])
+    Hy_s = 0.5 * (state.Hy_s[ix - 1, :] + state.Hy_s[ix, :])
+    s = (state.Ez_c[ix, :] * Hy_c + state.Ez_s[ix, :] * Hy_s)
+    return -0.5 * float(s.sum()) * dy
