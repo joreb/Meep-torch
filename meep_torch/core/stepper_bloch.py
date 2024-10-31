@@ -148,3 +148,32 @@ def bloch_xflux(state: BlochTMState, ix: int, dy: float) -> float:
     Hy_s = 0.5 * (state.Hy_s[ix - 1, :] + state.Hy_s[ix, :])
     s = (state.Ez_c[ix, :] * Hy_c + state.Ez_s[ix, :] * Hy_s)
     return -0.5 * float(s.sum()) * dy
+
+
+def bloch_diffraction_orders(state: BlochTMState, ix: int, ky: float, G: float,
+                              k0: float, dy: float, n_modes: int = 5):
+    """Diffraction-order powers through the column x=ix for a Bloch-periodic
+    field whose envelope e is periodic over Ly = 2*pi/G. The physical field
+    E = e(y) exp(i k_y y); the diffraction orders are the Fourier harmonics of e
+    at m*G, each a plane wave with transverse k_y_m = k_y + m*G and longitudinal
+    k_x_m = sqrt(k0^2 - k_y_m^2) (propagating where real). Order power is the
+    time-averaged +x Poynting flux of that harmonic, normalized to the incident
+    (m=0 vacuum) flux: |a_m|^2 * (k_x_m / k_x0). Returns (orders, powers) where
+    powers[m+n_modes] is the (real) order power (0 for evanescent orders).
+    """
+    e = (state.Ez_c[ix, :] + 1j * state.Ez_s[ix, :]).numpy()
+    ny = e.shape[0]
+    # Fourier harmonics of the periodic envelope: a_m = (1/ny) sum_j e_j exp(-i m G y_j)
+    ys = (np.arange(ny) + 0.5) * dy
+    orders = list(range(-n_modes, n_modes + 1))
+    kx0 = math.sqrt(max(0.0, k0 * k0 - ky * ky))
+    powers = []
+    for m in orders:
+        kym = ky + m * G
+        a = float(np.abs(np.sum(e * np.exp(-1j * m * G * ys))) / ny)
+        kxm = k0 * k0 - kym * kym
+        if kxm <= 0:
+            powers.append(0.0)                  # evanescent order
+        else:
+            powers.append(a * a * (math.sqrt(kxm) / kx0) if kx0 > 0 else 0.0)
+    return orders, np.array(powers)
