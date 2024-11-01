@@ -93,8 +93,13 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
     Hy_s = state.Hy_s + dt * (dEz_dx_s / m.k_hx + psi_Ezx_s)
 
     # --- D update (envelope y-curl of Hx + i k_y coupling, x-curl of Hy) ---
-    dhxc_dy = _dy_periodic(Hx_c, dx)
-    dhxs_dy = _dy_periodic(Hx_s, dx)
+    # Yee staggering: the Hx update uses the FORWARD y-difference of Ez
+    # (edge j between cells j,j+1), so the Dz y-curl dHx/dy at cell j must use the
+    # BACKWARD difference (Hx[j]-Hx[j-1]) -- a forward diff here shifts the curl
+    # by one cell, making the update operator non-symmetric (complex eigenvalues
+    # -> growth at any dt at structured-eps interfaces).
+    dhxc_dy = (Hx_c - torch.roll(Hx_c, 1, dims=1)) / dx    # backward, cell node
+    dhxs_dy = (Hx_s - torch.roll(Hx_s, 1, dims=1)) / dx
     curlY_c = dhxc_dy - ky * Hx_s
     curlY_s = dhxs_dy + ky * Hx_c
     dHy_dx_c = (Hy_c[1:, :] - Hy_c[:-1, :]) / dx
