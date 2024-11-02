@@ -32,6 +32,14 @@
 2. **W2 — sources completion** (bloch/oblique, custom/CW profiles,
    `stop_when_fields_decayed`). Unblocks ~6 stubs. Gate: `oblique-planewave`
    + `refl-angular` ports pass vs meep-oracle reference JSON.
+   **DONE 2026-07-30** (commits 9513219..51b39d4): all 3 gates pass (angle
+   <1 deg, Fresnel <=2%, binary_grating_oblique orders vs meep-oracle JSON).
+   Delivered: custom/CW/spatial/oblique sources, two-quadrature Bloch TM
+   stepper (backward-curl Yee fix), run_until_decayed + smatrix decay_probe,
+   ports/orders.py diffraction decomposer. 4/6 stubs ported; 2 re-scoped to
+   accurate blockers: `diffracted_planewave` → **TE Bloch stepper** (add to
+   W5 or a W2.5), `refl-angular-kz2d` → **2.5D kz_2d** (new small workstream,
+   schedule with W5).
 3. **W3 — frequency-domain analysis** (true harminv replacement:
    filter-diagonalization/ESPRIT; area DFT fields; keep `solve-cw` port
    honest). Upgrades the FFT substitutions in ported cavity examples.
