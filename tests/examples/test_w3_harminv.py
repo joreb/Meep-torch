@@ -47,6 +47,29 @@ def test_noise_robustness():
     assert abs(modes[0].Q - Q_true) / Q_true < 0.10, f"Q={modes[0].Q} vs {Q_true}"
 
 
+def test_close_modes_resolved():
+    # two lines 0.004 apart need the full-duration window (band decimation);
+    # a short pencil window (~13 time units) smears them into one
+    dt, N = 0.05, 14000
+    c = _series([0.118, 0.122], [0.0005, 0.002], [1.0, 0.8], dt, N)
+    modes = harminv(c, dt, 0.09, 0.15)
+    fs = sorted(m.freq for m in modes[:2])
+    assert len(fs) == 2, f"close modes not resolved: {[(m.freq, m.amp) for m in modes]}"
+    assert abs(fs[0] - 0.118) < 5e-4 and abs(fs[1] - 0.122) < 5e-4, f"fs={fs}"
+
+
+def test_undamped_cw_mode():
+    # driven CW steady state: gamma ~ 0 must not be dropped as "growing"
+    dt, N = 0.05, 6000
+    # tiny negative gamma: numerically "growing" at noise scale (a real CW
+    # drive whose amplitude is still creeping up) — must still be reported
+    c = _series([0.118], [-1e-9], [1.0], dt, N)
+    modes = harminv(c, dt, 0.09, 0.15)
+    assert modes, "undamped mode dropped"
+    assert abs(modes[0].freq - 0.118) / 0.118 < 1e-3, f"f={modes[0].freq}"
+    assert modes[0].Q > 1e4, f"Q={modes[0].Q} (undamped -> inf/huge)"
+
+
 def test_high_q_mode():
     dt, N = 0.05, 10000
     gamma = 0.00005

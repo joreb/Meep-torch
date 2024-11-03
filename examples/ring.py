@@ -88,26 +88,16 @@ state = init_tm_state(grid)
 state, (series,) = run_tm(state, coeffs, n_steps, source=src, monitors=[probe])
 series = series.detach().numpy()
 
-# --- FFT peak-find on ringdown tail (substitute for Harminv) ---
+# --- W3: filter-diagonalization (harminv) on the ringdown tail ---
+from meep_torch.modes.harminv import harminv
 steady_start = int(round(t_end / grid.dt))
 steady = series[steady_start:]
 spec = np.abs(np.fft.rfft(steady))
 freqs = np.fft.rfftfreq(len(steady), grid.dt)
-peak_idx = int(spec.argmax())
-f0 = float(freqs[peak_idx])
-# Q ~ f0 / FWHM; estimate half-width via half-power points around the peak
-half = spec.max() * 0.5
-left = np.where(spec[:peak_idx] <= half)[0]
-right = np.where(spec[peak_idx:] <= half)[0]
-if len(left) and len(right):
-    f_lo = freqs[left[-1]]
-    f_hi = freqs[peak_idx + right[0]]
-    dfwhm = max(f_hi - f_lo, freqs[1] - freqs[0])
-    Q = f0 / dfwhm if dfwhm > 0 else float("nan")
-else:
-    Q = float("nan")
-# Q is bin-width floored (dfwhm >= freqs[1]-freqs[0]); the printed Q is a
-# LOWER bound until W3's harminv replacement (filter-diagonalization) lands.
+hm = harminv(steady, grid.dt, fcen - df, fcen + df)
+m = max(hm, key=lambda x: x.amp) if hm else None
+f0 = m.freq if m else float(freqs[int(spec.argmax())])
+Q = m.Q if m else float("nan")
 
 # --- plot: field + spectrum ---
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))

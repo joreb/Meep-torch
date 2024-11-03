@@ -91,8 +91,14 @@ for t in range(n_steps):
 # --- DFT substitute: rfft of the probe time series; peak should sit at fcen ---
 spec = np.abs(np.fft.rfft(samples))
 freqs = np.fft.rfftfreq(len(samples), grid.dt)
-peak_idx = int(spec.argmax())
-f_peak = float(freqs[peak_idx])
+# W3: filter-diagonalization (harminv) on the post-ramp tail resolves f beyond
+# the rfft bin width (driven CW steady state -> expect f == fcen, Q ~ inf).
+from meep_torch.modes.harminv import harminv
+hm = harminv(samples[len(samples) // 2:], grid.dt, 0.8 * fcen, 1.2 * fcen)
+# the drive line is the undamped (Q=inf) mode; a decaying ring resonance
+# nearby can carry more fitted amplitude, so select by Q first
+m = max(hm, key=lambda x: (x.Q, x.amp)) if hm else None
+f_peak = m.freq if m else float(freqs[int(spec.argmax())])
 
 # --- plot: time-domain Ez field + DFT spectrum ---
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
@@ -103,12 +109,12 @@ ax1.set_title(f"solve-cw substitute: Ez after CWRamp@{fcen} (res={resolution})")
 ax1.set_xlabel("x (cells, dx=%.2f um)" % dx); ax1.set_ylabel("y (cells)")
 ax2.plot(freqs, spec, lw=0.8)
 ax2.axvline(fcen, color="g", ls="--", label=f"drive fcen={fcen}")
-ax2.axvline(f_peak, color="r", ls=":", label=f"FFT peak={f_peak:.4f}")
+ax2.axvline(f_peak, color="r", ls=":", label=f"harminv f={f_peak:.4f}")
 ax2.set_xlabel("frequency"); ax2.set_ylabel("|Ez(DFT)|")
 ax2.set_title("DFT spectrum (solve_cw -> CWRamp + rfft substitute)")
 ax2.legend()
 fig.tight_layout()
 fig.savefig(OUT / "solve-cw.png", dpi=150)
 plt.close(fig)
-print(f"solve-cw.png  FFT peak={f_peak:.5f} (drive fcen={fcen}); "
-      "CW solver substituted with long CWRamp time-domain run + rfft.")
+print(f"solve-cw.png  harminv f={f_peak:.5f} (drive fcen={fcen}); "
+      "CW solver substituted with long CWRamp time-domain run + FDM harminv.")

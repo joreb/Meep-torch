@@ -12,7 +12,8 @@ SUBSTITUTIONS:
     symmetry. meep-torch exposes the TM (out-of-plane Ez) stepper as the primary
     API; we port to Ez polarization. The cavity still supports an Ez-polarized
     monopole mode; the resonant frequency differs from the meep Hz value.
-  * meep uses Harminv for f/Q extraction -> replaced by probe + rfft peak-find.
+  * meep uses Harminv for f/Q extraction -> modes.harminv (filter
+    diagonalization / matrix-pencil) on the probe ringdown.
   * No mirror symmetry (meep-torch has no Mirror); full cell is simulated.
 
 Resolution reduced from 20 to 10 (dx=0.05 -> 0.1) to keep runtime <90s; noted.
@@ -95,23 +96,19 @@ state = init_tm_state(grid)
 state, (series,) = run_tm(state, coeffs, n_steps, source=src, monitors=[probe])
 series = series.detach().numpy()
 
-# --- FFT peak-find (Harminv substitute) ---
+# --- W3: filter-diagonalization (harminv) on the ringdown tail ---
+from meep_torch.modes.harminv import harminv
 steady_start = int(round(t_end / grid.dt))
 steady = series[steady_start:]
 spec = np.abs(np.fft.rfft(steady))
 freqs = np.fft.rfftfreq(len(steady), grid.dt)
-peak_idx = int(spec.argmax())
-f0 = float(freqs[peak_idx])
-half = spec.max() * 0.5
-left = np.where(spec[:peak_idx] <= half)[0]
-right = np.where(spec[peak_idx:] <= half)[0]
-if len(left) and len(right):
-    dfwhm = max(freqs[peak_idx + right[0]] - freqs[left[-1]], freqs[1] - freqs[0])
-    Q = f0 / dfwhm if dfwhm > 0 else float("nan")
-else:
-    Q = float("nan")
-# Q is bin-width floored (dfwhm >= freqs[1]-freqs[0]); printed Q is a LOWER
-# bound until W3's harminv replacement (filter-diagonalization) lands.
+hm = harminv(steady, grid.dt, 0.2, 0.35)
+# a spurious low-Q slab/radiation mode near f~0.23 can dominate the probe
+# amplitude; the defect mode is the high-Q one among the non-negligible modes
+cand = [m for m in hm if m.amp > 0.1 * hm[0].amp] if hm else []
+m = max(cand, key=lambda x: x.Q) if cand else None
+f0 = m.freq if m else float(freqs[int(spec.argmax())])
+Q = m.Q if m else float("nan")
 
 # --- plot: eps+Ez field, and spectrum ---
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
@@ -125,7 +122,7 @@ ax2.plot(freqs, spec, lw=0.8)
 ax2.axvline(f0, color="r", ls="--", label=f"f0={f0:.4f}")
 ax2.set_xlabel("frequency")
 ax2.set_ylabel("|Ez(fft)|")
-ax2.set_title("cavity ringdown spectrum (Harminv substitute)")
+ax2.set_title("cavity ringdown spectrum (FDM harminv)")
 ax2.legend()
 fig.tight_layout()
 fig.savefig(OUT / "holey-wvg-cavity.png", dpi=150)

@@ -59,12 +59,17 @@ def harminv(series, dt: float, fmin: float = 0.0, fmax: float | None = None,
     B = np.exp(-1j * np.outer(omega, n))      # (R, N)
     a, *_ = np.linalg.lstsq(B.T, c, rcond=None)
     modes = []
+    # growth slower than ~1 e-fold over the window is indistinguishable from
+    # undamped (e.g. a driven CW steady state still building up): keep it and
+    # report Q = inf. Only fast-growing eigenvalues are noise/instability.
+    g_grow = 1.0 / (N * dt)
+    g_tol = 1e-6 / dt
     for k in range(R):
         if f[k] < fmin or f[k] > fmax:
             continue
-        if gamma[k] <= 0:
-            continue                         # growing mode -> unstable/noise
-        Q = np.pi * abs(f[k]) / gamma[k]
+        if gamma[k] <= -g_grow:
+            continue                         # grew >= e-fold in window -> noise
+        Q = np.pi * abs(f[k]) / gamma[k] if gamma[k] > g_tol else float("inf")
         if decay_threshold and Q < decay_threshold:
             continue
         modes.append(HarminvMode(freq=float(f[k]), Q=float(Q), amp=float(abs(a[k]))))
