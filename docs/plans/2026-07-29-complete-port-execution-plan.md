@@ -44,6 +44,11 @@
    filter-diagonalization/ESPRIT; area DFT fields; keep `solve-cw` port
    honest). Upgrades the FFT substitutions in ported cavity examples.
    Gate: `holey-wvg-cavity` Q within 5% of meep-oracle harminv.
+   **DONE 2026-08-08** (commits 762b5fd..92a6858): gate pass (Q=65.26 vs
+   oracle 63.98, 2%). Delivered: `modes/harminv.py` (FDM/matrix-pencil,
+   near-undamped modes kept as Q=inf for driven-CW series), ring/holey/
+   solve-cw examples on FDM harminv (solve-cw f=0.11801 vs drive 0.118).
+   solve-cw sparse-direct CW solver not built (time-domain + FDM ships).
 4. **W4 — near2far (2D).** Unblocks ~6. Gate: `antenna-radiation` dipole
    pattern vs analytic + meep JSON.
 5. **W5 — materials completion** (conductivity, mu, aniso eps tensor in
