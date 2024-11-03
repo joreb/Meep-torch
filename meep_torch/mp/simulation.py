@@ -15,7 +15,7 @@ import torch
 
 from ..core.coeffs import build_te_coeffs, build_tm_coeffs
 from ..core.grid import Grid
-from ..core.monitors import FluxMonitorTE, FluxMonitorTM
+from ..core.monitors import DFTFieldsMonitor, FluxMonitorTE, FluxMonitorTM
 from ..core.run import run_te, run_tm
 from ..core.stepper import init_tm_state
 from ..core.stepper_te import init_te_state
@@ -184,6 +184,22 @@ class Simulation:
         name = name or f"flux{len(self._monitors)}"
         self._monitors.append((name, "flux", mon, meta))
         return name
+
+    def add_dft_fields(self, components, fcen, df, nfreq, name=None):
+        """Full-cell area DFT of field components (meep add_dft_fields, no
+        `where` region: whole cell only). Returns a handle for get_dft_array."""
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
+        name = name or f"dft{len(self._monitors)}"
+        for c in components:
+            mon = DFTFieldsMonitor(self.grid, freqs, component=c)
+            self._monitors.append((f"{name}:{c}", "dft", mon, {"freqs": freqs}))
+        return name
+
+    def get_dft_array(self, name, component, num_freq):
+        """Complex (nx, ny) DFT plane of `component` at frequency index."""
+        acc, mon, meta = self._last_acc[f"{name}:{component}"]
+        a = acc[num_freq].detach().cpu().numpy()
+        return a[0] + 1j * a[1]
 
     def add_mode_monitor(self, fcen, df, nfreq, region: FluxRegion, name=None):
         # For the S-param path: store the port spec; run() routes an

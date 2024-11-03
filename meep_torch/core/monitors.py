@@ -18,6 +18,31 @@ class PointProbe:
         return state.Ez[self.ix, self.iy]
 
 
+class DFTFieldsMonitor:
+    """Running DFT of one full-grid field component at a set of frequencies.
+
+    Per step accumulates dt * [cos(w t) F, -sin(w t) F] (the Re/Im of
+    F * exp(-i w t), matching the FluxMonitor convention); the accumulated
+    result has shape (nfreq, 2, nx, ny). Timing follows the TM stepper:
+    E components sit at (t_idx+1)*dt, H components at (t_idx+1/2)*dt.
+    """
+
+    reduce = "sum"
+
+    def __init__(self, grid: Grid, freqs: Sequence[float], component: str = "Ez"):
+        self.component = component
+        self.dt = grid.dt
+        self.freqs = torch.tensor(freqs, dtype=grid.dtype, device=grid.device)
+
+    def sample(self, state, t_idx: int) -> torch.Tensor:
+        F = getattr(state, self.component)
+        off = 1.0 if self.component.startswith("E") else 0.5
+        t = (t_idx + off) * self.dt
+        w = 2 * math.pi * self.freqs[:, None, None]
+        return self.dt * torch.stack(
+            [torch.cos(w * t) * F, -torch.sin(w * t) * F], dim=1)
+
+
 class FluxMonitorTM:
     reduce = "sum"
 
