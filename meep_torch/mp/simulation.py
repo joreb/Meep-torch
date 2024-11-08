@@ -50,6 +50,13 @@ class FluxRegion:
     direction: int = 1
 
 
+@dataclass
+class Near2FarRegion:
+    center: Vector3 = None
+    size: Vector3 = None
+    weight: int = 1
+
+
 class Simulation:
     def __init__(self, *, cell_size, resolution, geometry=None, sources=None,
                  default_material=Medium(epsilon=1.0), boundary_layers=None,
@@ -184,6 +191,45 @@ class Simulation:
         name = name or f"flux{len(self._monitors)}"
         self._monitors.append((name, "flux", mon, meta))
         return name
+
+    def add_near2far(self, fcen, df, nfreq, *regions, name=None):
+        """2D near-to-far contour (TM only for now). Regions with outward
+        normal = region axis * weight; a closed box = 4 regions, meep style.
+        Trapezoid endpoint weights close the loop integral when the regions
+        share corners."""
+        if self._pol != "tm":
+            raise NotImplementedError("add_near2far: TE lands with W4 Wave 3")
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
+        name = name or f"n2f{len(self._monitors)}"
+        specs = []
+        for r, region in enumerate(regions):
+            axis, idx, lo, hi = self._port_spec(FluxRegion(region.center, region.size))
+            hi = min(hi + 1, (self.grid.ny if axis == "x" else self.grid.nx))
+            normal = (int(region.weight), 0) if axis == "x" else (0, int(region.weight))
+            mon = FluxMonitorTM(self.grid, freqs, x_normal=(axis == "x"),
+                                idx=idx, lo=lo, hi=hi)
+            self._monitors.append((f"{name}:f{r}", "n2f", mon, {"normal": normal}))
+            specs.append(f"{name}:f{r}")
+        self._n2f_specs = getattr(self, "_n2f_specs", {})
+        self._n2f_specs[name] = (specs, freqs)
+        return name
+
+    def get_farfield(self, name, point):
+        """Complex [Ex, Ey, Ez, Hx, Hy, Hz] at a far point (meep layout);
+        (nfreq, 6) when nfreq > 1."""
+        from ..core.near2far import faces_from_accs, farfield_te, farfield_tm
+        specs, freqs = self._n2f_specs[name]
+        mons, accs = [], []
+        for key in specs:
+            acc, mon, meta = self._last_acc[key]
+            mons.append((mon, meta["normal"]))
+            accs.append(acc)
+        faces = faces_from_accs(self.grid, mons, accs)
+        obs = np.array([[point.x + self.gs.sx / 2.0, point.y + self.gs.sy / 2.0]])
+        ks = [2 * math.pi * f for f in freqs]
+        E, H = (farfield_tm if self._pol == "tm" else farfield_te)(faces, ks, obs)
+        out = np.concatenate([E[:, 0, :], H[:, 0, :]], axis=1)   # (nfreq, 6)
+        return out[0] if len(freqs) == 1 else out
 
     def add_dft_fields(self, components, fcen, df, nfreq, name=None):
         """Full-cell area DFT of field components (meep add_dft_fields, no

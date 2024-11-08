@@ -32,6 +32,7 @@ class Face:
     dl: float
     E: np.ndarray            # (nfreq, N) complex
     H: np.ndarray            # (nfreq, N) complex
+    w: np.ndarray = None     # (N,) quadrature weights; None = ones
 
 
 def line_source_fields_tm(k, pts, x0=0.0, y0=0.0):
@@ -68,10 +69,11 @@ def _far_out_of_plane(faces, ks, obs_pts, pol):
         dxo = obs[:, None, 0] - face.pts[None, :, 0]     # (nobs, N)
         dyo = obs[:, None, 1] - face.pts[None, :, 1]
         R = np.hypot(dxo, dyo)
+        quad = face.w if face.w is not None else 1.0
         for fi, k in enumerate(ks):
             w = k
-            Fz = face.E[fi]                              # Ez (TM) / Hz (TE)
-            Ht = face.H[fi]                              # Hy or Hx (TM); Ey or Ex (TE)
+            Fz = face.E[fi] * quad                       # Ez (TM) / Hz (TE)
+            Ht = face.H[fi] * quad                       # Hy or Hx (TM); Ey or Ex (TE)
             if pol == "tm":
                 # Jz = (n x H)_z ; M = -n x (Ez z): Mx = -ny Ez, My = nx Ez
                 Jz = (nx * Ht) if nx else (-ny * Ht)
@@ -94,12 +96,19 @@ def _far_out_of_plane(faces, ks, obs_pts, pol):
     return out
 
 
+def _rhat(faces, obs):
+    """Radial direction from the contour centroid (frame-independent)."""
+    c = np.mean([f.pts.mean(axis=0) for f in faces], axis=0)
+    d = obs - c
+    r = np.linalg.norm(d, axis=1)
+    return d[:, 0] / r, d[:, 1] / r
+
+
 def farfield_tm(faces, ks, obs_pts):
     """Far (E, H) 3-vectors, shapes (nfreq, nobs, 3). H = R_hat x E."""
     obs = np.asarray(obs_pts, dtype=float)
     Ez = _far_out_of_plane(faces, ks, obs, "tm")
-    r = np.linalg.norm(obs, axis=1)
-    rx, ry = obs[:, 0] / r, obs[:, 1] / r
+    rx, ry = _rhat(faces, obs)
     E = np.zeros(Ez.shape + (3,), dtype=complex)
     H = np.zeros_like(E)
     E[..., 2] = Ez
@@ -112,11 +121,47 @@ def farfield_te(faces, ks, obs_pts):
     """Dual: far Hz; E = -R_hat x H."""
     obs = np.asarray(obs_pts, dtype=float)
     Hz = _far_out_of_plane(faces, ks, obs, "te")
-    r = np.linalg.norm(obs, axis=1)
-    rx, ry = obs[:, 0] / r, obs[:, 1] / r
+    rx, ry = _rhat(faces, obs)
     E = np.zeros(Hz.shape + (3,), dtype=complex)
     H = np.zeros_like(E)
     H[..., 2] = Hz
     E[..., 0] = -Hz * ry
     E[..., 1] = Hz * rx
     return E, H
+
+
+def near2far_monitors_tm(grid, freqs, *, ix0, ix1, iy0, iy1):
+    """FluxMonitorTM box contour: [(monitor, outward_normal)] for the four
+    faces of the index box [ix0, ix1] x [iy0, iy1] (faces ON those lines)."""
+    from .monitors import FluxMonitorTM
+    # faces include BOTH corner endpoints (hi+1) and get trapezoid weights in
+    # faces_from_accs, closing the loop integral (corners shared 1/2 + 1/2)
+    return [
+        (FluxMonitorTM(grid, freqs, x_normal=True, idx=ix1, lo=iy0, hi=iy1 + 1), (+1, 0)),
+        (FluxMonitorTM(grid, freqs, x_normal=True, idx=ix0, lo=iy0, hi=iy1 + 1), (-1, 0)),
+        (FluxMonitorTM(grid, freqs, x_normal=False, idx=iy1, lo=ix0, hi=ix1 + 1), (0, +1)),
+        (FluxMonitorTM(grid, freqs, x_normal=False, idx=iy0, lo=ix0, hi=ix1 + 1), (0, -1)),
+    ]
+
+
+def faces_from_accs(grid, mons, accs):
+    """Assemble Face objects from near2far_monitors_tm + run_tm accumulators.
+
+    acc layout per monitor: (nfreq, 4, N) = dt-summed (ReE, ImE, ReH, ImH);
+    Re + i Im is directly the e^{+i w t} phasor these kernels expect.
+    """
+    dx = grid.dx
+    faces = []
+    for (mon, normal), acc in zip(mons, accs):
+        a = acc.detach().cpu().numpy() if hasattr(acc, "detach") else np.asarray(acc)
+        idxs = np.arange(mon.lo, mon.hi)
+        if mon.x_normal:
+            pts = np.stack([np.full(len(idxs), mon.idx * dx), idxs * dx], axis=1)
+        else:
+            pts = np.stack([idxs * dx, np.full(len(idxs), mon.idx * dx)], axis=1)
+        quad = np.ones(len(idxs))
+        quad[0] = quad[-1] = 0.5
+        faces.append(Face(pts=pts, normal=normal, dl=dx,
+                          E=a[:, 0] + 1j * a[:, 1], H=a[:, 2] + 1j * a[:, 3],
+                          w=quad))
+    return faces
