@@ -51,6 +51,14 @@
    solve-cw sparse-direct CW solver not built (time-domain + FDM ships).
 4. **W4 — near2far (2D).** Unblocks ~6. Gate: `antenna-radiation` dipole
    pattern vs analytic + meep JSON.
+   **DONE 2026-08-08** (commits d2da1c7..06ff78d + example): all gates pass
+   (Ez isotropy rms 1.3% <= 2%, Ey cos^2 rms 2.4% <= 3%, both vs meep-oracle
+   <= 5%). Delivered: `core/near2far.py` (exact Hankel-H^(2) kernels, TM+TE
+   surface equivalence, trapezoid-closed box contour), FluxMonitorTEY,
+   `mp` add_near2far/get_farfield/Near2FarRegion, antenna-radiation port.
+   Unblocked on the way: 2D TE Simulation path (Ey source mapping, mask
+   trim, stale y_pmc kwarg). Periodic near2far (binary_grating_n2f
+   nperiods) deferred to a W4.5/follow-on.
 5. **W5 — materials completion** (conductivity, mu, aniso eps tensor in
    stepper, gyrotropic, multilevel, noise sources, Absorber boundary,
    complex-field mode). Sub-waved; unblocks ~7.
