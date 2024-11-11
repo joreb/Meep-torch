@@ -144,24 +144,56 @@ def near2far_monitors_tm(grid, freqs, *, ix0, ix1, iy0, iy1):
     ]
 
 
-def faces_from_accs(grid, mons, accs):
-    """Assemble Face objects from near2far_monitors_tm + run_tm accumulators.
+def near2far_monitors_te(grid, freqs, *, ix0, ix1, iy0, iy1):
+    """TE dual of near2far_monitors_tm: (monitor, outward_normal, pts) faces.
 
-    acc layout per monitor: (nfreq, 4, N) = dt-summed (ReE, ImE, ReH, ImH);
-    Re + i Im is directly the e^{+i w t} phasor these kernels expect.
+    TE Yee positions are half-cell staggered: x-normal faces sample Ey+Hz at
+    (ix, (j+1/2) dx), y-normal Ex+Hz at ((i+1/2) dx, iy)."""
+    from .monitors import FluxMonitorTE, FluxMonitorTEY
+    dx = grid.dx
+
+    def xpts(ix, lo, hi):
+        j = np.arange(lo, hi)
+        return np.stack([np.full(len(j), ix * dx), (j + 0.5) * dx], axis=1)
+
+    def ypts(iy, lo, hi):
+        i = np.arange(lo, hi)
+        return np.stack([(i + 0.5) * dx, np.full(len(i), iy * dx)], axis=1)
+
+    return [
+        (FluxMonitorTE(grid, freqs, ix=ix1, lo=iy0, hi=iy1 + 1), (+1, 0), xpts(ix1, iy0, iy1 + 1)),
+        (FluxMonitorTE(grid, freqs, ix=ix0, lo=iy0, hi=iy1 + 1), (-1, 0), xpts(ix0, iy0, iy1 + 1)),
+        (FluxMonitorTEY(grid, freqs, iy=iy1, lo=ix0, hi=ix1 + 1), (0, +1), ypts(iy1, ix0, ix1 + 1)),
+        (FluxMonitorTEY(grid, freqs, iy=iy0, lo=ix0, hi=ix1 + 1), (0, -1), ypts(iy0, ix0, ix1 + 1)),
+    ]
+
+
+def faces_from_accs(grid, mons, accs):
+    """Assemble Face objects from near2far_monitors_* + run accumulators.
+
+    mons entries are (monitor, normal) [TM: points inferred from the monitor
+    indices] or (monitor, normal, pts). acc layout per monitor:
+    (nfreq, 4, N) = dt-summed (ReE, ImE, ReH, ImH); Re + i Im is directly
+    the e^{+i w t} phasor these kernels expect.
     """
     dx = grid.dx
     faces = []
-    for (mon, normal), acc in zip(mons, accs):
-        a = acc.detach().cpu().numpy() if hasattr(acc, "detach") else np.asarray(acc)
-        idxs = np.arange(mon.lo, mon.hi)
-        if mon.x_normal:
-            pts = np.stack([np.full(len(idxs), mon.idx * dx), idxs * dx], axis=1)
+    for entry, acc in zip(mons, accs):
+        if len(entry) == 3:
+            mon, normal, pts = entry
         else:
-            pts = np.stack([idxs * dx, np.full(len(idxs), mon.idx * dx)], axis=1)
-        quad = np.ones(len(idxs))
+            mon, normal = entry
+            idxs = np.arange(mon.lo, mon.hi)
+            if mon.x_normal:
+                pts = np.stack([np.full(len(idxs), mon.idx * dx), idxs * dx], axis=1)
+            else:
+                pts = np.stack([idxs * dx, np.full(len(idxs), mon.idx * dx)], axis=1)
+        a = acc.detach().cpu().numpy() if hasattr(acc, "detach") else np.asarray(acc)
+        quad = np.ones(len(pts))
         quad[0] = quad[-1] = 0.5
-        faces.append(Face(pts=pts, normal=normal, dl=dx,
-                          E=a[:, 0] + 1j * a[:, 1], H=a[:, 2] + 1j * a[:, 3],
-                          w=quad))
+        Fz = a[:, 0] + 1j * a[:, 1]          # monitor E slot (Ez TM / Ey|Ex TE)
+        Ft = a[:, 2] + 1j * a[:, 3]          # monitor H slot (Hy|Hx TM / Hz TE)
+        if not hasattr(mon, "x_normal"):     # TE: Face.E = out-of-plane Hz
+            Fz, Ft = Ft, Fz
+        faces.append(Face(pts=pts, normal=normal, dl=dx, E=Fz, H=Ft, w=quad))
     return faces

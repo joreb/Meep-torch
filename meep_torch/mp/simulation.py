@@ -95,9 +95,11 @@ class Simulation:
             return build_tm_coeffs(self.grid, eps_inf=self._rm.eps_tm, poles=self._rm.poles,
                                     pole_masks=self._rm.pole_masks, chi3=self._rm.chi3,
                                     npml=self._npml, y_pmc=self._y_pmc)
+        if self._y_pmc:
+            raise NotImplementedError("1D (y-PMC) TE Simulation is not supported")
         return build_te_coeffs(self.grid, eps_inf=self._rm.eps_te_xx, poles=self._rm.poles,
                                pole_masks=self._rm.pole_masks, chi3=self._rm.chi3,
-                               npml=self._npml, y_pmc=self._y_pmc)
+                               npml=self._npml)
 
     def _make_sources(self):
         out = []
@@ -123,6 +125,9 @@ class Simulation:
                 row = torch.tensor(w, dtype=self.grid.dtype)
                 src.mask[ix, j0:j1] = row
             src.mask = src.mask * amp
+            if self._pol == "te":
+                # step_te injects into Dy (Ey grid, (nx, ny-1))
+                src.mask = src.mask[:, :-1]
             out.append(src)
         return out
 
@@ -193,22 +198,39 @@ class Simulation:
         return name
 
     def add_near2far(self, fcen, df, nfreq, *regions, name=None):
-        """2D near-to-far contour (TM only for now). Regions with outward
-        normal = region axis * weight; a closed box = 4 regions, meep style.
-        Trapezoid endpoint weights close the loop integral when the regions
-        share corners."""
-        if self._pol != "tm":
-            raise NotImplementedError("add_near2far: TE lands with W4 Wave 3")
+        """2D near-to-far contour (TM + TE). Regions with outward normal =
+        region axis * weight; a closed box = 4 regions, meep style. Trapezoid
+        endpoint weights close the loop integral when the regions share
+        corners."""
+        from ..core.monitors import FluxMonitorTEY
         freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
         name = name or f"n2f{len(self._monitors)}"
+        dx = self.grid.dx
         specs = []
         for r, region in enumerate(regions):
             axis, idx, lo, hi = self._port_spec(FluxRegion(region.center, region.size))
-            hi = min(hi + 1, (self.grid.ny if axis == "x" else self.grid.nx))
+            hi_cap = (self.grid.ny if axis == "x" else self.grid.nx)
+            if self._pol == "te":
+                hi_cap -= 1                     # Ey/Ex grids are one shorter
+            hi = min(hi + 1, hi_cap)
             normal = (int(region.weight), 0) if axis == "x" else (0, int(region.weight))
-            mon = FluxMonitorTM(self.grid, freqs, x_normal=(axis == "x"),
-                                idx=idx, lo=lo, hi=hi)
-            self._monitors.append((f"{name}:f{r}", "n2f", mon, {"normal": normal}))
+            idxs = np.arange(lo, hi)
+            if self._pol == "tm":
+                mon = FluxMonitorTM(self.grid, freqs, x_normal=(axis == "x"),
+                                    idx=idx, lo=lo, hi=hi)
+                off = 0.0
+            elif axis == "x":
+                mon = FluxMonitorTE(self.grid, freqs, ix=idx, lo=lo, hi=hi)
+                off = 0.5                       # Ey nodes at (idx, (j+1/2) dx)
+            else:
+                mon = FluxMonitorTEY(self.grid, freqs, iy=idx, lo=lo, hi=hi)
+                off = 0.5                       # Ex nodes at ((i+1/2) dx, idx)
+            if axis == "x":
+                pts = np.stack([np.full(len(idxs), idx * dx), (idxs + off) * dx], axis=1)
+            else:
+                pts = np.stack([(idxs + off) * dx, np.full(len(idxs), idx * dx)], axis=1)
+            self._monitors.append((f"{name}:f{r}", "n2f", mon,
+                                   {"normal": normal, "pts": pts}))
             specs.append(f"{name}:f{r}")
         self._n2f_specs = getattr(self, "_n2f_specs", {})
         self._n2f_specs[name] = (specs, freqs)
@@ -222,7 +244,7 @@ class Simulation:
         mons, accs = [], []
         for key in specs:
             acc, mon, meta = self._last_acc[key]
-            mons.append((mon, meta["normal"]))
+            mons.append((mon, meta["normal"], meta["pts"]))
             accs.append(acc)
         faces = faces_from_accs(self.grid, mons, accs)
         obs = np.array([[point.x + self.gs.sx / 2.0, point.y + self.gs.sy / 2.0]])

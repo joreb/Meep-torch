@@ -121,3 +121,28 @@ class FluxMonitorTE:
     def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
         ReE, ImE, ReH, ImH = acc.unbind(1)
         return 0.5 * (ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sx = +Ey*Hz
+
+
+class FluxMonitorTEY:
+    """TE y-normal line: Ex + Hz averaged to the Ex nodes ((i+1/2, iy))."""
+
+    reduce = "sum"
+
+    def __init__(self, grid: Grid, freqs, *, iy: int, lo: int, hi: int):
+        if not (1 <= iy < grid.ny - 1):
+            raise ValueError(f"iy={iy} must be interior")
+        self.iy, self.lo, self.hi = iy, lo, hi
+        self.dt = grid.dt
+        self.freqs = torch.tensor(freqs, dtype=grid.dtype, device=grid.device)
+
+    def sample(self, state, t_idx: int) -> torch.Tensor:
+        E = state.Ex[self.lo : self.hi, self.iy]
+        H = 0.5 * (state.Hz[self.lo : self.hi, self.iy - 1]
+                   + state.Hz[self.lo : self.hi, self.iy])
+        # step_te advances E to (t_idx+1/2)*dt and Hz to (t_idx+1)*dt
+        tE = (t_idx + 0.5) * self.dt
+        tH = (t_idx + 1.0) * self.dt
+        w = 2 * torch.pi * self.freqs[:, None]
+        return self.dt * torch.stack(
+            [torch.cos(w * tE) * E, -torch.sin(w * tE) * E,
+             torch.cos(w * tH) * H, -torch.sin(w * tH) * H], dim=1)

@@ -22,7 +22,7 @@ Hy = "Hy"
 Dielectric = "Dielectric"
 
 _EZ_COMPONENTS = {Ez, Ex}      # Ex used in 1D -> TM Ez in meep-torch
-_HZ_COMPONENTS = {Hz, Hy}
+_HZ_COMPONENTS = {Hz, Hy, Ey}  # Ey drives the 2D TE (Hz) polarization
 
 
 def pol_for(component: str) -> str:

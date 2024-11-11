@@ -47,3 +47,37 @@ def test_ez_pattern_vs_oracle():
     got = got / got.max()
     rms = float(np.sqrt(np.mean((got - ref) ** 2)))
     assert rms <= 0.05, f"normalized rms vs oracle {rms:.4f}"
+
+
+def _pattern_te():
+    cell = 4.0
+    sim = mp.Simulation(cell_size=mp.Vector3(6, 6, 0), resolution=20,
+        sources=[mp.Source(mp.GaussianSource(FREQ, fwidth=0.2), component=mp.Ey,
+                           center=mp.Vector3())],
+        boundary_layers=[mp.PML(1.0)], default_material=mp.Medium(epsilon=1.0))
+    n2f = sim.add_near2far(FREQ, 0, 1,
+        mp.Near2FarRegion(center=mp.Vector3(0, +cell / 2), size=mp.Vector3(cell, 0), weight=+1),
+        mp.Near2FarRegion(center=mp.Vector3(0, -cell / 2), size=mp.Vector3(cell, 0), weight=-1),
+        mp.Near2FarRegion(center=mp.Vector3(+cell / 2, 0), size=mp.Vector3(0, cell), weight=+1),
+        mp.Near2FarRegion(center=mp.Vector3(-cell / 2, 0), size=mp.Vector3(0, cell), weight=-1))
+    sim.run(until=80)
+    th = np.linspace(0, 2 * math.pi, 100, endpoint=False)
+    ff = np.array([sim.get_farfield(n2f, mp.Vector3(R_FAR * math.cos(t), R_FAR * math.sin(t)))
+                   for t in th])
+    e, h = ff[:, :3], ff[:, 3:]
+    sx = np.real(np.conj(e[:, 1]) * h[:, 2] - np.conj(e[:, 2]) * h[:, 1])
+    sy = np.real(np.conj(e[:, 2]) * h[:, 0] - np.conj(e[:, 0]) * h[:, 2])
+    return np.sqrt(sx ** 2 + sy ** 2), th
+
+
+def test_ey_pattern_cos2_and_oracle():
+    got, th = _pattern_te()
+    got = got / got.max()
+    # gate (b): y dipole radiates cos^2 (nulls along +-y)
+    rms_cos2 = float(np.sqrt(np.mean((got - np.cos(th) ** 2) ** 2)))
+    assert rms_cos2 <= 0.03, f"normalized rms vs cos^2 {rms_cos2:.4f}"
+    # gate (c), Ey row
+    ref = np.array(_oracle()["flux_ey"])
+    ref = ref / ref.max()
+    rms = float(np.sqrt(np.mean((got - ref) ** 2)))
+    assert rms <= 0.05, f"normalized rms vs oracle {rms:.4f}"
