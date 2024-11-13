@@ -31,6 +31,13 @@ class TMCoeffs(NamedTuple):
     b_ey: torch.Tensor
     a_ey: torch.Tensor
     k_ey: torch.Tensor
+    # W5 conductivity/mu (None -> stepper fast-path without them)
+    d1: torch.Tensor | None = None     # (nx, ny)   Dz damping
+    d2: torch.Tensor | None = None     # (nx, ny)   Dz curl/source coefficient
+    h1x: torch.Tensor | None = None    # (nx, ny-1) Hx damping
+    h2x: torch.Tensor | None = None    # (nx, ny-1) Hx curl coefficient (dt/mu)
+    h1y: torch.Tensor | None = None    # (nx-1, ny) Hy damping
+    h2y: torch.Tensor | None = None    # (nx-1, ny) Hy curl coefficient
 
 
 def _as_field(val, grid: Grid, default: float) -> torch.Tensor:
@@ -51,11 +58,31 @@ def build_tm_coeffs(
     chi3=None,
     npml: int = 0,
     y_pmc: bool = False,
+    sigma_d=None,
+    sigma_b=None,
+    mu=None,
 ) -> TMCoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
     x3 = _as_field(chi3, grid, 0.0)
     has_kerr = bool((x3 != 0).any())
+
+    cond = {}
+    if sigma_d is not None or sigma_b is not None or mu is not None:
+        sd = _as_field(sigma_d, grid, 0.0)
+        sb = _as_field(sigma_b, grid, 0.0)
+        mu_ = _as_field(mu, grid, 1.0)
+        cond["d1"] = (1 - sd * dt / 2) / (1 + sd * dt / 2)
+        cond["d2"] = dt / (1 + sd * dt / 2)
+        # H positions: Hx (nx, ny-1) averaged along y; Hy (nx-1, ny) along x
+        sbx = 0.5 * (sb[:, :-1] + sb[:, 1:])
+        mux = 0.5 * (mu_[:, :-1] + mu_[:, 1:])
+        sby = 0.5 * (sb[:-1, :] + sb[1:, :])
+        muy = 0.5 * (mu_[:-1, :] + mu_[1:, :])
+        cond["h1x"] = (1 - sbx * dt / 2) / (1 + sbx * dt / 2)
+        cond["h2x"] = dt / (mux * (1 + sbx * dt / 2))
+        cond["h1y"] = (1 - sby * dt / 2) / (1 + sby * dt / 2)
+        cond["h2y"] = dt / (muy * (1 + sby * dt / 2))
 
     n_poles = len(poles)
     c1 = grid.zeros(n_poles, grid.nx, grid.ny)
@@ -99,6 +126,7 @@ def build_tm_coeffs(
         b_hx=b_hx[:, None], a_hx=a_hx[:, None], k_hx=k_hx[:, None],
         b_ex=b_ex[:, None], a_ex=a_ex[:, None], k_ex=k_ex[:, None],
         b_ey=b_ey[None, :], a_ey=a_ey[None, :], k_ey=k_ey[None, :],
+        **cond,
     )
 
 

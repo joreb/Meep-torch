@@ -53,11 +53,17 @@ def step_tm(
     # --- H update (from Ez at time n) ---
     dEz_dy = (state.Ez[:, 1:] - state.Ez[:, :-1]) / dx            # (nx, ny-1)
     psi_Ezy = m.b_hy * state.psi_Ezy + m.a_hy * dEz_dy
-    Hx = state.Hx - dt * (dEz_dy / m.k_hy + psi_Ezy)
-
+    curl_hx = dEz_dy / m.k_hy + psi_Ezy
     dEz_dx = (state.Ez[1:, :] - state.Ez[:-1, :]) / dx            # (nx-1, ny)
     psi_Ezx = m.b_hx * state.psi_Ezx + m.a_hx * dEz_dx
-    Hy = state.Hy + dt * (dEz_dx / m.k_hx + psi_Ezx)
+    curl_hy = dEz_dx / m.k_hx + psi_Ezx
+    if m.h1x is not None:
+        # W5: dB/dt = -curl E - sigma_b B, B = mu H
+        Hx = m.h1x * state.Hx - m.h2x * curl_hx
+        Hy = m.h1y * state.Hy + m.h2y * curl_hy
+    else:
+        Hx = state.Hx - dt * curl_hx
+        Hy = state.Hy + dt * curl_hy
 
     # --- magnetic-current injection (TFSF): seen by this step's D update ---
     if src_hy_mask is not None:
@@ -79,9 +85,15 @@ def step_tm(
     psi_Hyx = m.b_ex * state.psi_Hyx + m.a_ex * dHy_dx
     psi_Hxy = m.b_ey * state.psi_Hxy + m.a_ey * dHx_dy
     curl = dHy_dx / m.k_ex + psi_Hyx - dHx_dy / m.k_ey - psi_Hxy
-    Dz = state.Dz + dt * F.pad(curl, pad_spec)
-    if src_mask is not None:
-        Dz = Dz + dt * src_amp * src_mask
+    if m.d1 is not None:
+        # W5: dD/dt = curl H - sigma_d D
+        Dz = m.d1 * state.Dz + m.d2 * F.pad(curl, pad_spec)
+        if src_mask is not None:
+            Dz = Dz + m.d2 * src_amp * src_mask
+    else:
+        Dz = state.Dz + dt * F.pad(curl, pad_spec)
+        if src_mask is not None:
+            Dz = Dz + dt * src_amp * src_mask
 
     # --- ADE Lorentz poles: P(n+1) = c1 P(n) + c2 P(n-1) + c3 Ez(n) ---
     P_new = m.c1 * state.P_cur + m.c2 * state.P_prev + m.c3 * state.Ez
