@@ -40,3 +40,18 @@ def cpml_profiles(
     denom = kappa * (sigma + kappa * alpha)
     a = torch.where(sigma > 0, sigma * (b - 1.0) / denom.clamp(min=1e-300), torch.zeros_like(b))
     return b, a, kappa
+
+
+def absorber_sigma(n: int, nabs: int, dx: float, *, R0: float = 1e-15,
+                   m: int = 2, dtype=torch.float64, device="cpu") -> torch.Tensor:
+    """meep mp.Absorber profile: quadratic sigma ramp on both edges of an
+    axis (length n), peak set like the PML profile for asymptotic
+    reflection R0. Matched sigma_d = sigma_b uses this same curve."""
+    p = torch.zeros(n, dtype=dtype, device=device)
+    if nabs > 0:
+        smax = -(m + 1) * math.log(R0) / (2.0 * nabs * dx)
+        i = torch.arange(nabs, dtype=dtype, device=device)
+        u = (nabs - i - 0.5) / nabs
+        p[:nabs] = smax * u**m
+        p[n - nabs:] = torch.flip(p[:nabs], [0])
+    return p

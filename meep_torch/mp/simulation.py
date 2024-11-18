@@ -113,21 +113,13 @@ class Simulation:
 
     def _absorber_ramp(self):
         """Quadratic sigma ramp on every absorbing edge (R_asymptotic 1e-15)."""
+        from ..core.pml import absorber_sigma
         nx, ny, dx = self.grid.nx, self.grid.ny, self.grid.dx
-        nabs = self._nabs
-        smax = 3.0 * math.log(1e15) / (2.0 * nabs * dx)
-
-        def prof(n):
-            p = self.grid.zeros(n)
-            i = torch.arange(nabs, dtype=self.grid.dtype, device=self.grid.device)
-            u = (nabs - i - 0.5) / nabs
-            p[:nabs] = smax * u * u
-            p[n - nabs:] = torch.flip(p[:nabs], [0])
-            return p
-
-        ramp = prof(nx)[:, None].expand(nx, ny).clone()
+        kw = dict(dtype=self.grid.dtype, device=self.grid.device)
+        ramp = absorber_sigma(nx, self._nabs, dx, **kw)[:, None].expand(nx, ny).clone()
         if not self._y_pmc:
-            ramp = torch.maximum(ramp, prof(ny)[None, :].expand(nx, ny))
+            ramp = torch.maximum(
+                ramp, absorber_sigma(ny, self._nabs, dx, **kw)[None, :].expand(nx, ny))
         return ramp
 
     def _build_coeffs(self):
