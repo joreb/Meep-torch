@@ -31,8 +31,8 @@ def test_sigma_zero_bit_parity():
     assert torch.equal(a, b), f"max dev {(a - b).abs().max()}"
 
 
-def _slab_T(sigma_val):
-    """TM 1D-style (y_pmc) transmission |T(FCEN)| through an L=2 sigma slab."""
+def _slab_T(sigma_val, freqs=(FCEN,)):
+    """TM 1D-style (y_pmc) transmission amplitudes through an L=2 sigma slab."""
     grid = Grid(nx=600, ny=8, dx=0.05)
     eps = grid.zeros(600, 8) + 1.0
     kwargs = {}
@@ -48,15 +48,69 @@ def _slab_T(sigma_val):
                           source=src, monitors=[probe])
     s = series.detach().numpy()
     t = np.arange(len(s)) * grid.dt
-    return abs(np.trapezoid(s * np.exp(-2j * math.pi * FCEN * t), t))
+    return np.array([abs(np.trapezoid(s * np.exp(-2j * math.pi * f * t), t))
+                     for f in freqs])
 
 
-def test_conductive_slab_attenuation_tm():
-    sigma, L = 1.0, 2.0
-    T = _slab_T(sigma) / _slab_T(0.0)
+def _t_analytic(sigma, L):
     w = 2 * math.pi * FCEN
     n_eff = complex(np.sqrt(1.0 + 1j * sigma / w))
     alpha = w * abs(n_eff.imag)
     # amplitude transmission incl. the two interface factors |t12 t21|
-    t_an = math.exp(-alpha * L) * abs(4 * n_eff / (1 + n_eff) ** 2)
+    return math.exp(-alpha * L) * abs(4 * n_eff / (1 + n_eff) ** 2)
+
+
+def test_conductive_slab_attenuation_tm():
+    T = float(_slab_T(1.0)[0] / _slab_T(0.0)[0])
+    t_an = _t_analytic(1.0, 2.0)
+    assert abs(T - t_an) / t_an < 0.02, f"|T|={T:.4f} vs analytic {t_an:.4f}"
+
+
+def test_conductive_slab_vs_oracle():
+    import json
+    import pathlib
+    with open(pathlib.Path(__file__).parent / "data" / "conductive_slab.json") as f:
+        ref = json.load(f)
+    freqs = ref["freqs"]
+    t_ref = np.sqrt(np.array(ref["T_power"]))
+    t_got = _slab_T(ref["sigma_d"], freqs) / _slab_T(0.0, freqs)
+    rms = float(np.sqrt(np.mean((t_got / t_ref - 1.0) ** 2)))
+    assert rms < 0.03, f"amplitude T rms vs oracle {rms:.4f}"
+
+
+def _slab_T_te(sigma_val):
+    """TE transmission |T(FCEN)|: wide aperture, ratio-normalized by caller."""
+    from meep_torch.core.coeffs import build_te_coeffs
+    from meep_torch.core.run import run_te
+    from meep_torch.core.stepper_te import init_te_state
+
+    grid = Grid(nx=600, ny=120, dx=0.05)
+    kwargs = {}
+    if sigma_val:
+        sd = grid.zeros(600, 120)
+        sd[300:340, :] = sigma_val                # slab x in [15, 17], L = 2
+        kwargs["sigma_d"] = sd
+    coeffs = build_te_coeffs(grid, eps_inf=grid.zeros(600, 120) + 1.0,
+                             npml=30, **kwargs)
+    src = LineSource(grid, ix=60, j0=35, j1=85, profile=GaussianPulse(FCEN, 0.2))
+    src.mask = src.mask[:, :-1]                   # Ey grid
+
+
+    class _EyProbe:
+        reduce = "stack"
+
+        def sample(self, state, t_idx):
+            return state.Ey[420, 60]
+
+    n_steps = int(round(60.0 / grid.dt))
+    _, (series,) = run_te(init_te_state(grid), coeffs, n_steps,
+                          source=src, monitors=[_EyProbe()])
+    s = series.detach().numpy()
+    t = np.arange(len(s)) * grid.dt
+    return abs(np.trapezoid(s * np.exp(-2j * math.pi * FCEN * t), t))
+
+
+def test_conductive_slab_attenuation_te():
+    T = _slab_T_te(1.0) / _slab_T_te(0.0)
+    t_an = _t_analytic(1.0, 2.0)
     assert abs(T - t_an) / t_an < 0.02, f"|T|={T:.4f} vs analytic {t_an:.4f}"

@@ -66,13 +66,22 @@ def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = N
     # --- D/E update (from Hz at time n) ---
     dHz_dy = (state.Hz[:, 1:] - state.Hz[:, :-1]) / dx          # (nx-1, ny-2)
     psi_Hzy = m.b_ey * state.psi_Hzy + m.a_ey * dHz_dy
-    Dx = state.Dx + dt * F.pad(dHz_dy / m.k_ey + psi_Hzy, (1, 1))
+    curl_x = F.pad(dHz_dy / m.k_ey + psi_Hzy, (1, 1))
 
     dHz_dx = (state.Hz[1:, :] - state.Hz[:-1, :]) / dx          # (nx-2, ny-1)
     psi_Hzx = m.b_ex * state.psi_Hzx + m.a_ex * dHz_dx
-    Dy = state.Dy - dt * F.pad(dHz_dx / m.k_ex + psi_Hzx, (0, 0, 1, 1))
-    if src_mask_ey is not None:
-        Dy = Dy + dt * src_amp * src_mask_ey
+    curl_y = F.pad(dHz_dx / m.k_ex + psi_Hzx, (0, 0, 1, 1))
+    if m.d1x is not None:
+        # W5: dD/dt = curl H - sigma_d D
+        Dx = m.d1x * state.Dx + m.d2x * curl_x
+        Dy = m.d1y * state.Dy - m.d2y * curl_y
+        if src_mask_ey is not None:
+            Dy = Dy + m.d2y * src_amp * src_mask_ey
+    else:
+        Dx = state.Dx + dt * curl_x
+        Dy = state.Dy - dt * curl_y
+        if src_mask_ey is not None:
+            Dy = Dy + dt * src_amp * src_mask_ey
 
     # --- ADE Lorentz poles: P(n+1/2) = c1 P(n-1/2) + c2 P(n-3/2) + c3 E(n-1/2) ---
     Px_new = m.c1x * state.Px_cur + m.c2x * state.Px_prev + m.c3x * state.Ex
@@ -95,9 +104,12 @@ def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = N
     dEx_dy = (Ex[:, 1:] - Ex[:, :-1]) / dx                      # (nx-1, ny-1)
     psi_Eyx = m.b_hx * state.psi_Eyx + m.a_hx * dEy_dx
     psi_Exy = m.b_hy * state.psi_Exy + m.a_hy * dEx_dy
-    Hz = state.Hz - dt * (
-        dEy_dx / m.k_hx + psi_Eyx - dEx_dy / m.k_hy - psi_Exy
-    )
+    curl_z = dEy_dx / m.k_hx + psi_Eyx - dEx_dy / m.k_hy - psi_Exy
+    if m.hz1 is not None:
+        # W5: dB/dt = -curl E - sigma_b B, B = mu H
+        Hz = m.hz1 * state.Hz - m.hz2 * curl_z
+    else:
+        Hz = state.Hz - dt * curl_z
 
     # --- magnetic-current injection (TFSF): Hz at n+1 seen by next step's E/D ---
     if src_hz_mask is not None:

@@ -156,6 +156,13 @@ class TECoeffs(NamedTuple):
     b_ex: torch.Tensor     # (nx-2, 1)  integer-x interior, Dy update dHz/dx
     a_ex: torch.Tensor
     k_ex: torch.Tensor
+    # W5 conductivity/mu (None -> stepper fast-path without them)
+    d1x: torch.Tensor | None = None    # (nx-1, ny)   Dx damping
+    d2x: torch.Tensor | None = None
+    d1y: torch.Tensor | None = None    # (nx, ny-1)   Dy damping
+    d2y: torch.Tensor | None = None
+    hz1: torch.Tensor | None = None    # (nx-1, ny-1) Hz damping
+    hz2: torch.Tensor | None = None    # (nx-1, ny-1) Hz curl coefficient (dt/mu)
 
 
 def _avg_to_ex(v: torch.Tensor) -> torch.Tensor:
@@ -175,6 +182,9 @@ def build_te_coeffs(
     pole_masks: Sequence[torch.Tensor] | None = None,
     chi3=None,
     npml: int = 0,
+    sigma_d=None,
+    sigma_b=None,
+    mu=None,
 ) -> TECoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -183,6 +193,22 @@ def build_te_coeffs(
 
     eps_x, eps_y = _avg_to_ex(eps), _avg_to_ey(eps)
     chi3_x, chi3_y = _avg_to_ex(x3), _avg_to_ey(x3)
+
+    cond = {}
+    if sigma_d is not None or sigma_b is not None or mu is not None:
+        sd = _as_field(sigma_d, grid, 0.0)
+        sb = _as_field(sigma_b, grid, 0.0)
+        mu_ = _as_field(mu, grid, 1.0)
+        sdx, sdy = _avg_to_ex(sd), _avg_to_ey(sd)
+        cond["d1x"] = (1 - sdx * dt / 2) / (1 + sdx * dt / 2)
+        cond["d2x"] = dt / (1 + sdx * dt / 2)
+        cond["d1y"] = (1 - sdy * dt / 2) / (1 + sdy * dt / 2)
+        cond["d2y"] = dt / (1 + sdy * dt / 2)
+        # Hz positions (nx-1, ny-1): 4-point average of cell centers
+        sbz = 0.25 * (sb[:-1, :-1] + sb[1:, :-1] + sb[:-1, 1:] + sb[1:, 1:])
+        muz = 0.25 * (mu_[:-1, :-1] + mu_[1:, :-1] + mu_[:-1, 1:] + mu_[1:, 1:])
+        cond["hz1"] = (1 - sbz * dt / 2) / (1 + sbz * dt / 2)
+        cond["hz2"] = dt / (muz * (1 + sbz * dt / 2))
 
     n_poles = len(poles)
     c1x = grid.zeros(n_poles, grid.nx - 1, grid.ny)
@@ -229,4 +255,5 @@ def build_te_coeffs(
         b_hy=b_hy[None, :], a_hy=a_hy[None, :], k_hy=k_hy[None, :],
         b_ey=b_ey[None, :], a_ey=a_ey[None, :], k_ey=k_ey[None, :],
         b_ex=b_ex[:, None], a_ex=a_ex[:, None], k_ex=k_ex[:, None],
+        **cond,
     )
