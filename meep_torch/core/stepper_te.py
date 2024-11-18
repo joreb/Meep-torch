@@ -90,8 +90,13 @@ def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = N
     # --- E from D (instantaneous Kerr via fixed point) ---
     rhs_x = Dx - Px_new.sum(0)
     rhs_y = Dy - Py_new.sum(0)
-    Ex = rhs_x / m.eps_x
-    Ey = rhs_y / m.eps_y
+    if m.inv_xx_x is not None:
+        # W5: in-plane tensor eps -- E = eps^{-1} D, cross terms Yee-averaged
+        Ex = m.inv_xx_x * rhs_x + m.inv_xy_x * _avg4_to_ex(rhs_y)
+        Ey = m.inv_yy_y * rhs_y + m.inv_xy_y * _avg4_to_ey(rhs_x)
+    else:
+        Ex = rhs_x / m.eps_x
+        Ey = rhs_y / m.eps_y
     if m.has_kerr:
         for _ in range(3):
             E2x = Ex * Ex + _avg4_to_ex(Ey) ** 2

@@ -62,6 +62,15 @@
 5. **W5 — materials completion** (conductivity, mu, aniso eps tensor in
    stepper, gyrotropic, multilevel, noise sources, Absorber boundary,
    complex-field mode). Sub-waved; unblocks ~7.
+   **Wave-1 scope DONE 2026-08-08** (commits 9672278..T6): D/B-conductivity
+   + scalar mu in TM+TE steppers (analytic slab <2%, oracle slab <3% rms),
+   mp.Absorber + Medium(D_conductivity/B_conductivity/mu) shim,
+   absorber-1d ported (residuals within 2x of oracle floors; Al -> sigma_d
+   substitute, Drude w0=0 unrepresentable), in-plane TE eps tensor
+   (rotated-uniaxial n_eff <1%). Deferred to W5.5: gyrotropic, multilevel
+   atom, noise sources, magnetic Lorentz poles, complex-field mode.
+   polarization_grating re-scoped: needs full-vector 2D stepper (ez-coupled
+   tensor), not just in-plane anisotropy.
 6. **W6 — LDOS + forces.** Unblocks ~5. Gate: `metal-cavity-ldos` Purcell
    vs meep JSON; `parallel-wvgs-force` MST force sign+magnitude.
 7. **W7 — cylindrical engine.** Unblocks ~10. Largest; its spec may split.

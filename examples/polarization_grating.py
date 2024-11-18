@@ -2,7 +2,14 @@
 # Copyright (C) 2026 meep-torch contributors (original code)
 """meep-torch port stub: meep/python/examples/polarization_grating.py
 
-BLOCKED: anisotropic permittivity tensor (twisted-nematic liquid crystal).
+BLOCKED: full-vector 2D stepper (ez-coupled 3x3 permittivity tensor).
+
+W5 UPDATE (2026-08-08): meep-torch now has an IN-PLANE anisotropic tensor
+(exx, exy, eyy) in the TE stepper (build_te_coeffs(eps_tensor=...), gate:
+rotated-uniaxial n_eff <1% vs the index ellipse). That does NOT unblock this
+example: the twisted-nematic director rotates out of the xy-plane, coupling
+Ez with (Ex, Ey) -- the TM/TE split itself breaks, and a full-vector 2D
+stepper (all six field components) is required.
 
 The meep original models a polarization grating from a uniaxial twisted-nematic
 liquid crystal whose permittivity is a full 3x3 tensor with off-diagonal entries

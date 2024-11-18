@@ -163,6 +163,11 @@ class TECoeffs(NamedTuple):
     d2y: torch.Tensor | None = None
     hz1: torch.Tensor | None = None    # (nx-1, ny-1) Hz damping
     hz2: torch.Tensor | None = None    # (nx-1, ny-1) Hz curl coefficient (dt/mu)
+    # W5 in-plane anisotropic eps: inverse-tensor components at E positions
+    inv_xx_x: torch.Tensor | None = None   # (nx-1, ny)
+    inv_xy_x: torch.Tensor | None = None   # (nx-1, ny)
+    inv_yy_y: torch.Tensor | None = None   # (nx, ny-1)
+    inv_xy_y: torch.Tensor | None = None   # (nx, ny-1)
 
 
 def _avg_to_ex(v: torch.Tensor) -> torch.Tensor:
@@ -185,6 +190,7 @@ def build_te_coeffs(
     sigma_d=None,
     sigma_b=None,
     mu=None,
+    eps_tensor=None,
 ) -> TECoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -195,6 +201,17 @@ def build_te_coeffs(
     chi3_x, chi3_y = _avg_to_ex(x3), _avg_to_ey(x3)
 
     cond = {}
+    if eps_tensor is not None:
+        # symmetric in-plane tensor (exx, exy, eyy) at cell centers ->
+        # inverse components Yee-averaged to the E positions
+        exx = _as_field(eps_tensor[0], grid, 1.0)
+        exy = _as_field(eps_tensor[1], grid, 0.0)
+        eyy = _as_field(eps_tensor[2], grid, 1.0)
+        det = exx * eyy - exy * exy
+        cond["inv_xx_x"] = _avg_to_ex(eyy / det)
+        cond["inv_xy_x"] = _avg_to_ex(-exy / det)
+        cond["inv_yy_y"] = _avg_to_ey(exx / det)
+        cond["inv_xy_y"] = _avg_to_ey(-exy / det)
     if sigma_d is not None or sigma_b is not None or mu is not None:
         sd = _as_field(sigma_d, grid, 0.0)
         sb = _as_field(sigma_b, grid, 0.0)
