@@ -87,13 +87,23 @@ class Prism:
         return [(Polygon(np.array(v)), self.material)]
 
 
-def build_scene_items(geometry, gs: GridSpec, dims: int = 2):
-    """Flatten geometry objects -> (eps_items, chi3_items) for rasterize_scene."""
-    eps_items, chi3_items = [], []
+def build_scene_items(geometry, gs: GridSpec, dims: int = 2, with_cond: bool = False):
+    """Flatten geometry objects -> (eps_items, chi3_items) for rasterize_scene.
+
+    with_cond additionally returns [(poly, (sigma_d, sigma_b, mu))] for
+    media that carry W5 conductivity/permeability."""
+    eps_items, chi3_items, cond_items = [], [], []
     for obj in geometry:
         for poly, medium in obj.scene_items(gs, dims):
             val, chi3 = _resolve(medium)
             eps_items.append((poly, val))
             if chi3 != 0.0:
                 chi3_items.append((poly, chi3))
+            sd = float(getattr(medium, "D_conductivity", 0.0) or 0.0)
+            sb = float(getattr(medium, "B_conductivity", 0.0) or 0.0)
+            mu = float(getattr(medium, "mu", 1.0) or 1.0)
+            if sd != 0.0 or sb != 0.0 or mu != 1.0:
+                cond_items.append((poly, (sd, sb, mu)))
+    if with_cond:
+        return eps_items, chi3_items, cond_items
     return eps_items, chi3_items

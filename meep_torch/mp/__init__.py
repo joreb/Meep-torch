@@ -12,7 +12,7 @@ import math
 
 from .coords import GridSpec, cell_index, grid_spec, pml_npml, rect_corners, to_corner
 from .geometry import Block, Cylinder, Prism, build_scene_items
-from .material import LorentzianSusceptibility, Medium, PML
+from .material import Absorber, LorentzianSusceptibility, Medium, PML
 from .simulation import FluxRegion, Near2FarRegion, Simulation
 from .sources import (ContinuousSource, CustomSource, Dielectric, EigenModeSource,
                       Ex, Ey, Ez, GaussianSource, Hz, Hy, Source, pol_for)

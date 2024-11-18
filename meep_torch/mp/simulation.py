@@ -22,7 +22,7 @@ from ..core.stepper_te import init_te_state
 from ..geometry.scene import rasterize_scene
 from .coords import GridSpec, cell_index, cell_index_y, grid_spec, pml_npml, span_index_range, to_corner
 from .geometry import build_scene_items
-from .material import Medium, PML
+from .material import Absorber, Medium, PML
 from .sources import (Dielectric, EigenModeSource, Source, build_line_source,
                       build_mode_source, pol_for)
 from .vec import Vector3
@@ -65,12 +65,16 @@ class Simulation:
         self.dtype = dtype
         self.grid, self.gs, self._y_pmc = _grid_for(cell_size, resolution, dimensions, dtype)
         self._npml = 0
+        self._nabs = 0
         for bl in boundary_layers or []:
             if isinstance(bl, PML):
                 self._npml = max(self._npml, pml_npml(bl.thickness, self.gs))
+            elif isinstance(bl, Absorber):
+                self._nabs = max(self._nabs, pml_npml(bl.thickness, self.gs))
         self._default = default_material if isinstance(default_material, Medium) else Medium(epsilon=float(default_material))
         geom = list(geometry or [])
-        eps_items, chi3_items = build_scene_items(geom, self.gs, dimensions)
+        eps_items, chi3_items, cond_items = build_scene_items(geom, self.gs, dimensions,
+                                                              with_cond=True)
         bg_val, bg_chi3 = self._default.resolve()
         if bg_chi3 != 0.0:
             full = np.array([[0, 0], [self.gs.sx, 0], [self.gs.sx, self.gs.sy], [0, self.gs.sy]])
@@ -79,6 +83,23 @@ class Simulation:
         self._rm = rasterize_scene(eps_items, self.grid, background=bg_val, chi3_items=chi3_items)
         self._sources = list(sources or [])
         self._pol = pol_for(self._sources[0].component) if self._sources else "tm"
+        # W5: conductivity / mu maps + Absorber sigma ramp
+        bg_sd = float(getattr(self._default, "D_conductivity", 0.0) or 0.0)
+        bg_sb = float(getattr(self._default, "B_conductivity", 0.0) or 0.0)
+        bg_mu = float(getattr(self._default, "mu", 1.0) or 1.0)
+        self._cond = None
+        if cond_items or bg_sd or bg_sb or bg_mu != 1.0 or self._nabs:
+            sd = rasterize_scene([(p, v[0]) for p, v in cond_items], self.grid,
+                                 background=bg_sd).eps_tm
+            sb = rasterize_scene([(p, v[1]) for p, v in cond_items], self.grid,
+                                 background=bg_sb).eps_tm
+            mu = rasterize_scene([(p, v[2]) for p, v in cond_items], self.grid,
+                                 background=bg_mu).eps_tm
+            if self._nabs:
+                ramp = self._absorber_ramp()
+                sd = sd + ramp
+                sb = sb + ramp
+            self._cond = (sd, sb, mu)
         self._coeffs = self._build_coeffs()
         self._state = None
         self._monitors = []          # list of (name, kind, mon, meta)
@@ -90,16 +111,38 @@ class Simulation:
         self._S = None
         self._port_index = {}       # monitor name -> port index in compute_smatrix
 
+    def _absorber_ramp(self):
+        """Quadratic sigma ramp on every absorbing edge (R_asymptotic 1e-15)."""
+        nx, ny, dx = self.grid.nx, self.grid.ny, self.grid.dx
+        nabs = self._nabs
+        smax = 3.0 * math.log(1e15) / (2.0 * nabs * dx)
+
+        def prof(n):
+            p = self.grid.zeros(n)
+            i = torch.arange(nabs, dtype=self.grid.dtype, device=self.grid.device)
+            u = (nabs - i - 0.5) / nabs
+            p[:nabs] = smax * u * u
+            p[n - nabs:] = torch.flip(p[:nabs], [0])
+            return p
+
+        ramp = prof(nx)[:, None].expand(nx, ny).clone()
+        if not self._y_pmc:
+            ramp = torch.maximum(ramp, prof(ny)[None, :].expand(nx, ny))
+        return ramp
+
     def _build_coeffs(self):
+        extra = {}
+        if self._cond is not None:
+            extra = dict(sigma_d=self._cond[0], sigma_b=self._cond[1], mu=self._cond[2])
         if self._pol == "tm":
             return build_tm_coeffs(self.grid, eps_inf=self._rm.eps_tm, poles=self._rm.poles,
                                     pole_masks=self._rm.pole_masks, chi3=self._rm.chi3,
-                                    npml=self._npml, y_pmc=self._y_pmc)
+                                    npml=self._npml, y_pmc=self._y_pmc, **extra)
         if self._y_pmc:
             raise NotImplementedError("1D (y-PMC) TE Simulation is not supported")
         return build_te_coeffs(self.grid, eps_inf=self._rm.eps_te_xx, poles=self._rm.poles,
                                pole_masks=self._rm.pole_masks, chi3=self._rm.chi3,
-                               npml=self._npml)
+                               npml=self._npml, **extra)
 
     def _make_sources(self):
         out = []

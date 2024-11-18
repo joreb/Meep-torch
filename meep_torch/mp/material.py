@@ -32,6 +32,10 @@ class Medium:
     material: Material | None = None     # meep-torch ext: wrap a dispersive engine Material
     E_susceptibilities: Sequence[LorentzianSusceptibility] = field(default_factory=tuple)
     chi3: float = 0.0
+    # W5 materials
+    D_conductivity: float = 0.0
+    B_conductivity: float = 0.0
+    mu: float = 1.0
 
     def resolve(self) -> tuple[float | Material, float]:
         """Return (eps_value_or_Material, chi3)."""
@@ -58,3 +62,17 @@ class Medium:
 class PML:
     thickness: float = 1.0
     # meep PML(side=...) etc. not needed by the 34 examples; thickness only.
+
+
+@dataclass(frozen=True)
+class Absorber:
+    """meep mp.Absorber: matched sigma_d = sigma_b quadratic ramp instead of
+    PML coordinate stretching. Applied on all cell edges (direction args from
+    meep are accepted and ignored -- 1D/2D cells here absorb on every edge)."""
+
+    thickness: float = 1.0
+    direction: int | None = None
+
+    def __init__(self, thickness: float = 1.0, direction: int | None = None, **_kw):
+        object.__setattr__(self, "thickness", float(thickness))
+        object.__setattr__(self, "direction", direction)
