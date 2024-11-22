@@ -4,6 +4,11 @@
 
 BLOCKED: stochastic (quantum-noise) sources.
 
+W5.5 UPDATE (2026-08-08): core.sources.RandomSource (seeded white-noise
+current) + CustomSource now cover the stochastic-source gap. Port itself
+still pending: the example is an ensemble average over many runs (heavy
+runtime), scheduled with the LDOS workstream examples (W6+).
+
 meep-torch does not implement stochastic (quantum-noise) sources. To port, meep-torch would need
 stochastic / random-dipole ensemble sources modeling spontaneous emission noise. See the meep original for the physics.
 

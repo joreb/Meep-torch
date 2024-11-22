@@ -132,3 +132,26 @@ class ObliqueLineSource:
         m[self.ix, self.j0:self.j1] = wave.to(m.dtype)
         self.mask = m
         return 1.0
+
+
+class RandomSource:
+    """White-noise current: fresh N(0, 1) scalar amplitude per step on a
+    fixed spatial mask (seeded, reproducible). Spectrally flat drive for
+    noise/thermal-emission studies.
+
+    ponytail: one scalar per step (spatially coherent noise); per-point
+    independent noise needs a per-step mask redraw -- add when an example
+    (NoisyLorentzian thermal emission) demands it.
+    """
+
+    def __init__(self, grid: Grid, ix: int, j0: int, j1: int,
+                 amplitude: float = 1.0, seed: int = 0):
+        mask = grid.zeros(grid.nx, grid.ny)
+        mask[ix, j0:j1] = 1.0
+        self.mask = mask
+        self.dt = grid.dt
+        self.amp = float(amplitude)
+        self.gen = torch.Generator().manual_seed(seed)
+
+    def amplitude(self, t_idx: int) -> float:
+        return self.amp * float(torch.randn(1, generator=self.gen).item())
