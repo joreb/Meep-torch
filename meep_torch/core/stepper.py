@@ -20,11 +20,28 @@ class TMState(NamedTuple):
     psi_Ezx: torch.Tensor  # (nx-1, ny)      dEz/dx in Hy update
     psi_Hyx: torch.Tensor  # (nx-2, ny-2) or (nx-2, ny) if y_pmc
     psi_Hxy: torch.Tensor  # same shape as psi_Hyx
+    # W5.5 magnetic Lorentz poles (allocated only when n_mpoles > 0)
+    Bx: torch.Tensor | None = None       # (nx, ny-1)
+    By: torch.Tensor | None = None       # (nx-1, ny)
+    Mx_cur: torch.Tensor | None = None   # (nm, nx, ny-1)
+    Mx_prev: torch.Tensor | None = None
+    My_cur: torch.Tensor | None = None   # (nm, nx-1, ny)
+    My_prev: torch.Tensor | None = None
 
 
-def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False) -> TMState:
+def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
+                  n_mpoles: int = 0) -> TMState:
     nx, ny = grid.nx, grid.ny
     ny_e = ny if y_pmc else ny - 2
+    mag = {}
+    if n_mpoles:
+        mag = dict(
+            Bx=grid.zeros(nx, ny - 1), By=grid.zeros(nx - 1, ny),
+            Mx_cur=grid.zeros(n_mpoles, nx, ny - 1),
+            Mx_prev=grid.zeros(n_mpoles, nx, ny - 1),
+            My_cur=grid.zeros(n_mpoles, nx - 1, ny),
+            My_prev=grid.zeros(n_mpoles, nx - 1, ny),
+        )
     return TMState(
         Ez=grid.zeros(nx, ny),
         Hx=grid.zeros(nx, ny - 1),
@@ -36,6 +53,7 @@ def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False) -> TMState:
         psi_Ezx=grid.zeros(nx - 1, ny),
         psi_Hyx=grid.zeros(nx - 2, ny_e),
         psi_Hxy=grid.zeros(nx - 2, ny_e),
+        **mag,
     )
 
 
@@ -57,7 +75,17 @@ def step_tm(
     dEz_dx = (state.Ez[1:, :] - state.Ez[:-1, :]) / dx            # (nx-1, ny)
     psi_Ezx = m.b_hx * state.psi_Ezx + m.a_hx * dEz_dx
     curl_hy = dEz_dx / m.k_hx + psi_Ezx
-    if m.h1x is not None:
+    Mx_new = My_new = Bx = By = None
+    if m.mc1x is not None:
+        # W5.5: mu-Lorentz ADE -- B integrates the curl, M precesses off
+        # H(n-1/2), H = B - sum M (mu_inf = 1)
+        Mx_new = m.mc1x * state.Mx_cur + m.mc2x * state.Mx_prev + m.mc3x * state.Hx
+        My_new = m.mc1y * state.My_cur + m.mc2y * state.My_prev + m.mc3y * state.Hy
+        Bx = state.Bx - dt * curl_hx
+        By = state.By + dt * curl_hy
+        Hx = Bx - Mx_new.sum(0)
+        Hy = By - My_new.sum(0)
+    elif m.h1x is not None:
         # W5: dB/dt = -curl E - sigma_b B, B = mu H
         Hx = m.h1x * state.Hx - m.h2x * curl_hx
         Hy = m.h1y * state.Hy + m.h2y * curl_hy
@@ -105,4 +133,8 @@ def step_tm(
         for _ in range(3):
             Ez = rhs / (m.eps_inf + m.chi3 * Ez * Ez)
 
+    if Mx_new is not None:
+        return TMState(Ez, Hx, Hy, Dz, P_new, state.P_cur, psi_Ezy, psi_Ezx,
+                       psi_Hyx, psi_Hxy, Bx, By,
+                       Mx_new, state.Mx_cur, My_new, state.My_cur)
     return TMState(Ez, Hx, Hy, Dz, P_new, state.P_cur, psi_Ezy, psi_Ezx, psi_Hyx, psi_Hxy)

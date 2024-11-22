@@ -38,6 +38,13 @@ class TMCoeffs(NamedTuple):
     h2x: torch.Tensor | None = None    # (nx, ny-1) Hx curl coefficient (dt/mu)
     h1y: torch.Tensor | None = None    # (nx-1, ny) Hy damping
     h2y: torch.Tensor | None = None    # (nx-1, ny) Hy curl coefficient
+    # W5.5 magnetic Lorentz poles (mu dispersion), duals of c1/c2/c3
+    mc1x: torch.Tensor | None = None   # (nm, nx, ny-1) on the Hx grid
+    mc2x: torch.Tensor | None = None
+    mc3x: torch.Tensor | None = None
+    mc1y: torch.Tensor | None = None   # (nm, nx-1, ny) on the Hy grid
+    mc2y: torch.Tensor | None = None
+    mc3y: torch.Tensor | None = None
 
 
 def _as_field(val, grid: Grid, default: float) -> torch.Tensor:
@@ -61,6 +68,8 @@ def build_tm_coeffs(
     sigma_d=None,
     sigma_b=None,
     mu=None,
+    m_poles: Sequence = (),
+    m_pole_masks: Sequence[torch.Tensor] | None = None,
 ) -> TMCoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -83,6 +92,27 @@ def build_tm_coeffs(
         cond["h2x"] = dt / (mux * (1 + sbx * dt / 2))
         cond["h1y"] = (1 - sby * dt / 2) / (1 + sby * dt / 2)
         cond["h2y"] = dt / (muy * (1 + sby * dt / 2))
+
+    if m_poles:
+        if cond:
+            raise NotImplementedError("m_poles with sigma_b/mu not combined (YAGNI)")
+        nm = len(m_poles)
+        for suf, shape, avg in (("x", (grid.nx, grid.ny - 1), lambda v: 0.5 * (v[:, :-1] + v[:, 1:])),
+                                ("y", (grid.nx - 1, grid.ny), lambda v: 0.5 * (v[:-1, :] + v[1:, :]))):
+            c1m = grid.zeros(nm, *shape)
+            c2m = grid.zeros(nm, *shape)
+            c3m = grid.zeros(nm, *shape)
+            for k, pole in enumerate(m_poles):
+                fn, gamma, sigma = pole[0], pole[1], pole[2]
+                w0 = 2 * math.pi * fn
+                G = 2 * math.pi * gamma
+                den = 1.0 + G * dt / 2.0
+                mask = (m_pole_masks[k] if m_pole_masks is not None
+                        else torch.ones(grid.nx, grid.ny, dtype=grid.dtype, device=grid.device))
+                c1m[k] = (2.0 - w0 * w0 * dt * dt) / den
+                c2m[k] = -(1.0 - G * dt / 2.0) / den
+                c3m[k] = (sigma * w0 * w0 * dt * dt / den) * avg(mask.to(grid.dtype))
+            cond[f"mc1{suf}"], cond[f"mc2{suf}"], cond[f"mc3{suf}"] = c1m, c2m, c3m
 
     n_poles = len(poles)
     c1 = grid.zeros(n_poles, grid.nx, grid.ny)
