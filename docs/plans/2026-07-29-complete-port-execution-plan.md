@@ -71,6 +71,12 @@
    atom, noise sources, magnetic Lorentz poles, complex-field mode.
    polarization_grating re-scoped: needs full-vector 2D stepper (ez-coupled
    tensor), not just in-plane anisotropy.
+   **W5.5 (wave 2) DONE 2026-08-08** except multilevel: magnetic Lorentz
+   poles (mu-slab R/T vs transfer matrix, R 1.6%), gyrotropic 1D vector
+   stepper + faraday-rotation port (kappa 0.4% vs analytic, oracle profiles
+   rms 3.0%), RandomSource noise (+-3 dB transfer-flatness gate).
+   stochastic_emitter sources unblocked (port deferred, ensemble runtime).
+   Multilevel-atom ADE deferred to W5.75 (in-session budget; spec allowed).
 6. **W6 — LDOS + forces.** Unblocks ~5. Gate: `metal-cavity-ldos` Purcell
    vs meep JSON; `parallel-wvgs-force` MST force sign+magnitude.
 7. **W7 — cylindrical engine.** Unblocks ~10. Largest; its spec may split.
