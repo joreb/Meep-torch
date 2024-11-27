@@ -15,7 +15,7 @@ import torch
 
 from ..core.coeffs import build_te_coeffs, build_tm_coeffs
 from ..core.grid import Grid
-from ..core.monitors import DFTFieldsMonitor, FluxMonitorTE, FluxMonitorTM
+from ..core.monitors import DFTFieldsMonitor, FluxMonitorTE, FluxMonitorTM, PointProbe
 from ..core.run import run_te, run_tm
 from ..core.stepper import init_tm_state
 from ..core.stepper_te import init_te_state
@@ -287,6 +287,27 @@ class Simulation:
         E, H = (farfield_tm if self._pol == "tm" else farfield_te)(faces, ks, obs)
         out = np.concatenate([E[:, 0, :], H[:, 0, :]], axis=1)   # (nfreq, 6)
         return out[0] if len(freqs) == 1 else out
+
+    def dft_ldos(self, fcen, df, nfreq, name=None):
+        """meep dft_ldos-lite: record Ez at the (point) source and return
+        LDOS via core.ldos.ldos_spectrum after run(). TM only."""
+        c = (self._sources[0].center or Vector3())
+        ix = cell_index(c.x, self.gs)
+        iy = cell_index_y(c.y, self.gs)
+        mon = PointProbe(ix, iy)
+        name = name or f"ldos{len(self._monitors)}"
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1))
+        self._monitors.append((name, "ldos", mon, {"freqs": freqs}))
+        return name
+
+    def get_ldos(self, name):
+        from ..core.ldos import ldos_spectrum
+        acc, mon, meta = self._last_acc[name]
+        e = acc.detach().cpu().numpy()
+        prof = self._sources[0].src.profile()
+        n = len(e)
+        j = np.array([prof.amplitude((t + 0.5) * self.grid.dt) for t in range(n)])
+        return meta["freqs"], ldos_spectrum(e, j, self.grid.dt, meta["freqs"])
 
     def add_dft_fields(self, components, fcen, df, nfreq, name=None):
         """Full-cell area DFT of field components (meep add_dft_fields, no

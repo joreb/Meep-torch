@@ -102,8 +102,10 @@ def build_scene_items(geometry, gs: GridSpec, dims: int = 2, with_cond: bool = F
             sd = float(getattr(medium, "D_conductivity", 0.0) or 0.0)
             sb = float(getattr(medium, "B_conductivity", 0.0) or 0.0)
             mu = float(getattr(medium, "mu", 1.0) or 1.0)
-            if sd != 0.0 or sb != 0.0 or mu != 1.0:
-                cond_items.append((poly, (sd, sb, mu)))
+            # EVERY item is painted, defaults included: a later air block must
+            # overwrite an earlier conductor in painter order
+            cond_items.append((poly, (sd, sb, mu)))
     if with_cond:
-        return eps_items, chi3_items, cond_items
+        has_cond = any(v != (0.0, 0.0, 1.0) for _, v in cond_items)
+        return eps_items, chi3_items, cond_items if has_cond else []
     return eps_items, chi3_items
