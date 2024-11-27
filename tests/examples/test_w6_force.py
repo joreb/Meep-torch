@@ -38,6 +38,11 @@ def _run(with_mirror):
 
 
 def test_radiation_pressure():
+    import json
+    import pathlib
+    with open(pathlib.Path(__file__).parent / "data" / "radiation_force.json") as fh:
+        oracle = json.load(fh)
+
     planes_m, sr_m, grid = _run(True)
     planes_0, sr_0, _ = _run(False)
     fx, fy = mst_force_tm(planes_m, grid, ix0=280, ix1=340, iy0=2, iy1=6)
@@ -59,3 +64,8 @@ def test_radiation_pressure():
         assert abs(got - want) / abs(want) < 0.05, \
             f"f={f}: Fx={got:.4e} vs (1+R) S_inc Ly={want:.4e} (R={R:.3f})"
         assert abs(fy[k]) < 0.02 * abs(want)      # symmetric in y
+        # oracle half of gate (c): dimensionless pressure ratio vs meep's
+        ratio_ours = got / want
+        ratio_meep = oracle["pressure_ratio"][k]
+        assert abs(ratio_ours - ratio_meep) <= 0.10, \
+            f"f={f}: ratio {ratio_ours:.3f} vs meep {ratio_meep:.3f}"

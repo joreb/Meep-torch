@@ -79,6 +79,15 @@
    Multilevel-atom ADE deferred to W5.75 (in-session budget; spec allowed).
 6. **W6 — LDOS + forces.** Unblocks ~5. Gate: `metal-cavity-ldos` Purcell
    vs meep JSON; `parallel-wvgs-force` MST force sign+magnitude.
+   **DONE 2026-08-08**: core/ldos.py (vacuum LDOS linear-in-f <=3%,
+   translation-invariant <=2%), shim dft_ldos/get_ldos, metal-cavity-ldos
+   ported (sigma_d=1e4 PEC substitute; LDOS peak == harminv f <=2%, LDOS
+   Q vs harminv <=15%, f vs PEC oracle 4.2% -- half-cell wall-position
+   offset documented). core/forces.py mst_force_tm (radiation pressure
+   (1+R) S_inc within 5% analytic, meep add_force pressure-ratio within
+   10%). Fixed W5 painter bug (cond_items skipped default-sigma media).
+   parallel-wvgs-force re-scoped: blocked on EigenModeSource in
+   Simulation.run, not MST.
 7. **W7 — cylindrical engine.** Unblocks ~10. Largest; its spec may split.
    Gate: `ring-cyl` resonances vs meep JSON.
 8. **W8 — inverse design** (adjoint examples; eigengrad completion lands
