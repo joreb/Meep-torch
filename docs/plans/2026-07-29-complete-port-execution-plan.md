@@ -77,6 +77,11 @@
    rms 3.0%), RandomSource noise (+-3 dB transfer-flatness gate).
    stochastic_emitter sources unblocked (port deferred, ensemble runtime).
    Multilevel-atom ADE deferred to W5.75 (in-session budget; spec allowed).
+   **W5.75 DONE 2026-08-08**: two-level gain in stepper_1d (inversion-scaled
+   Lorentz ADE + rate equations, per-end npml for the PEC mirror);
+   multilevel-atom ported, lasing peak f=6.44 within 5% of the meep-oracle
+   6.412 (res 100); below-threshold decay gate. >2 levels + mp shim deferred
+   until an example needs them.
 6. **W6 — LDOS + forces.** Unblocks ~5. Gate: `metal-cavity-ldos` Purcell
    vs meep JSON; `parallel-wvgs-force` MST force sign+magnitude.
    **DONE 2026-08-08**: core/ldos.py (vacuum LDOS linear-in-f <=3%,
