@@ -182,3 +182,86 @@ def bloch_diffraction_orders(state: BlochTMState, ix: int, ky: float, G: float,
         else:
             powers.append(a * a * (math.sqrt(kxm) / kx0) if kx0 > 0 else 0.0)
     return orders, np.array(powers)
+
+
+class BlochTEState(NamedTuple):
+    Hz_c: torch.Tensor;  Hz_s: torch.Tensor     # (nx, ny) envelope H_z
+    Ex_c: torch.Tensor;  Ex_s: torch.Tensor     # (nx, ny)
+    Ey_c: torch.Tensor;  Ey_s: torch.Tensor     # (nx-1, ny)
+    Dx_c: torch.Tensor;  Dx_s: torch.Tensor     # (nx, ny)
+    Dy_c: torch.Tensor;  Dy_s: torch.Tensor     # (nx-1, ny)
+    psi_Hzx_c: torch.Tensor; psi_Hzx_s: torch.Tensor   # (nx-1, ny) Ey update
+    psi_Eyx_c: torch.Tensor; psi_Eyx_s: torch.Tensor   # (nx-2, ny) Hz update
+
+
+def init_bloch_te_state(grid: Grid) -> BlochTEState:
+    nx, ny = grid.nx, grid.ny
+    z = lambda *s: grid.zeros(*s)
+    return BlochTEState(
+        Hz_c=z(nx, ny), Hz_s=z(nx, ny), Ex_c=z(nx, ny), Ex_s=z(nx, ny),
+        Ey_c=z(nx - 1, ny), Ey_s=z(nx - 1, ny), Dx_c=z(nx, ny), Dx_s=z(nx, ny),
+        Dy_c=z(nx - 1, ny), Dy_s=z(nx - 1, ny),
+        psi_Hzx_c=z(nx - 1, ny), psi_Hzx_s=z(nx - 1, ny),
+        psi_Eyx_c=z(nx - 2, ny), psi_Eyx_s=z(nx - 2, ny),
+    )
+
+
+def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
+                  eps_y: torch.Tensor, ky: float, src_c=0.0, src_s=0.0,
+                  src_mask: torch.Tensor | None = None) -> BlochTEState:
+    """TE dual of step_bloch_tm (Hz envelope, two quadratures, x-CPML,
+    periodic y). m supplies dt/dx and the x-CPML profiles (build_tm_coeffs
+    with y_pmc=True); eps_x (nx, ny)/eps_y (nx-1, ny) at the E positions.
+    Sources are magnetic currents into Hz (mask on the Hz grid).
+
+    Yee ordering mirrors step_te (E first from Hz(n), then Hz from E):
+    the Ex update takes the FORWARD periodic y-difference of Hz, so the
+    Hz y-curl must take the BACKWARD difference of Ex (W2 Wave-4 lesson).
+    """
+    dt, dx = m.dt, m.dx
+    if abs(ky) >= 1.0 / dt:
+        raise ValueError(f"Bloch k_y={ky:.4f} violates |k_y| < 1/dt={1/dt:.2f}")
+
+    # --- D/E update (from Hz at n) ---
+    dhc = _dy_periodic(state.Hz_c, dx)
+    dhs = _dy_periodic(state.Hz_s, dx)
+    Dx_c = state.Dx_c + dt * (dhc - ky * state.Hz_s)
+    Dx_s = state.Dx_s + dt * (dhs + ky * state.Hz_c)
+    Ex_c, Ex_s = Dx_c / eps_x, Dx_s / eps_x
+
+    dHz_dx_c = (state.Hz_c[1:, :] - state.Hz_c[:-1, :]) / dx
+    dHz_dx_s = (state.Hz_s[1:, :] - state.Hz_s[:-1, :]) / dx
+    psi_Hzx_c = m.b_hx * state.psi_Hzx_c + m.a_hx * dHz_dx_c
+    psi_Hzx_s = m.b_hx * state.psi_Hzx_s + m.a_hx * dHz_dx_s
+    Dy_c = state.Dy_c - dt * (dHz_dx_c / m.k_hx + psi_Hzx_c)
+    Dy_s = state.Dy_s - dt * (dHz_dx_s / m.k_hx + psi_Hzx_s)
+    Ey_c, Ey_s = Dy_c / eps_y, Dy_s / eps_y
+
+    # --- Hz update (from E at n+1/2) ---
+    dexc_dy = (Ex_c - torch.roll(Ex_c, 1, dims=1)) / dx   # backward, periodic
+    dexs_dy = (Ex_s - torch.roll(Ex_s, 1, dims=1)) / dx
+    curlY_c = dexc_dy - ky * Ex_s
+    curlY_s = dexs_dy + ky * Ex_c
+    dEy_dx_c = (Ey_c[1:, :] - Ey_c[:-1, :]) / dx          # (nx-2, ny)
+    dEy_dx_s = (Ey_s[1:, :] - Ey_s[:-1, :]) / dx
+    psi_Eyx_c = m.b_ex * state.psi_Eyx_c + m.a_ex * dEy_dx_c
+    psi_Eyx_s = m.b_ex * state.psi_Eyx_s + m.a_ex * dEy_dx_s
+    curl_c = dEy_dx_c / m.k_ex + psi_Eyx_c - curlY_c[1:-1, :]
+    curl_s = dEy_dx_s / m.k_ex + psi_Eyx_s - curlY_s[1:-1, :]
+    Hz_c = state.Hz_c - dt * F.pad(curl_c, (0, 0, 1, 1))
+    Hz_s = state.Hz_s - dt * F.pad(curl_s, (0, 0, 1, 1))
+    if src_mask is not None:
+        Hz_c = Hz_c + dt * src_c * src_mask
+        Hz_s = Hz_s + dt * src_s * src_mask
+
+    return BlochTEState(Hz_c, Hz_s, Ex_c, Ex_s, Ey_c, Ey_s,
+                        Dx_c, Dx_s, Dy_c, Dy_s,
+                        psi_Hzx_c, psi_Hzx_s, psi_Eyx_c, psi_Eyx_s)
+
+
+def bloch_te_xflux(state: BlochTEState, ix: int, dy: float) -> float:
+    """Time-averaged +x flux for the TE envelope: <S_x> = +1/2 (Ey Hz)."""
+    Hz_c = 0.5 * (state.Hz_c[ix - 1, :] + state.Hz_c[ix, :])
+    Hz_s = 0.5 * (state.Hz_s[ix - 1, :] + state.Hz_s[ix, :])
+    s = (state.Ey_c[ix - 1, :] * Hz_c + state.Ey_s[ix - 1, :] * Hz_s)
+    return 0.5 * float(s.sum()) * dy
