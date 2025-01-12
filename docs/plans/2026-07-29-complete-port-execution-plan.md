@@ -95,6 +95,14 @@
    Simulation.run, not MST.
 7. **W7 — cylindrical engine.** Unblocks ~10. Largest; its spec may split.
    Gate: `ring-cyl` resonances vs meep JSON.
+   **Wave 1 DONE 2026-08-08**: radial BOR stepper (core/stepper_cyl.py,
+   complex F(r) e^{i m phi}, Ez set, axis rows pinned for regularity +
+   the m/r leapfrog stability limit, outer sigma absorber). ring-cyl
+   ported: m=3 f=0.11821 Q=80, m=4 f=0.14746 Q=336 vs meep-oracle to
+   <0.01% (edge-averaged node eps reproduces meep subpixel exactly);
+   m=5 Q=1592 whispering-gallery ladder. W7.5: (r,z) 2D BOR, m=0 axis,
+   {Er,Ephi,Hz} set, cylindrical CPML, eigenmode ports, remaining ~9
+   examples.
 8. **W8 — inverse design** (adjoint examples; eigengrad completion lands
    here). Gate: one adjoint_optimization example reproduced via torch autodiff.
 9. **W9 — 3D engine.** Last. Everything remaining.
