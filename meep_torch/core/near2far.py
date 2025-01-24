@@ -197,3 +197,20 @@ def faces_from_accs(grid, mons, accs):
             Fz, Ft = Ft, Fz
         faces.append(Face(pts=pts, normal=normal, dl=dx, E=Fz, H=Ft, w=quad))
     return faces
+
+
+def tile_faces(faces, n_periods: int, Ly: float, ky: float = 0.0):
+    """Periodic near2far (meep nperiods): replicate contour faces n_periods
+    times along y at pitch Ly, each copy phased by exp(i ky Ly n). Centered
+    tiling (n in [-(N-1)/2, ...]); pass the result to farfield_*."""
+    out = []
+    n0 = -(n_periods - 1) / 2.0
+    for n in range(n_periods):
+        shift = (n0 + n) * Ly
+        ph = np.exp(1j * ky * shift)
+        for f in faces:
+            pts = f.pts.copy()
+            pts[:, 1] = pts[:, 1] + shift
+            out.append(Face(pts=pts, normal=f.normal, dl=f.dl,
+                            E=f.E * ph, H=f.H * ph, w=f.w))
+    return out

@@ -100,3 +100,21 @@ def test_te_line_source_reproduced():
     Hz_ref, _, _ = src(obs)
     err = np.abs(H[0, :, 2] - Hz_ref).max() / np.abs(Hz_ref).max()
     assert err < 1e-3, f"rel err {err:.2e}"
+
+
+def test_periodic_tiling_grating_orders():
+    # W4.5: tile a line-source contour N times at pitch Ly = 2 (lambda = 1):
+    # far lobes must sit at the grating orders sin(theta) = m / 2
+    from meep_torch.core.near2far import tile_faces
+    src = lambda pts: line_source_fields_tm(K, pts, 0.0, 0.0)
+    faces = tile_faces(_box_faces(0.0, 0.0, 0.5, 40, src), 8, 2.0, ky=0.0)
+    th = np.linspace(-math.pi / 2, math.pi / 2, 721)
+    obs = np.stack([2000.0 * np.cos(th), 2000.0 * np.sin(th)], axis=1)
+    E, _ = farfield_tm(faces, [K], obs)
+    p = np.abs(E[0, :, 2]) ** 2
+    peaks = [th[i] for i in range(1, len(th) - 1)
+             if p[i] > p[i - 1] and p[i] > p[i + 1] and p[i] > 0.2 * p.max()]
+    want = [math.asin(m / 2.0) for m in (-1, 0, 1)]
+    for w in want:
+        assert min(abs(pk - w) for pk in peaks) < math.radians(1.5), \
+            f"no lobe at {math.degrees(w):.1f} deg; peaks {[round(math.degrees(x),1) for x in peaks]}"
