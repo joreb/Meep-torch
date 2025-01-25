@@ -27,6 +27,8 @@ def test_checkpointed_equals_uncheckpointed():
     s0 = init_tm_state(g, n_poles=1)
     sB, rB = run_tm(s0, m, 60, source=src, monitors=probes, checkpoint_every=7)
     for a, b in zip(sA, sB):
+        if a is None and b is None:
+            continue    # W5.5 magnetic-pole fields, unallocated when n_mpoles=0
         assert torch.allclose(a, b, atol=1e-12, rtol=0)
     assert torch.allclose(rA[0], rB[0], atol=1e-12, rtol=0)
     assert rA[0].shape == (60,)
