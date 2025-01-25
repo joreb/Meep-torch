@@ -100,12 +100,30 @@
    the m/r leapfrog stability limit, outer sigma absorber). ring-cyl
    ported: m=3 f=0.11821 Q=80, m=4 f=0.14746 Q=336 vs meep-oracle to
    <0.01% (edge-averaged node eps reproduces meep subpixel exactly);
-   m=5 Q=1592 whispering-gallery ladder. W7.5: (r,z) 2D BOR, m=0 axis,
-   {Er,Ephi,Hz} set, cylindrical CPML, eigenmode ports, remaining ~9
-   examples.
+   m=5 Q=1592 whispering-gallery ladder.
+   **W7.5 DONE 2026-08-08** (5b0e5f3): (r,z) 2D BOR stepper (all six
+   components, m=0 ampere-loop axis + m!=0 stability pinning, sigma
+   absorber). Gates: m=0 dipole LDOS ~ f^2 (true 3D, <=4%); disc
+   resonator m=3 f within 1.5% of oracle (isotropic vs anisotropic
+   subpixel brackets it), Q within 25%. Still open (W7.75): cylindrical
+   near2far/CPML/eigenmode ports + the ~9 example ports.
 8. **W8 — inverse design** (adjoint examples; eigengrad completion lands
    here). Gate: one adjoint_optimization example reproduced via torch autodiff.
+   **DONE 2026-08-08** (5673129, by the delegated session): autograd
+   through run_tm (checkpoint_every) -- dJ/dtheta vs central FD rel err
+   7.9e-9 (DFT objective) / 2.7e-9 (flux objective), gate 1e-3;
+   adjoint_gradient.py demo: 5 Adam steps, flux x11.9. Also fixed the
+   pre-existing checkpoint-equivalence break (a534172).
 9. **W9 — 3D engine.** Last. Everything remaining.
+   **Wave 1 DONE 2026-08-08** (0e537ca): full 3D Yee stepper (six real
+   components, sigma absorber shells, dt = dx/(2 sqrt 3)); vacuum dipole
+   LDOS ~ f^2 within 5%, agreeing with the independent W7.5 BOR result.
+   Still open: 3D CPML, materials, monitors/shim wiring, 3D examples.
+   ALSO CLOSED 2026-08-08: W2 deferrals -- TE Bloch stepper (85833b2,
+   Fresnel p-pol <=0.02; diffracted_planewave re-scoped to
+   DiffractedPlanewave order launch) and kz_2d 1D reduction (8087500,
+   Fresnel p-pol <=0.02; refl-angular-kz2d core unblocked); W4.5
+   periodic near2far tiling (cbfd8aa, grating-order lobe gate).
 
 MPB-blocked examples stay stubbed until the Q1 track is picked up separately.
 
