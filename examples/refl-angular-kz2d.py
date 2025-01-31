@@ -1,20 +1,82 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""meep-torch port stub: meep/python/examples/refl-angular-kz2d.py
+"""meep-torch port of meep/python/examples/refl-angular-kz2d.py.
 
-UNBLOCKED CORE (2026-08-08): core/stepper_kz.py (2.5D k_z, 1D-in-x
-{Ex, Ez, Hy} set, Fresnel p-pol gate <=0.02) and step_bloch_te both
-landed. Port pending: the example's full angular sweep + mp shim wiring
-(kz_2d + special_kz handling in Simulation) -- scheduled with the next
-example-port pass.
+Angular reflectance of a planar air/glass interface with the incidence
+plane OUT of the 2D simulation plane: fields F(x) e^{i k_z z} via the
+kz stepper (W2 deferral close). p-polarization (E in the (x, z) plane).
 
-The meep original computes angular reflectance of a planar interface using
-meep's kz_2d 2.5D effective-index mode (a quasi-2D solve that folds a 3D
-out-of-plane waveguide k_z into the 2D cell) in TE (Ey). meep-torch has no 2.5D
-kz_2d engine and its Bloch stepper is TM-only. The full 2D angular-reflectance
-twin (no kz_2d) is examples/refl-angular.py (+ Fresnel gate). To port this 2.5D
-variant, meep-torch would need a kz_2d effective-index FDTD + TE Bloch. See the
-meep original for the physics.
+SUBSTITUTIONS:
+  * mp.Simulation(kz_2d="complex") -> core stepper_kz (1D-in-x reduction).
+  * Flux-normalized R -> reflected/incident Ez DFT amplitude ratio
+    (|Ez_r / Ez_i| = |r_p| since Ez/|E| = cos theta on both sides).
 
-meep original: meep/python/examples/refl-angular-kz2d.py
+Run: uv run python examples/refl-angular-kz2d.py
 """
+import math
+import pathlib
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+from meep_torch.core.sources import GaussianPulse
+from meep_torch.core.stepper_kz import build_kz_coeffs, init_kz_state, step_kz
+
+OUT = pathlib.Path(__file__).parent
+FCEN, N2 = 1.0, 1.5
+NX, DX, NABS = 800, 0.05, 40
+
+
+def refl(theta):
+    kz = 2 * math.pi * FCEN * math.sin(theta)
+
+    def run(with_glass):
+        eps = torch.ones(NX, dtype=torch.float64)
+        if with_glass:
+            eps[400:] = N2 ** 2
+        c = build_kz_coeffs(NX, DX, kz, eps=eps, n_abs=NABS)
+        st = init_kz_state(NX)
+        pulse = GaussianPulse(FCEN, 0.2)
+        # x-group velocity ~ cos(theta): scale the run so the pulse makes
+        # the round trip even near grazing
+        n = int(round(60.0 / max(math.cos(theta), 0.15) / c.dt))
+        s = np.empty(n, dtype=complex)
+        for t in range(n):
+            st = step_kz(st, c, pulse.amplitude((t + 0.5) * c.dt), 100)
+            s[t] = st.Ez[300].item()
+        return s, c.dt
+
+    s1, dt = run(True)
+    s0, _ = run(False)
+    t = np.arange(len(s1)) * dt
+    kern = np.exp(-2j * math.pi * FCEN * t)
+    return abs(np.trapezoid((s1 - s0) * kern, t)
+               / np.trapezoid(s0 * kern, t)) ** 2
+
+
+# ponytail: sweep capped at 65 deg -- the matched-sigma absorber reflects
+# near grazing (needs a kz-aware CPML, open thread); Brewster is covered
+thetas = np.radians(np.arange(0, 70, 5))
+R = np.array([refl(t) for t in thetas])
+cos_i = np.cos(thetas)
+cos_t = np.sqrt(1 - (np.sin(thetas) / N2) ** 2)
+R_an = ((N2 * cos_i - cos_t) / (N2 * cos_i + cos_t)) ** 2
+
+fig, ax = plt.subplots(figsize=(6.4, 4.2))
+ax.plot(np.degrees(thetas), R, "bo-", ms=4, lw=0.9, label="meep-torch kz stepper")
+ax.plot(np.degrees(thetas), R_an, "r--", lw=1.0, label="Fresnel p-pol")
+brewster = math.degrees(math.atan(N2))
+ax.axvline(brewster, color="g", ls=":", lw=0.8, label=f"Brewster {brewster:.1f} deg")
+ax.set_xlabel("incidence angle (deg, out of plane)")
+ax.set_ylabel("reflectance R")
+ax.set_title("air/glass, p-pol, out-of-plane incidence (0-65 deg)")
+ax.legend(fontsize=8)
+fig.tight_layout()
+fig.savefig(OUT / "refl-angular-kz2d.png", dpi=150)
+plt.close(fig)
+err = float(np.abs(R - R_an).max())
+print(f"refl-angular-kz2d.png  max |R - Fresnel| = {err:.4f} over 0..65 deg")

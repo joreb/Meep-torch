@@ -108,7 +108,14 @@ def step_bor(state: BORState, c: BORCoeffs, src_amp: float = 0.0,
     d1, d2 = c.damp["hr"]
     Hr = d1 * state.Hr + d2 * (-(im * c.inv_ri) * state.Ez
                                + (state.Ephi[:, 1:] - state.Ephi[:, :-1]) / dr)
-    Hr[: c.i_int] = 0.0
+    if abs(c.m) == 1:
+        # |m| = 1: Hr finite at the axis. (im/r) Ez -> im * slope, with
+        # Ez ~ alpha r and alpha = Ez[1] / dr (Ez[0] pinned to 0).
+        Hr[0] = d1[0] * state.Hr[0] + d2[0] * (
+            -im * state.Ez[1] / dr
+            + (state.Ephi[0, 1:] - state.Ephi[0, :-1]) / dr)
+    else:
+        Hr[: c.i_int] = 0.0
     d1, d2 = c.damp["hp"]
     Hphi = d1 * state.Hphi + d2 * (
         -(state.Er[:, 1:] - state.Er[:, :-1]) / dr
@@ -132,8 +139,13 @@ def step_bor(state: BORState, c: BORCoeffs, src_amp: float = 0.0,
     curl_p = torch.zeros_like(state.Ephi)
     curl_p[1:-1, 1:-1] = (Hr[1:-1, 1:] - Hr[1:-1, :-1]) / dr \
         - (Hz[1:, 1:-1] - Hz[:-1, 1:-1]) / dr
+    if abs(c.m) == 1:
+        # |m| = 1: Ephi finite at the axis; Hz is odd in r (Hz ~ r), so
+        # dHz/dr|_0 = 2 Hz(dr/2) / dr via the odd extension
+        curl_p[0, 1:-1] = (Hr[0, 1:] - Hr[0, :-1]) / dr - 2.0 * Hz[0, 1:-1] / dr
     Ephi = (d1 * state.Ephi * c.eps_p + d2 * curl_p) / c.eps_p
-    Ephi[: c.i_int] = 0.0
+    if abs(c.m) != 1:
+        Ephi[: c.i_int] = 0.0
 
     d1, d2 = c.damp["ez"]
     curl_z = torch.zeros_like(state.Ez)
@@ -146,13 +158,16 @@ def step_bor(state: BORState, c: BORCoeffs, src_amp: float = 0.0,
         Ez[: c.i_int] = 0.0
 
     if src is not None:
-        comp, i, j = src
-        if comp == "Er":
-            Er[i, j] = Er[i, j] + dt * src_amp / c.eps_r[i, j]
-        elif comp == "Ez":
-            Ez[i, j] = Ez[i, j] + dt * src_amp / c.eps_z[i, j]
-        else:
-            Ephi[i, j] = Ephi[i, j] + dt * src_amp / c.eps_p[i, j]
+        terms = [src] if isinstance(src[0], str) else src
+        for term in terms:
+            comp, i, j = term[:3]
+            fac = term[3] if len(term) > 3 else 1.0
+            if comp == "Er":
+                Er[i, j] = Er[i, j] + dt * src_amp * fac / c.eps_r[i, j]
+            elif comp == "Ez":
+                Ez[i, j] = Ez[i, j] + dt * src_amp * fac / c.eps_z[i, j]
+            else:
+                Ephi[i, j] = Ephi[i, j] + dt * src_amp * fac / c.eps_p[i, j]
     return BORState(Er, Ephi, Ez, Hr, Hphi, Hz)
 
 
