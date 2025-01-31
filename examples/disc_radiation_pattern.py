@@ -3,8 +3,9 @@
 """meep-torch port stub: meep/python/examples/disc_radiation_pattern.py
 
 W7.75 UPDATE (2026-08-08): partially unblocked -- stepper_bor resolves
-the disc (W7.5 gate), but the Er-driven pattern needs |m| >= 1 far
-fields (W7.9).
+the disc (W7.5 gate), but the Er-driven pattern needs |m| >= 1 far fields. W7.9 UPDATE:
+farfield_bor_m landed (m=1 oracle gate <=5% rms) -- UNBLOCKED, port
+scheduled with the example-port pass.
 
 BLOCKED: cylindrical coordinates + near2far.
 

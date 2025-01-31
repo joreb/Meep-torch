@@ -3,8 +3,9 @@
 """meep-torch port stub: meep/python/examples/dipole_in_vacuum_cyl_off_axis.py
 
 W7.75 UPDATE (2026-08-08): partially unblocked -- stepper_bor runs any
-m, but an off-axis dipole needs the m-summed far fields (|m| >= 1
-radiation integrals), which are W7.9.
+m, but an off-axis dipole needs the m-summed far fields. W7.9 UPDATE: the
+|m| >= 1 radiation integrals landed (farfield_bor_m, m=1 oracle gate
+<=5% rms); the port needs the per-m source decomposition sum.
 
 BLOCKED: cylindrical coordinates + near2far.
 

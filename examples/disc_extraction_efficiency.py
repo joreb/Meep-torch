@@ -3,8 +3,8 @@
 """meep-torch port stub: meep/python/examples/disc_extraction_efficiency.py
 
 W7.75 UPDATE (2026-08-08): partially unblocked -- stepper_bor + m=0
-near2far landed; extraction efficiency additionally needs the |m| >= 1
-far fields (W7.9) and cyl flux normalization.
+near2far landed; extraction efficiency needs |m| >= 1 far fields (landed, W7.9) and
+cyl flux normalization (still open).
 
 BLOCKED: cylindrical coordinates + near2far.
 

@@ -80,3 +80,79 @@ def farfield_bor_m0(planes, c, *, ir, jz0, jz1, thetas, k):
         p = np.abs(Et) ** 2
         out[fi] = p / p.max()
     return out
+
+
+def farfield_bor_m(planes, c, m, *, ir, jz0, jz1, thetas, k):
+    """General-m far pattern |E_theta|^2 + |E_phi|^2, normalized (W7.9).
+
+    phi-integrals per current component (beta = k r' sin theta):
+      plain:  A_m  = 2 pi i^m J_m(beta)
+      cos:    -2 pi i^{m+1} J_m'(beta)
+      sin:    +2 pi i^m (m / beta) J_m(beta)
+    N_x picks (Cr cos - Cphi sin), N_y picks (Cr sin + Cphi cos),
+    N_z picks the plain integral. Reduces to farfield_bor_m0 at m = 0.
+    """
+    from scipy.special import jv, jvp
+    dr = c.dr
+    nfreq = planes["Ez"].shape[0]
+    out = np.empty((nfreq, len(thetas)))
+    zc = 0.5 * (jz0 + jz1) * dr
+    ipm = 1j ** m
+
+    def phi_ints(beta):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            msin = np.where(beta > 0, m * jv(m, beta) / np.where(beta > 0, beta, 1.0),
+                            0.5 if abs(m) == 1 else 0.0)
+        return (2 * np.pi * ipm * jv(m, beta),
+                -2 * np.pi * ipm * 1j * jvp(m, beta),
+                2 * np.pi * ipm * msin)
+
+    def add_face(N, L, rp, zp, J, M, ct, st):
+        beta = k * rp * st
+        ph = np.exp(1j * k * zp * ct)
+        plain, ci, si = phi_ints(beta)
+        for vec, C in ((N, J), (L, M)):
+            Cr, Cp, Cz = C
+            vec[0] += dr * np.sum(rp * (Cr * ci - Cp * si) * ph)
+            vec[1] += dr * np.sum(rp * (Cr * si + Cp * ci) * ph)
+            vec[2] += dr * np.sum(rp * Cz * plain * ph)
+
+    for fi in range(nfreq):
+        Er_p, Ez_p, Ep_p = planes["Er"][fi], planes["Ez"][fi], planes["Ephi"][fi]
+        Hr_p, Hz_p, Hp_p = planes["Hr"][fi], planes["Hz"][fi], planes["Hphi"][fi]
+        Et = np.zeros(len(thetas), dtype=complex)
+        Ep_far = np.zeros(len(thetas), dtype=complex)
+        for ti, th in enumerate(thetas):
+            st, ct = np.sin(th), np.cos(th)
+            N = np.zeros(3, dtype=complex)
+            L = np.zeros(3, dtype=complex)
+            # outer-r face (n = +r): J = (0, -Hz, Hphi), M = (0, Ez, -Ephi)
+            j = np.arange(jz0, jz1)
+            zp = (j + 0.5) * dr - zc
+            rp = ir * dr
+            hphi = 0.5 * (Hp_p[ir - 1, j] + Hp_p[min(ir, Hp_p.shape[0] - 1), j])
+            hz = Hz_p[min(ir, Hz_p.shape[0] - 1) - 0, j] if ir < Hz_p.shape[0] \
+                else Hz_p[ir - 1, j]
+            add_face(N, L, rp, zp, (np.zeros_like(hphi), -hz, hphi),
+                     (np.zeros_like(hphi), Ez_p[ir, j], -Ep_p[ir, j]), ct, st)
+            # z faces (n = +-z): J = -+(Hphi, -Hr·?, 0) -- structure per spec,
+            # overall sign pinned by the oracle gate
+            for jz, sgn in ((jz1, +1.0), (jz0, -1.0)):
+                i = np.arange(0, ir)
+                rp2 = (i + 0.5) * dr
+                zp2 = jz * dr - zc
+                hphi_z = 0.5 * (Hp_p[i, jz - 1] + Hp_p[i, min(jz, Hp_p.shape[1] - 1)])
+                hr_z = 0.5 * (Hr_p[i, jz - 1] + Hr_p[i, min(jz, Hr_p.shape[1] - 1)]) \
+                    if Hr_p.shape[0] > ir else np.zeros_like(hphi_z)
+                er_z = Er_p[i, jz]
+                ep_z = Ep_p[i, jz]
+                add_face(N, L, rp2, zp2,
+                         (sgn * -hphi_z, sgn * hr_z, np.zeros_like(hphi_z)),
+                         (sgn * ep_z, sgn * -er_z, np.zeros_like(er_z)), ct, st)
+            Nt = N[0] * ct - N[2] * st
+            Lt = L[0] * ct - L[2] * st
+            Et[ti] = -(Nt + L[1])
+            Ep_far[ti] = -(N[1] - Lt)
+        p = np.abs(Et) ** 2 + np.abs(Ep_far) ** 2
+        out[fi] = p / p.max()
+    return out

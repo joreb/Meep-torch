@@ -40,3 +40,26 @@ def test_dipole_pattern_sin2_and_oracle():
     assert rms_an <= 0.03, f"rms vs sin^2 {rms_an:.4f}"
     rms_or = float(np.sqrt(np.mean((got - np.array(ref["pattern"])) ** 2)))
     assert rms_or <= 0.05, f"rms vs oracle {rms_or:.4f}"
+
+
+def test_m1_dipole_pattern_vs_oracle():
+    """W7.9: |m| = 1 far fields -- off-axis Er dipole vs meep oracle."""
+    from meep_torch.core.near2far_cyl import farfield_bor_m
+
+    with open(pathlib.Path(__file__).parent / "data" / "dipole_m1_n2f.json") as f:
+        ref = json.load(f)
+    res = 25
+    dr = 1.0 / res
+    nr, nz = int(3.0 * res), int(6.0 * res)
+    c = build_bor_coeffs(nr, nz, dr, m=1, n_abs_r=res, n_abs_z=res)
+    pulse = GaussianPulse(FCEN, 0.2)
+    src = ("Er", int(ref["r_src"] * res), nz // 2)
+    n_steps = int(round(60.0 / c.dt))
+    _, planes = run_bor_dft(init_bor_state(nr, nz), c, n_steps,
+                            src=src, src_profile=pulse, freqs=[FCEN])
+    thetas = np.radians(ref["theta_deg"])
+    got = farfield_bor_m(planes, c, 1, ir=int(1.5 * res),
+                         jz0=int(1.5 * res), jz1=int(4.5 * res),
+                         thetas=thetas, k=2 * math.pi * FCEN)[0]
+    rms = float(np.sqrt(np.mean((got - np.array(ref["pattern"])) ** 2)))
+    assert rms <= 0.05, f"m=1 pattern rms vs oracle {rms:.4f}"
