@@ -2,6 +2,10 @@
 # Copyright (C) 2026 meep-torch contributors (original code)
 """meep-torch port stub: meep/python/examples/dipole_in_vacuum_cyl_off_axis.py
 
+W7.75 UPDATE (2026-08-08): partially unblocked -- stepper_bor runs any
+m, but an off-axis dipole needs the m-summed far fields (|m| >= 1
+radiation integrals), which are W7.9.
+
 BLOCKED: cylindrical coordinates + near2far.
 
 meep-torch does not implement cylindrical coordinates + near2far. To port, meep-torch would need
