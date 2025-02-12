@@ -127,6 +127,20 @@
 
 MPB-blocked examples stay stubbed until the Q1 track is picked up separately.
 
+**Example-port pass DONE 2026-08-08** (ecaad6d..6888a03): 7 ports --
+refl-angular-kz2d (Fresnel p max err 0.0039, 0-65 deg, grazing needs
+kz-aware CPML), dipole_in_vacuum_cyl_on_axis (circular Er+iEphi source,
+|m|=1 axis updates in stepper_bor; 12.8% rms at res 25,
+source-discretization limited), point_dipole_cyl (m=0 dipole-in-slab
+relative extraction), cavity-farfield (far peak centered on the cavity),
+disc_radiation_pattern (m=1), binary_grating_n2f (Bloch unit cell +
+tile_faces, lobes exactly at 0/+-30 deg orders), stochastic_emitter
+(incoherent ensemble). W7.75/W7.9 cyl near2far (84d4bc1, 4979e4b) carried
+the pass. Stub census 46 -> 34 blocked. Remaining stubs: MPB (~15), 3D
+examples (W9 waves 3+), off-axis per-m sum, reciprocity variants,
+DiffractedPlanewave order launch, eigenmode-source-in-run, cyl flux
+normalization.
+
 ## Standing rules for the executor
 
 - Per workstream: write `docs/specs/…-wX-….md` + `docs/plans/…-wX-….md` first,
