@@ -118,7 +118,10 @@
    **Wave 1 DONE 2026-08-08** (0e537ca): full 3D Yee stepper (six real
    components, sigma absorber shells, dt = dx/(2 sqrt 3)); vacuum dipole
    LDOS ~ f^2 within 5%, agreeing with the independent W7.5 BOR result.
-   Still open: 3D CPML, materials, monitors/shim wiring, 3D examples.
+   **Wave 2 DONE 2026-08-09** (649d63f, delegated session): 3D CPML
+   (mixed-mode axes), D/B-conductivity fast-path, monitors_3d.py; gates
+   lossy-slab |T| <=3%, CPML decay 0.73x the absorber's, residual
+   2.5e-14. Still open: shim wiring, 3D examples (waves 3+).
    ALSO CLOSED 2026-08-08: W2 deferrals -- TE Bloch stepper (85833b2,
    Fresnel p-pol <=0.02; diffracted_planewave re-scoped to
    DiffractedPlanewave order launch) and kz_2d 1D reduction (8087500,
