@@ -225,8 +225,12 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     # --- D/E update (from Hz at n) ---
     dhc = _dy_periodic(state.Hz_c, dx)
     dhs = _dy_periodic(state.Hz_s, dx)
-    Dx_c = state.Dx_c + dt * (dhc - ky * state.Hz_s)
-    Dx_s = state.Dx_s + dt * (dhs + ky * state.Hz_c)
+    # i k_y coupling evaluated AT Ex's stagger position (j+1/2): midpoint
+    # average of Hz -- without it the bands carry an O(k_y dx) bias
+    Hzm_c = 0.5 * (state.Hz_c + torch.roll(state.Hz_c, -1, dims=1))
+    Hzm_s = 0.5 * (state.Hz_s + torch.roll(state.Hz_s, -1, dims=1))
+    Dx_c = state.Dx_c + dt * (dhc - ky * Hzm_s)
+    Dx_s = state.Dx_s + dt * (dhs + ky * Hzm_c)
     Ex_c, Ex_s = Dx_c / eps_x, Dx_s / eps_x
 
     dHz_dx_c = (state.Hz_c[1:, :] - state.Hz_c[:-1, :]) / dx
@@ -240,8 +244,10 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     # --- Hz update (from E at n+1/2) ---
     dexc_dy = (Ex_c - torch.roll(Ex_c, 1, dims=1)) / dx   # backward, periodic
     dexs_dy = (Ex_s - torch.roll(Ex_s, 1, dims=1)) / dx
-    curlY_c = dexc_dy - ky * Ex_s
-    curlY_s = dexs_dy + ky * Ex_c
+    Exm_c = 0.5 * (Ex_c + torch.roll(Ex_c, 1, dims=1))    # at Hz's position (j)
+    Exm_s = 0.5 * (Ex_s + torch.roll(Ex_s, 1, dims=1))
+    curlY_c = dexc_dy - ky * Exm_s
+    curlY_s = dexs_dy + ky * Exm_c
     dEy_dx_c = (Ey_c[1:, :] - Ey_c[:-1, :]) / dx          # (nx-2, ny)
     dEy_dx_s = (Ey_s[1:, :] - Ey_s[:-1, :]) / dx
     psi_Eyx_c = m.b_ex * state.psi_Eyx_c + m.a_ex * dEy_dx_c
