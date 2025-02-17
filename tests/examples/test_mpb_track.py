@@ -89,3 +89,77 @@ def test_holey_wvg_bands_vs_oracle():
                 f"(got {[round(g, 4) for g in got[:8]]})"
             checked += 1
     assert checked >= 3, f"only {checked} guided bands gated"
+
+
+def _bloch2_bands(eps, kx, ky, dt, dx, fmax, t_end=300.0):
+    from meep_torch.core.stepper_bloch2 import init_bloch2_state, step_bloch2_tm
+
+    class _G:
+        pass
+
+    g = _G()
+    g.nx, g.ny = eps.shape
+    g.zeros = lambda *s: torch.zeros(*s, dtype=torch.float64)
+    st = init_bloch2_state(g)
+    mask = torch.zeros(*eps.shape, dtype=torch.float64)
+    mask[g.nx // 3 + 1, g.ny // 5 + 2] = 1.0
+    pulse = GaussianPulse(fmax / 2, fmax)
+    n_steps = int(round(t_end / dt))
+    probes = [(g.nx // 3 + 1, g.ny // 5 + 2), (2 * g.nx // 3, g.ny // 2 + 1),
+              (g.nx // 2 - 2, 0), (g.nx - 3, g.ny // 3)]
+    series = np.empty((len(probes), n_steps), dtype=complex)
+    for t in range(n_steps):
+        a = pulse.amplitude((t + 0.5) * dt)
+        st = step_bloch2_tm(st, eps, dt, dx, kx, ky, src_c=a, src_s=0.0,
+                            src_mask=mask)
+        for p, (pi, pj) in enumerate(probes):
+            series[p, t] = complex(st.Ez_c[pi, pj].item(), st.Ez_s[pi, pj].item())
+    t0 = int(round(60.0 / dt))
+    freqs = []
+    for p in range(len(probes)):
+        freqs += [m.freq for m in harminv(series[p, t0:], dt, 0.02, fmax)
+                  if m.Q > 100 and m.amp > 1e-9]
+    return sorted(freqs)
+
+
+def test_sq_lattice_tm_bands_vs_mpb():
+    """Gate (b): square lattice rods (r=0.2, eps=8.9) TM bands vs meep.mpb."""
+    ref = json.load(open(DATA / "sq_lattice_mpb.json"))
+    res = 16
+    dx = 1.0 / res
+    ss = 4
+    n = res
+    xi = (torch.arange(n * ss, dtype=torch.float64) + 0.5) / ss - 0.5
+    II, JJ = torch.meshgrid(xi, xi, indexing="ij")
+    fine = torch.ones(n * ss, n * ss, dtype=torch.float64)
+    fine[((II - n / 2) * dx) ** 2 + ((JJ - n / 2) * dx) ** 2 < ref["r"] ** 2] = ref["eps"]
+    eps = fine.reshape(n, ss, n, ss).mean(dim=(1, 3))
+    dt = 0.4 * dx
+    for i, kxf in enumerate((0.2, 0.4)):
+        want = ref["bands"][ref["kx"].index(kxf)][:2]
+        got = _bloch2_bands(eps, 2 * math.pi * kxf, 0.0, dt, dx, 0.8)
+        for wf in want:
+            best = min(got, key=lambda g: abs(g - wf)) if got else 1e9
+            assert abs(best - wf) / wf <= 0.02, \
+                f"kx={kxf}: band {wf:.4f} -> nearest {best:.4f} " \
+                f"(got {[round(g, 4) for g in got[:6]]})"
+
+
+def test_bragg_sine_bands_vs_mpb():
+    """Gate (c): 1D sine-index Bragg bands vs meep.mpb."""
+    ref = json.load(open(DATA / "bragg_sine_mpb.json"))
+    res = 32
+    dx = 1.0 / res
+    x = (torch.arange(res, dtype=torch.float64) + 0.5) * dx
+    idx = ref["index_min"] + 0.5 * (ref["index_max"] - ref["index_min"]) \
+        * (1 + torch.cos(2 * math.pi * x))
+    eps = (idx ** 2)[:, None].expand(res, 4).clone()
+    dt = 0.4 * dx
+    for kxf, bands in zip(ref["kx"], ref["bands"]):
+        got = _bloch2_bands(eps, 2 * math.pi * kxf, 0.0, dt, dx, 0.8,
+                            t_end=400.0)
+        for wf in bands[:2]:
+            best = min(got, key=lambda g: abs(g - wf)) if got else 1e9
+            assert abs(best - wf) / wf <= 0.02, \
+                f"kx={kxf}: band {wf:.4f} -> nearest {best:.4f} " \
+                f"(got {[round(g, 4) for g in got[:6]]})"
