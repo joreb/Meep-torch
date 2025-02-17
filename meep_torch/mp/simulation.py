@@ -15,13 +15,17 @@ import torch
 
 from ..core.coeffs import build_te_coeffs, build_tm_coeffs
 from ..core.grid import Grid
+from ..core.materials import Material
 from ..core.monitors import DFTFieldsMonitor, FluxMonitorTE, FluxMonitorTM, PointProbe
+from ..core.monitors_3d import DFTFieldsMonitor3D, FluxMonitor3D, PlaneSource, PointSource3D, run_3d
 from ..core.run import run_te, run_tm
 from ..core.stepper import init_tm_state
+from ..core.stepper_3d import build_3d_coeffs, init_3d_state
 from ..core.stepper_te import init_te_state
 from ..geometry.scene import rasterize_scene
-from .coords import GridSpec, cell_index, cell_index_y, grid_spec, pml_npml, span_index_range, to_corner
-from .geometry import build_scene_items
+from .coords import (GridSpec, box3d, cell_index, cell_index_y, cell_index_z, grid_spec,
+                     pml_npml, span_index_range, to_corner)
+from .geometry import Block, build_scene_items
 from .material import Absorber, Medium, PML
 from .sources import (Dielectric, EigenModeSource, Source, build_line_source,
                       build_mode_source, pol_for)
@@ -57,12 +61,28 @@ class Near2FarRegion:
     weight: int = 1
 
 
+class _Amp:
+    """Scale a 3D source's time waveform by the meep ``Source.amplitude``
+    (run_3d drives ``.amplitude(t)`` + ``.src``)."""
+    def __init__(self, src, amp):
+        self._src = src
+        self.src = src.src
+        self._amp = amp
+
+    def amplitude(self, t_idx):
+        return self._amp * self._src.amplitude(t_idx)
+
+
 class Simulation:
     def __init__(self, *, cell_size, resolution, geometry=None, sources=None,
                  default_material=Medium(epsilon=1.0), boundary_layers=None,
                  dimensions=2, symmetries=None, dtype=torch.float64):
         self.dimensions = dimensions
         self.dtype = dtype
+        if dimensions == 3:
+            self._init_3d(cell_size, resolution, geometry, sources,
+                          default_material, boundary_layers, dtype)
+            return
         self.grid, self.gs, self._y_pmc = _grid_for(cell_size, resolution, dimensions, dtype)
         self._npml = 0
         self._nabs = 0
@@ -122,6 +142,138 @@ class Simulation:
                 ramp, absorber_sigma(ny, self._nabs, dx, **kw)[None, :].expand(nx, ny))
         return ramp
 
+    # ----------------------------------------------------------------------
+    # 3D path (W9 wave 3). Adapter only: builds the eps/conductivity volumes,
+    # calls build_3d_coeffs/init_3d_state, and drives run_3d. Axis-aligned
+    # Block only (voxel fill, no subpixel); scalar eps + D/B-conductivity only
+    # (no Lorentz/Kerr in 3D this wave). See docs/specs/...-w9-wave3-3d-shim.
+    # ----------------------------------------------------------------------
+    def _init_3d(self, cell_size, resolution, geometry, sources, default_material,
+                 boundary_layers, dtype):
+        self.gs = grid_spec(cell_size, resolution, dimensions=3)
+        g = self.gs
+        self.grid = None                      # no core/Grid in 3D; use gs + coeffs
+        self._y_pmc = False
+        self._npml = 0
+        self._nabs = 0
+        for bl in boundary_layers or []:
+            if isinstance(bl, PML):
+                self._npml = max(self._npml, pml_npml(bl.thickness, g))
+            elif isinstance(bl, Absorber):
+                self._nabs = max(self._nabs, pml_npml(bl.thickness, g))
+        self._default = (default_material if isinstance(default_material, Medium)
+                         else Medium(epsilon=float(default_material)))
+        nx, ny, nz = g.nx, g.ny, g.nz
+        bg = self._default
+        bg_eps, bg_chi3 = bg.resolve()
+        if isinstance(bg_eps, Material) or bg_chi3 != 0.0:
+            raise NotImplementedError("3D dispersive/Kerr default material not supported (W9 wave 3)")
+        eps = torch.full((nx, ny, nz), float(bg_eps), dtype=dtype)
+        bg_sd = float(getattr(bg, "D_conductivity", 0.0) or 0.0)
+        bg_sb = float(getattr(bg, "B_conductivity", 0.0) or 0.0)
+        sd = torch.full((nx, ny, nz), bg_sd, dtype=dtype)
+        sb = torch.full((nx, ny, nz), bg_sb, dtype=dtype)
+        for obj in (geometry or []):
+            if not isinstance(obj, Block):
+                raise NotImplementedError(
+                    f"3D geometry {type(obj).__name__} not supported (W9 wave 3; "
+                    f"axis-aligned Block only)")
+            c = obj.center or Vector3()
+            s = obj.size or Vector3(0, 0, 0)
+            i0, i1, j0, j1, k0, k1 = box3d(c, s, g)
+            m = obj.material
+            if m is None:
+                mv, sdv, sbv = float(bg_eps), bg_sd, bg_sb
+            else:
+                mv, mchi3 = (m.resolve() if isinstance(m, Medium) else (float(m), 0.0))
+                if isinstance(mv, Material) or mchi3 != 0.0:
+                    raise NotImplementedError("3D dispersive/Kerr Block not supported (W9 wave 3)")
+                mv = float(mv)
+                sdv = float(getattr(m, "D_conductivity", 0.0) or 0.0)
+                sbv = float(getattr(m, "B_conductivity", 0.0) or 0.0)
+            eps[i0:i1, j0:j1, k0:k1] = mv
+            sd[i0:i1, j0:j1, k0:k1] = sdv
+            sb[i0:i1, j0:j1, k0:k1] = sbv
+        has_cond = bool((sd.abs().sum() + sb.abs().sum()).item())
+        self._eps3d = eps
+        self._coeffs = build_3d_coeffs(
+            nx, ny, nz, g.dx, eps=eps, npml=self._npml, n_abs=self._nabs,
+            sigma_d=(sd if has_cond else None), sigma_b=(sb if has_cond else None),
+            dtype=dtype)
+        self._state = None
+        self._sources = list(sources or [])
+        self._monitors = []
+        self._last_acc = {}
+        self._eig_source = None              # 3D has no S-param path this wave
+        self._mode_ports = []
+        self._S = None
+        self._port_index = {}
+
+    def _make_sources_3d(self):
+        specs = list(self._sources)
+        if not specs:
+            return None
+        spec = specs[0]
+        prof = spec.src.profile()
+        comp = spec.component
+        c = spec.center or Vector3()
+        s = spec.size
+        g = self.gs
+        dt = self._coeffs.dt
+        amp = float(getattr(spec, "amplitude", 1.0) or 1.0)
+        if s is None or (s.x == 0 and s.y == 0 and s.z == 0):
+            i = cell_index(c.x, g); j = cell_index_y(c.y, g); k = cell_index_z(c.z, g)
+            src = PointSource3D(dt, comp, i, j, k, prof)
+        else:
+            sizes = [abs(s.x or 0.0), abs(s.y or 0.0), abs(s.z or 0.0)]
+            axis = sizes.index(min(sizes))             # propagation axis (zero/min extent)
+            idx = [cell_index(c.x, g), cell_index_y(c.y, g), cell_index_z(c.z, g)][axis]
+            # A full-plane planewave (mp.inf on a transverse axis) launches a
+            # uniform transverse field -- the x/y CPML is inert (zero transverse
+            # curl, no psi accumulation, same trick as the wave-2 gate-a mask),
+            # so NO transverse aperture: clipping it would create a finite
+            # aperture, ring the field, engage the side CPML and drain the beam
+            # (vacuum |T| collapses to ~0.13). Only a finite-aperture source
+            # (both transverse sizes bounded) takes the lo/hi window.
+            raw = [s.x or 0.0, s.y or 0.0, s.z or 0.0]
+            full_plane = any(math.isinf(t) for k, t in enumerate(raw) if k != axis)
+            if full_plane:
+                src = PlaneSource(g.nx, g.ny, g.nz, dt, comp, axis, idx, prof)
+            else:
+                ap = self._npml
+                src = PlaneSource(g.nx, g.ny, g.nz, dt, comp, axis, idx, prof,
+                                  lo=ap, hi=min(g.nx, g.ny, g.nz) - ap)
+        return _Amp(src, amp)
+
+    def _run_3d(self, n_steps):
+        self._state = init_3d_state(self.gs.nx, self.gs.ny, self.gs.nz,
+                                    npml=self._npml, dtype=self.dtype)
+        src = self._make_sources_3d()
+        monitors = [m for (_, _, m, _) in self._monitors]
+        self._state, outs = run_3d(self._state, self._coeffs, n_steps,
+                                   source=src, monitors=monitors)
+        for (name, kind, mon, meta), acc in zip(self._monitors, outs):
+            self._last_acc[name] = (acc, mon, meta)
+
+    def _plane_spec_3d(self, region):
+        c = region.center or Vector3()
+        s = region.size or Vector3(0, 0, 0)
+        g = self.gs
+        sizes = [abs(s.x or 0.0), abs(s.y or 0.0), abs(s.z or 0.0)]
+        axis = sizes.index(min(sizes))                 # plane normal axis (meep convention)
+        normal = ("x", "y", "z")[axis]
+        idx = [cell_index(c.x, g), cell_index_y(c.y, g), cell_index_z(c.z, g)][axis]
+        return normal, idx, self._npml + 1
+
+    def _add_flux_3d(self, fcen, df, nfreq, region, name):
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
+        name = name or f"flux{len(self._monitors)}"
+        normal, idx, ap = self._plane_spec_3d(region)
+        mon = FluxMonitor3D(self._coeffs.dt, freqs, normal=normal, idx=idx, ap=ap,
+                            dtype=self.dtype)
+        self._monitors.append((name, "flux", mon, {"normal": normal, "idx": idx}))
+        return name
+
     def _build_coeffs(self):
         extra = {}
         if self._cond is not None:
@@ -173,6 +325,12 @@ class Simulation:
         return init_te_state(self.grid, n_poles=n_poles)
 
     def run(self, until=None, until_after_sources=None, n_steps=None):
+        if self.dimensions == 3:
+            if n_steps is None:
+                T = until if until is not None else (until_after_sources or 0)
+                n_steps = max(1, int(round(float(T) / self._coeffs.dt)))
+            self._run_3d(n_steps)
+            return
         if n_steps is None:
             T = until if until is not None else (until_after_sources or 0)
             n_steps = max(1, int(round(float(T) / self.grid.dt)))
@@ -226,6 +384,8 @@ class Simulation:
 
     # --- flux monitors ---
     def add_flux(self, fcen, df, nfreq, region: FluxRegion, name=None):
+        if self.dimensions == 3:
+            return self._add_flux_3d(fcen, df, nfreq, region, name)
         freqs = (np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq)).tolist()
         mon, meta = self._line_monitor(region, freqs, kind="flux")
         name = name or f"flux{len(self._monitors)}"
@@ -233,6 +393,8 @@ class Simulation:
         return name
 
     def add_near2far(self, fcen, df, nfreq, *regions, name=None):
+        if self.dimensions == 3:
+            raise NotImplementedError("3D add_near2far not supported (W9 wave 3; 2D only)")
         """2D near-to-far contour (TM + TE). Regions with outward normal =
         region axis * weight; a closed box = 4 regions, meep style. Trapezoid
         endpoint weights close the loop integral when the regions share
@@ -289,6 +451,8 @@ class Simulation:
         return out[0] if len(freqs) == 1 else out
 
     def dft_ldos(self, fcen, df, nfreq, name=None):
+        if self.dimensions == 3:
+            raise NotImplementedError("3D dft_ldos not supported (W9 wave 3; deferred)")
         """meep dft_ldos-lite: record Ez at the (point) source and return
         LDOS via core.ldos.ldos_spectrum after run(). TM only."""
         c = (self._sources[0].center or Vector3())
@@ -315,7 +479,10 @@ class Simulation:
         freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
         name = name or f"dft{len(self._monitors)}"
         for c in components:
-            mon = DFTFieldsMonitor(self.grid, freqs, component=c)
+            if self.dimensions == 3:
+                mon = DFTFieldsMonitor3D(self._coeffs.dt, freqs, component=c, dtype=self.dtype)
+            else:
+                mon = DFTFieldsMonitor(self.grid, freqs, component=c)
             self._monitors.append((f"{name}:{c}", "dft", mon, {"freqs": freqs}))
         return name
 
@@ -326,6 +493,8 @@ class Simulation:
         return a[0] + 1j * a[1]
 
     def add_mode_monitor(self, fcen, df, nfreq, region: FluxRegion, name=None):
+        if self.dimensions == 3:
+            raise NotImplementedError("3D EigenModeSource/S-params not supported (W9 wave 3)")
         # For the S-param path: store the port spec; run() routes an
         # EigenModeSource + these monitors to compute_smatrix. freqs are kept
         # for get_flux_freqs parity.
@@ -379,7 +548,8 @@ class Simulation:
 
     def get_fluxes(self, name):
         acc, mon, meta = self._last_acc[name]
-        return mon.flux(acc, self.grid.dx).detach().cpu().numpy().tolist()
+        dx = self.gs.dx if self.dimensions == 3 else self.grid.dx
+        return mon.flux(acc, dx).detach().cpu().numpy().tolist()
 
     def get_flux_freqs(self, name):
         return mon_freqs(self, name)
@@ -394,6 +564,15 @@ class Simulation:
         return self._S[:, j, 0].detach().cpu().numpy()
 
     def get_array(self, component=Dielectric, center=None, size=None):
+        if self.dimensions == 3:
+            if component == Dielectric:
+                return self._eps3d.detach().cpu().numpy()
+            if self._state is None:
+                raise RuntimeError("run() before get_array(fields)")
+            f = getattr(self._state, component, None)
+            if f is None:
+                raise ValueError(f"unsupported component {component!r}")
+            return f.detach().cpu().numpy()
         if component == Dielectric:
             return self._rm.eps_tm.detach().cpu().numpy() if self._pol == "tm" \
                 else self._rm.eps_te_xx.detach().cpu().numpy()

@@ -46,6 +46,24 @@ class PlaneSource:
         return self.profile.amplitude((t_idx + 0.5) * self.dt)
 
 
+class PointSource3D:
+    """Soft point current (``step_3d`` point-source tuple) wrapped in the
+    same ``.amplitude(t_idx)`` + ``.src`` interface as ``PlaneSource`` so
+    ``run_3d`` drives both uniformly. ``comp`` is the injected E component,
+    ``(i, j, k)`` the node index, ``profile.amplitude`` the time waveform."""
+    _COMP = {"Ex", "Ey", "Ez"}
+
+    def __init__(self, dt, comp, i, j, k, profile):
+        if comp not in self._COMP:
+            raise ValueError(f"PointSource3D comp must be Ex/Ey/Ez, got {comp!r}")
+        self.dt = dt
+        self.profile = profile
+        self.src = (comp, int(i), int(j), int(k))
+
+    def amplitude(self, t_idx: int) -> float:
+        return self.profile.amplitude((t_idx + 0.5) * self.dt)
+
+
 class DFTFieldsMonitor3D:
     """Running DFT of one component on a plane (or full grid). Returns
     ``(nfreq, 2, ...)`` per step; ``reduce="sum"`` accumulates the phasor."""
