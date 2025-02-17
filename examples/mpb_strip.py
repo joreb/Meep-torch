@@ -2,6 +2,10 @@
 # Copyright (C) 2026 meep-torch contributors (original code)
 """meep-torch port stub: meep/python/examples/mpb_strip.py
 
+MPB-TRACK UPDATE (2026-08-09): band machinery landed (Bloch+harminv:
+stepper_bloch2 doubly-periodic, mpb-oracle gates <=2%; see
+holey-wvg-bands.py and mpb_bragg_sine.py). This stub still needs: strip dispersion via effective index (modes/ track).
+
 BLOCKED: MPB eigenmode band solver.
 
 meep-torch does not implement MPB eigenmode band solver. To port, meep-torch would need
