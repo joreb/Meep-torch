@@ -129,6 +129,16 @@
    periodic near2far tiling (cbfd8aa, grating-order lobe gate).
 
 MPB-blocked examples stay stubbed until the Q1 track is picked up separately.
+**MPB track waves 1-2 DONE 2026-08-09** (c6698e4..0a97927): bands via the
+Bloch+harminv FDTD route (no PWE solver). Wave 1: holey-wvg-bands ported
+(TE Bloch axes-swapped, guided bands within 2.5% of the meep oracle;
+supersampled coverage eps == meep subpixel again, kx=0.4 band exact;
+zone-edge modes excluded, scheme-sensitive at res 10; i k_y coupling now
+midpoint-averaged). Wave 2: stepper_bloch2 (doubly periodic TM) --
+square-lattice rod bands and 1D sine-Bragg bands within 2% of meep.mpb;
+mpb_bragg_sine ported. Remaining mpb stubs re-scoped: oblique lattice
+basis (tri/honeycomb), 3D slab bands, strip effective-index, supercell
+defects, mode-profile tooling.
 
 **Example-port pass DONE 2026-08-08** (ecaad6d..6888a03): 7 ports --
 refl-angular-kz2d (Fresnel p max err 0.0039, 0-65 deg, grazing needs
