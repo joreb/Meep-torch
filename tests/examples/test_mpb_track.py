@@ -286,3 +286,54 @@ def test_strip_dispersion_vs_mpb():
         neff = float(np.real(got.neff[0]))
         assert abs(neff - want_neff) / want_neff <= 0.02, \
             f"beta={beta}: neff {neff:.4f} vs mpb {want_neff:.4f}"
+
+
+def test_hole_slab_zeven_K_vs_mpb():
+    """mpb_hole_slab: triangular air-hole slab (h=0.5, r=0.3, eps=12),
+    first z-even guided band at K within 2.5% of meep.mpb. Rect sqrt(3)x1
+    supercell (K folds to ky = 2 pi/3); midplane source selects z-even."""
+    from meep_torch.core.stepper_bloch3 import (build_bloch3_coeffs,
+                                                init_bloch3_state, step_bloch3)
+
+    ref = json.load(open(DATA / "hole_slab_mpb.json"))
+    res = 16
+    nx, ny = int(round(math.sqrt(3) * res)), res
+    Lx, Ly = nx / res, 1.0
+    nz = 4 * res
+    dx = 1.0 / res
+    ss = 4
+    xi = ((torch.arange(nx * ss, dtype=torch.float64) + 0.5) / ss) / res
+    yj = ((torch.arange(ny * ss, dtype=torch.float64) + 0.5) / ss) / res
+    II, JJ = torch.meshgrid(xi, yj, indexing="ij")
+    plane = torch.full((nx * ss, ny * ss), float(ref["eps"]))
+    for cx, cy in ((0.0, 0.0), (Lx / 2, Ly / 2)):
+        dxp = (II - cx) - Lx * torch.round((II - cx) / Lx)
+        dyp = (JJ - cy) - Ly * torch.round((JJ - cy) / Ly)
+        plane[dxp ** 2 + dyp ** 2 < ref["r"] ** 2] = 1.0
+    plane = plane.reshape(nx, ss, ny, ss).mean(dim=(1, 3))
+    eps = torch.ones(nx, ny, nz, dtype=torch.float64)
+    jz0 = nz // 2 - int(ref["h"] / 2 * res)
+    jz1 = nz // 2 + int(ref["h"] / 2 * res)
+    eps[:, :, jz0:jz1] = plane[:, :, None]
+    kx, ky = 0.0, 2 * math.pi / 3                  # K folded into the rect BZ
+    c = build_bloch3_coeffs(eps, dx, kx, ky, n_abs_z=res // 2)
+    st = init_bloch3_state(nx, ny, nz)
+    pulse = GaussianPulse(0.3, 0.3)
+    src = ("Ey", nx // 3 + 1, ny // 5 + 2, nz // 2)   # midplane -> z-even
+    n_steps = int(round(250.0 / c.dt))
+    probes = [(nx // 3 + 1, ny // 5 + 2), (2 * nx // 3, ny // 2 + 1)]
+    series = np.empty((len(probes), n_steps), dtype=complex)
+    for t in range(n_steps):
+        st = step_bloch3(st, c, pulse.amplitude((t + 0.5) * c.dt), src)
+        for p, (pi, pj) in enumerate(probes):
+            series[p, t] = st.Ey[pi, pj, nz // 2].item()
+    t0 = int(round(50.0 / c.dt))
+    freqs = []
+    for p in range(len(probes)):
+        freqs += [m.freq for m in harminv(series[p, t0:], c.dt, 0.15, 0.45)
+                  if m.Q > 100 and m.amp > 1e-9]
+    want = ref["K_zeven"][0]
+    best = min(freqs, key=lambda g: abs(g - want)) if freqs else 1e9
+    assert abs(best - want) / want <= 0.025, \
+        f"z-even band {want:.4f} -> nearest {best:.4f} " \
+        f"(got {[round(f, 4) for f in sorted(freqs)[:6]]})"
