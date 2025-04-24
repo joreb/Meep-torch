@@ -139,6 +139,15 @@ square-lattice rod bands and 1D sine-Bragg bands within 2% of meep.mpb;
 mpb_bragg_sine ported. Remaining mpb stubs re-scoped: oblique lattice
 basis (tri/honeycomb), 3D slab bands, strip effective-index, supercell
 defects, mode-profile tooling.
+**MPB track COMPLETE 2026-08-09** (64eefc4..049059f): all remaining mpb
+stubs closed. Oblique lattices via the rect sqrt(3) x 1 supercell (tri
+Gamma/M/K within 2%, honeycomb band 1 within 2%, degenerate-pair capture
+noted); line defect 7-row supercell (no-spurious containment gate);
+strip via fd2d cross-section (neff within 2% after supersampling);
+hole slab via NEW stepper_bloch3 (complex 3D, periodic x/y, absorber z,
+midplane parity selection -- z-even K band within 2.5% of meep.mpb).
+6 example ports (tri/honey/strip/line_defect/data_analysis/hole_slab).
+Stub census 34 -> 25.
 
 **Example-port pass DONE 2026-08-08** (ecaad6d..6888a03): 7 ports --
 refl-angular-kz2d (Fresnel p max err 0.0039, 0-65 deg, grazing needs
