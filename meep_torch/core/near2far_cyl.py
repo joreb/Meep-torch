@@ -83,7 +83,16 @@ def farfield_bor_m0(planes, c, *, ir, jz0, jz1, thetas, k):
 
 
 def farfield_bor_m(planes, c, m, *, ir, jz0, jz1, thetas, k):
-    """General-m far pattern |E_theta|^2 + |E_phi|^2, normalized (W7.9).
+    """General-m far pattern |E_theta|^2 + |E_phi|^2, normalized (W7.9)."""
+    Et, Ep = farfield_bor_m_complex(planes, c, m, ir=ir, jz0=jz0, jz1=jz1,
+                                    thetas=thetas, k=k)
+    p = np.abs(Et) ** 2 + np.abs(Ep) ** 2
+    return p / p.max(axis=1, keepdims=True)
+
+
+def farfield_bor_m_complex(planes, c, m, *, ir, jz0, jz1, thetas, k):
+    """Complex (E_theta, E_phi) per frequency (un-normalized) -- the
+    coherent building block for per-m source sums (off-axis dipoles).
 
     phi-integrals per current component (beta = k r' sin theta):
       plain:  A_m  = 2 pi i^m J_m(beta)
@@ -95,7 +104,8 @@ def farfield_bor_m(planes, c, m, *, ir, jz0, jz1, thetas, k):
     from scipy.special import jv, jvp
     dr = c.dr
     nfreq = planes["Ez"].shape[0]
-    out = np.empty((nfreq, len(thetas)))
+    out_t = np.empty((nfreq, len(thetas)), dtype=complex)
+    out_p = np.empty((nfreq, len(thetas)), dtype=complex)
     zc = 0.5 * (jz0 + jz1) * dr
     ipm = 1j ** m
 
@@ -153,6 +163,6 @@ def farfield_bor_m(planes, c, m, *, ir, jz0, jz1, thetas, k):
             Lt = L[0] * ct - L[2] * st
             Et[ti] = -(Nt + L[1])
             Ep_far[ti] = -(N[1] - Lt)
-        p = np.abs(Et) ** 2 + np.abs(Ep_far) ** 2
-        out[fi] = p / p.max()
-    return out
+        out_t[fi] = Et
+        out_p[fi] = Ep_far
+    return out_t, out_p
