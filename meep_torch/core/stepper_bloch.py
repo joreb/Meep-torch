@@ -18,8 +18,10 @@ x uses CPML (from build_tm_coeffs with y_pmc=True); y is periodic (wrap).
 Nondispersive + Kerr; dispersive Lorentz poles are added per quadrature when
 the scene has poles (passed via the same TMCoeffs c1/c2/c3 + P_cur/P_prev).
 """
+import math
 from typing import NamedTuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -57,7 +59,8 @@ def _dy_periodic(F: torch.Tensor, dx: float) -> torch.Tensor:
 
 
 def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
-                  src_c=0.0, src_s=0.0, src_mask: torch.Tensor | None = None) -> BlochTMState:
+                  src_c=0.0, src_s=0.0, src_mask: torch.Tensor | None = None,
+                  src_mask_s: torch.Tensor | None = None) -> BlochTMState:
     """One TM step of the Bloch envelope (two quadratures), x-CPML, periodic y.
 
     Sources inject the envelope e at a line: src_c/src_s are the c/s temporal
@@ -115,8 +118,15 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
     Dz_c = state.Dz_c + dt * F.pad(curl_c, (0, 0, 1, 1))
     Dz_s = state.Dz_s + dt * F.pad(curl_s, (0, 0, 1, 1))
     if src_mask is not None:
-        Dz_c = Dz_c + dt * src_c * src_mask
-        Dz_s = Dz_s + dt * src_s * src_mask
+        if src_mask_s is not None:
+            # complex spatial mask (mask_c + i mask_s): full complex product
+            # with the (src_c + i src_s) temporal envelope -- single-order
+            # (DiffractedPlanewave) launches need the e^{i m G y} phase
+            Dz_c = Dz_c + dt * (src_c * src_mask - src_s * src_mask_s)
+            Dz_s = Dz_s + dt * (src_c * src_mask_s + src_s * src_mask)
+        else:
+            Dz_c = Dz_c + dt * src_c * src_mask
+            Dz_s = Dz_s + dt * src_s * src_mask
 
     # --- Lorentz ADE (per quadrature) ---
     if m.c1.numel():
