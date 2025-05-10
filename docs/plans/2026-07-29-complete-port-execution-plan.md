@@ -121,7 +121,17 @@
    **Wave 2 DONE 2026-08-09** (649d63f, delegated session): 3D CPML
    (mixed-mode axes), D/B-conductivity fast-path, monitors_3d.py; gates
    lossy-slab |T| <=3%, CPML decay 0.73x the absorber's, residual
-   2.5e-14. Still open: shim wiring, 3D examples (waves 3+).
+   2.5e-14.
+   **Wave 3 DONE 2026-08-09** (ceb4124): 3D shim path (vacuum
+   |T-1|=1.7e-3, real-eps slab 0.94%). **Wave 4 DONE** (1a498e3,
+   takeover): absorbed_power_density 3D port (D_conductivity dissipation
+   = sigma_d*eps*|E|^2, energy balance 2.6%). kz-aware CPML landed
+   (1a498e3): Fresnel p 0-80 deg max err 0.0030. Morning-2 threads
+   closed (925fd80..ce235cf): per-m coherent sums, closed-surface cyl
+   flux, fd1d supermode launch + parallel-wvgs-force, DiffractedPlanewave
+   complex-mask launch, reciprocity 2.4%. Census 46 -> 19; remaining
+   stubs: MPB pointer-stubs resolved, rest are 3D-heavy examples and
+   pointer variants.
    ALSO CLOSED 2026-08-08: W2 deferrals -- TE Bloch stepper (85833b2,
    Fresnel p-pol <=0.02; diffracted_planewave re-scoped to
    DiffractedPlanewave order launch) and kz_2d 1D reduction (8087500,
