@@ -4,9 +4,11 @@
 
 BLOCKED: stochastic sources.
 
-PORT-PASS UPDATE (2026-08-08): RandomSource + the ensemble pattern landed
-(see stochastic_emitter.py). This variant additionally needs the
-reciprocity/adjoint cross-check pass -- schedule with a W8 follow-on.
+RECIPROCITY-PASS UPDATE (2026-08-09): the reciprocity cross-check landed
+(stochastic_emitter_reciprocity.py, fwd-vs-reciprocal enhancement 2.4%
+agreement). This LINE variant is the coherent-line drive already shown in
+stochastic_emitter.py -- covered between the two ports; kept as a stub
+pointer only.
 
 meep-torch does not implement stochastic sources. To port, meep-torch would need
 stochastic line-source ensemble with a cosine-Fourier-series amp_func modeling quantum-noise emission. See the meep original for the physics.
