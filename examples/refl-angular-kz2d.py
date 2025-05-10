@@ -10,6 +10,11 @@ SUBSTITUTIONS:
   * mp.Simulation(kz_2d="complex") -> core stepper_kz (1D-in-x reduction).
   * Flux-normalized R -> reflected/incident Ez DFT amplitude ratio
     (|Ez_r / Ez_i| = |r_p| since Ez/|E| = cos theta on both sides).
+  * matched-sigma absorber -> kz-aware CFS-CPML on the x-derivatives
+    (npml=50, pml_alpha=0.4). A matched-sigma absorber reflects near
+    grazing because the x wavelength 2 pi/(w cos th) outgrows the graded
+    layer and the onset reads as a hard step (it capped at 65 deg). The
+    CPML is impedance-matched at every angle, so the sweep runs 0..80 deg.
 
 Run: uv run python examples/refl-angular-kz2d.py
 """
@@ -28,7 +33,7 @@ from meep_torch.core.stepper_kz import build_kz_coeffs, init_kz_state, step_kz
 
 OUT = pathlib.Path(__file__).parent
 FCEN, N2 = 1.0, 1.5
-NX, DX, NABS = 800, 0.05, 40
+NX, DX, NPML = 800, 0.05, 50
 
 
 def refl(theta):
@@ -38,8 +43,9 @@ def refl(theta):
         eps = torch.ones(NX, dtype=torch.float64)
         if with_glass:
             eps[400:] = N2 ** 2
-        c = build_kz_coeffs(NX, DX, kz, eps=eps, n_abs=NABS)
-        st = init_kz_state(NX)
+        c = build_kz_coeffs(NX, DX, kz, eps=eps, npml=NPML,
+                            pml_m=3, pml_R0=1e-10, pml_alpha=0.4)
+        st = init_kz_state(NX, npml=NPML)
         pulse = GaussianPulse(FCEN, 0.2)
         # x-group velocity ~ cos(theta): scale the run so the pulse makes
         # the round trip even near grazing
@@ -58,9 +64,9 @@ def refl(theta):
                / np.trapezoid(s0 * kern, t)) ** 2
 
 
-# ponytail: sweep capped at 65 deg -- the matched-sigma absorber reflects
-# near grazing (needs a kz-aware CPML, open thread); Brewster is covered
-thetas = np.radians(np.arange(0, 70, 5))
+# kz-aware CFS-CPML: p-pol Fresnel sweep 0..80 deg (was capped at 65 deg
+# with the matched-sigma absorber, which reflects near grazing).
+thetas = np.radians(np.arange(0, 85, 5))
 R = np.array([refl(t) for t in thetas])
 cos_i = np.cos(thetas)
 cos_t = np.sqrt(1 - (np.sin(thetas) / N2) ** 2)
@@ -73,10 +79,10 @@ brewster = math.degrees(math.atan(N2))
 ax.axvline(brewster, color="g", ls=":", lw=0.8, label=f"Brewster {brewster:.1f} deg")
 ax.set_xlabel("incidence angle (deg, out of plane)")
 ax.set_ylabel("reflectance R")
-ax.set_title("air/glass, p-pol, out-of-plane incidence (0-65 deg)")
+ax.set_title("air/glass, p-pol, out-of-plane incidence (0-80 deg, kz-CPML)")
 ax.legend(fontsize=8)
 fig.tight_layout()
 fig.savefig(OUT / "refl-angular-kz2d.png", dpi=150)
 plt.close(fig)
 err = float(np.abs(R - R_an).max())
-print(f"refl-angular-kz2d.png  max |R - Fresnel| = {err:.4f} over 0..65 deg")
+print(f"refl-angular-kz2d.png  max |R - Fresnel| = {err:.4f} over 0..80 deg (kz-CPML)")

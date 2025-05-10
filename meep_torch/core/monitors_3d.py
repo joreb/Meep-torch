@@ -101,12 +101,18 @@ class FluxMonitor3D:
     """
     reduce = "sum"
 
-    def __init__(self, dt, freqs, *, normal, idx, ap=0, dtype=torch.float64):
+    def __init__(self, dt, freqs, *, normal, idx, ap=0, win=None,
+                 dtype=torch.float64):
         if normal not in ("x", "y", "z"):
             raise ValueError(f"normal must be x/y/z, got {normal!r}")
         self.normal = normal
         self.idx = idx
         self.ap = ap
+        # Explicit transverse window (l0, h0, l1, h1) on the 2D plane layout,
+        # for an interior rectangular flux region (e.g. a closed-box face
+        # around a scatterer). None -> the centered [ap : m-ap] aperture
+        # (the full-cell port case, excludes the side PML).
+        self.win = win
         self.dt = dt
         self.freqs = torch.tensor(freqs, dtype=dtype)
 
@@ -136,13 +142,19 @@ class FluxMonitor3D:
             Hb = 0.5 * (state.Hz[:, j - 1, :] + state.Hz[:, j, :])
         # The two pairs sit on offset sublattices (shapes differ by one
         # cell on each axis); slice both to the common min shape so they
-        # stack. The aperture drops the side-PML fringe from the integral.
+        # stack. An explicit ``win`` clips to an interior rectangular
+        # region (a closed-box face); otherwise the centered ``ap`` margin
+        # drops the side-PML fringe from the integral.
         tensors = [Ea, Ha, Eb, Hb]
         m0 = min(t.shape[0] for t in tensors)
         m1 = min(t.shape[1] for t in tensors)
-        r0, r1 = ap, m0 - ap
-        c0, c1 = ap, m1 - ap
-        return tuple(t[r0:r1, c0:c1] for t in tensors)
+        if self.win is not None:
+            l0, h0, l1, h1 = self.win
+        else:
+            l0, h0, l1, h1 = ap, m0 - ap, ap, m1 - ap
+        l0 = max(0, l0); l1 = max(0, l1)
+        h0 = min(m0, h0); h1 = min(m1, h1)
+        return tuple(t[l0:h0, l1:h1] for t in tensors)
 
     def sample(self, state, t_idx: int) -> torch.Tensor:
         Ea, Ha, Eb, Hb = self._plane(state)

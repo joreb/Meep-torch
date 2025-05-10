@@ -269,8 +269,31 @@ class Simulation:
         freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
         name = name or f"flux{len(self._monitors)}"
         normal, idx, ap = self._plane_spec_3d(region)
+        g = self.gs
+        # A finite transverse extent (a closed-box face around a scatterer)
+        # -> explicit rectangular window on the plane; ap=0 (no PML margin
+        # for an interior face). Full-cell (mp.inf transverse, a port) ->
+        # centered [ap : m-ap] aperture excluding the side PML (unchanged).
+        s = region.size or Vector3(0, 0, 0)
+        trans = [s.x or 0.0, s.y or 0.0, s.z or 0.0]
+        if normal == "z":
+            finite = math.isfinite(trans[0]) and math.isfinite(trans[1])
+        elif normal == "x":
+            finite = math.isfinite(trans[1]) and math.isfinite(trans[2])
+        else:
+            finite = math.isfinite(trans[0]) and math.isfinite(trans[2])
+        win = None
+        if finite:
+            i0, i1, j0, j1, k0, k1 = box3d(region.center or Vector3(), s, g)
+            if normal == "z":
+                win = (i0, i1, j0, j1)
+            elif normal == "x":
+                win = (j0, j1, k0, k1)
+            else:
+                win = (i0, i1, k0, k1)
+            ap = 0
         mon = FluxMonitor3D(self._coeffs.dt, freqs, normal=normal, idx=idx, ap=ap,
-                            dtype=self.dtype)
+                            win=win, dtype=self.dtype)
         self._monitors.append((name, "flux", mon, {"normal": normal, "idx": idx}))
         return name
 
