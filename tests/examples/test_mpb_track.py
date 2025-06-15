@@ -337,3 +337,80 @@ def test_hole_slab_zeven_K_vs_mpb():
     assert abs(best - want) / want <= 0.025, \
         f"z-even band {want:.4f} -> nearest {best:.4f} " \
         f"(got {[round(f, 4) for f in sorted(freqs)[:6]]})"
+
+
+def _diamond_eps(res=16):
+    """Conventional cubic supercell (side 1) of the diamond lattice: 8
+    dielectric spheres (fcc sublattice + (1/4,1/4,1/4) shift), r=0.25/sqrt(2)
+    (mpb_diamond's r/a_conv preserved), eps=11.56, supersampled coverage,
+    periodic min-image distances."""
+    ref = json.load(open(DATA / "diamond_mpb.json"))
+    n = res
+    ss = 4
+    xi = ((torch.arange(n * ss, dtype=torch.float64) + 0.5) / ss) / res
+    II, JJ, KK = torch.meshgrid(xi, xi, xi, indexing="ij")
+    fine = torch.ones(n * ss, n * ss, n * ss, dtype=torch.float64)
+    fcc = [(0, 0, 0), (0, 0.5, 0.5), (0.5, 0, 0.5), (0.5, 0.5, 0)]
+    off = (0.25, 0.25, 0.25)
+    centers = [c for cx in fcc for c in (cx, (cx[0] + off[0],
+                                              cx[1] + off[1],
+                                              cx[2] + off[2]))]
+    for cx, cy, cz in centers:
+        dxp = (II - cx) - torch.round(II - cx)
+        dyp = (JJ - cy) - torch.round(JJ - cy)
+        dzp = (KK - cz) - torch.round(KK - cz)
+        fine[dxp ** 2 + dyp ** 2 + dzp ** 2 < ref["r"] ** 2] = ref["eps"]
+    return fine.reshape(n, ss, n, ss, n, ss).mean(dim=(1, 3, 5)), 1.0 / res
+
+
+def diamond_bands_at(kx, ky, kz, res=20, fmax=0.7, t_end=400.0):
+    """Triply-periodic 3D Bloch bands of the diamond lattice at one k point
+    (kx,ky,kz in rad/length, cell=1) via stepper_bloch3 + harminv."""
+    from meep_torch.core.stepper_bloch3 import (build_bloch3_coeffs,
+                                                init_bloch3_state, step_bloch3)
+
+    eps, dx = _diamond_eps(res)
+    n = eps.shape[0]
+    c = build_bloch3_coeffs(eps, dx, kx, ky, n_abs_z=0, kz=kz)
+    st = init_bloch3_state(n, n, n)
+    pulse = GaussianPulse(fmax / 2, fmax)
+    src = ("Ey", n // 3 + 1, n // 5 + 2, n // 2)
+    n_steps = int(round(t_end / c.dt))
+    probes = [(n // 3 + 1, n // 5 + 2, n // 2),
+              (2 * n // 3, n // 2 + 1, n // 3),
+              (n // 2, 2 * n // 3, n // 4 + 1)]
+    series = np.empty((len(probes), n_steps), dtype=complex)
+    for t in range(n_steps):
+        st = step_bloch3(st, c, pulse.amplitude((t + 0.5) * c.dt), src)
+        for p, (pi, pj, pk) in enumerate(probes):
+            series[p, t] = st.Ey[pi, pj, pk].item()
+    t0 = int(round(60.0 / c.dt))
+    freqs = []
+    for p in range(len(probes)):
+        freqs += [m.freq for m in harminv(series[p, t0:], c.dt, 0.15, fmax)
+                  if m.Q > 100 and m.amp > 1e-9]
+    return sorted(freqs)
+
+
+def test_diamond_band_vs_mpb():
+    """mpb_diamond: dielectric spheres in a diamond (fcc) lattice, first band
+    at the simple-cubic X point (k=(0,pi,pi)) within 3% of meep.mpb.
+
+    Rect-supercell trick: the fcc primitive cell (mpb_diamond's 2-sphere basis
+    at basis_size sqrt(0.5), a_conv=sqrt(2), r=0.25) is mapped to the
+    conventional cubic cell of side 1 containing 8 atoms -- the fcc sublattice
+    (0,0,0),(0,1/2,1/2),(1/2,0,1/2),(1/2,1/2,0) plus the (1/4,1/4,1/4) diamond
+    shift. r rescaled to 0.25/sqrt(2) so r/a_conv is identical; eps=11.56
+    unchanged. The cubic BZ is 1/4 the fcc BZ so the fcc bands fold into it,
+    but the oracle uses the SAME supercell + k, so the comparison is
+    self-consistent. Triply-periodic stepper_bloch3 (n_abs_z=0, kz=pi).
+    """
+    ref = json.load(open(DATA / "diamond_mpb.json"))
+    want = ref["bands"][0][0]
+    got = diamond_bands_at(0.0, math.pi, math.pi)
+    best = min(got, key=lambda g: abs(g - want)) if got else 1e9
+    print(f"diamond first band: mpb={want:.4f} got-nearest={best:.4f} "
+          f"(captured {[round(f, 4) for f in got[:6]]})")
+    assert abs(best - want) / want <= 0.03, \
+        f"diamond band {want:.4f} -> nearest {best:.4f} " \
+        f"(got {[round(f, 4) for f in got[:8]]})"
