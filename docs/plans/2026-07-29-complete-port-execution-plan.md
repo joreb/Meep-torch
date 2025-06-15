@@ -132,6 +132,19 @@
    complex-mask launch, reciprocity 2.4%. Census 46 -> 19; remaining
    stubs: MPB pointer-stubs resolved, rest are 3D-heavy examples and
    pointer variants.
+   **STUB CENSUS ZERO 2026-08-09** (a994369..2359148 + delegated
+   d77efd8/7a7b133/8a6d9eb/89ed894/f588a22): every remaining stub ported.
+   Mine: 6 mpb variants (tri_holes M 0.2%, material-dispersion polariton
+   0.2%), scattering quartet (cylinder Q_sca 1.3-1.7% vs 2D Mie via
+   plane-wave Bloch cell; mie_scattering re-gated as periodic-array vs
+   meep oracle <=2% most points; differential pattern; cyl-ellipsoid),
+   cherenkov (17.8 deg cone), stochastic line-vs-point coherence,
+   polarization_grating via NEW stepper_fv2d (full-vector 2D, 3x3 eps;
+   geometric-phase deflection efficiency 1.00 at m=-1). Delegated:
+   planar_cavity_ldos (0.80%), extraction_eff_ldos (2.25%), adjoint trio
+   (grad gate 1.25e-3), mpb_diamond via triply-periodic stepper_bloch3
+   (SC-X band 1.9% vs mpb). All 85 upstream examples now ported or
+   runnable; no BLOCKED markers remain.
    ALSO CLOSED 2026-08-08: W2 deferrals -- TE Bloch stepper (85833b2,
    Fresnel p-pol <=0.02; diffracted_planewave re-scoped to
    DiffractedPlanewave order launch) and kz_2d 1D reduction (8087500,
