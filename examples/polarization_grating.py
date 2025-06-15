@@ -1,34 +1,96 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""meep-torch port stub: meep/python/examples/polarization_grating.py
+"""meep-torch port of meep/python/examples/polarization_grating.py.
 
-BLOCKED: full-vector 2D stepper (ez-coupled 3x3 permittivity tensor).
+Liquid-crystal polarization grating: the LC director rotates in the
+transverse (y, z) plane with phi(y) = pi y / period, thickness tuned to
+a half wave ((ne - no) d = lambda / 2). A circularly polarized normal-
+incidence wave converts to the OPPOSITE handedness deflected into the
+-+1 order -- the geometric-phase (Pancharatnam-Berry) deflector.
 
-W5 UPDATE (2026-08-08): meep-torch now has an IN-PLANE anisotropic tensor
-(exx, exy, eyy) in the TE stepper (build_te_coeffs(eps_tensor=...), gate:
-rotated-uniaxial n_eff <1% vs the index ellipse). That does NOT unblock this
-example: the twisted-nematic director rotates out of the xy-plane, coupling
-Ez with (Ex, Ey) -- the TM/TE split itself breaks, and a full-vector 2D
-stepper (all six field components) is required.
+Uses the NEW full-vector 2D stepper (stepper_fv2d): the y-dependent
+eps tensor couples Ey and Ez, which the TM/TE split cannot host (this
+stub's long-standing blocker).
 
-The meep original models a polarization grating from a uniaxial twisted-nematic
-liquid crystal whose permittivity is a full 3x3 tensor with off-diagonal entries
-that vary spatially (the director twists along the propagation direction and
-across the grating period). meep's mp.Medium(epsilon_diag=..., epsilon_offdiag=...)
-accepts a tensor material, and the FDTD stepper propagates all coupled field
-components.
-
-meep-torch's TM/TE steppers (step_tm / step_te) only support an isotropic scalar
-permittivity (eps_inf is a scalar field; build_tm_coeffs / build_te_coeffs have no
-off-diagonal epsilon path). The geometry/polygons + scene rasterizer also only
-paints a scalar eps. There is no anisotropic FDTD in meep-torch, and the fd1d
-mode solver is scalar-only (the fd2d_tensor solver handles off-diagonal eps for
-mode solves but is not wired into the FDTD stepper).
-
-To port, meep-torch would need: (1) an anisotropic FDTD stepper that advances
-coupled Ex/Ey/Ez (or Er/Ep in cylindrical) from a tensor eps with off-diagonal
-entries, and (2) a scene rasterizer that paints a per-cell tensor, not a scalar.
-Both are substantial additions. See the meep original for the physics.
-
-meep original: meep/python/examples/polarization_grating.py
+Run: uv run python examples/polarization_grating.py
 """
+import math
+import pathlib
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+from meep_torch.core.stepper_fv2d import (build_fv2d_coeffs, init_fv2d_state,
+                                          step_fv2d)
+
+OUT = pathlib.Path(__file__).parent
+FCEN, RES = 1.0, 20
+NO, NE = 1.5, 1.7
+D = 0.5 / (NE - NO)                                # half-wave thickness = 2.5
+PERIOD = 6.0
+
+dx = 1.0 / RES
+nx, ny = int(10.0 * RES), int(PERIOD * RES)
+ys = (torch.arange(ny, dtype=torch.float64) + 0.5) * dx
+phi = math.pi * ys / PERIOD
+one = torch.ones(nx, ny, dtype=torch.float64)
+exx = one.clone()
+eyy = one.clone(); ezz = one.clone(); eyz = torch.zeros(nx, ny, dtype=torch.float64)
+i0, i1 = int(4.0 * RES), int((4.0 + D) * RES)
+delta = NE ** 2 - NO ** 2
+eyy[i0:i1, :] = NO ** 2 + delta * torch.cos(phi)[None, :] ** 2
+ezz[i0:i1, :] = NO ** 2 + delta * torch.sin(phi)[None, :] ** 2
+eyz[i0:i1, :] = delta * (torch.cos(phi) * torch.sin(phi))[None, :]
+exx[i0:i1, :] = NO ** 2
+eps6 = (exx, torch.zeros_like(one), torch.zeros_like(one), eyy, eyz, ezz)
+c = build_fv2d_coeffs(eps6, dx, npml=RES)
+st = init_fv2d_state(nx, ny)
+mask = torch.zeros(nx, ny, dtype=torch.float64)
+mask[int(2.0 * RES), :] = 1.0
+omega = 2 * math.pi * FCEN
+n_steps = int(round(50.0 / c.dt))
+accY = np.zeros(ny, dtype=complex)
+accZ = np.zeros(ny, dtype=complex)
+ix_out = nx - int(2.0 * RES)
+for t in range(n_steps):
+    tt = (t + 0.5) * c.dt
+    ramp = min(1.0, tt / 5.0)
+    st = step_fv2d(st, c, math.cos(omega * tt) * ramp, mask, "Ey",
+                   src2=("Ez", mask, math.sin(omega * tt) * ramp))
+    if t >= n_steps // 2:
+        ph = np.exp(-2j * math.pi * FCEN * (t + 1.0) * c.dt) * c.dt
+        accY += st.Ey[ix_out, :].numpy() * ph
+        accZ += st.Ez[ix_out, :].numpy() * ph
+
+# transmitted order decomposition (periodic y): circular components
+# DFT phasors are e^{+iwt}: the (cos, sin) drive is the (1, -i) circular
+# state = aR; the CONVERTED handedness is aL
+aR = (accY + 1j * accZ) / math.sqrt(2)             # input handedness
+aL = (accY - 1j * accZ) / math.sqrt(2)             # converted handedness
+orders = np.arange(-2, 3)
+powers = {}
+for name, a in (("input-handed", aR), ("converted", aL)):
+    fa = np.fft.fft(a) / ny
+    p = np.abs(np.concatenate([fa[-2:], fa[:3]])) ** 2
+    powers[name] = p[np.argsort(np.concatenate([np.arange(-2, 0), np.arange(0, 3)]))]
+tot = sum(p.sum() for p in powers.values())
+fig, ax = plt.subplots(figsize=(5.8, 3.8))
+w = 0.35
+ax.bar(orders - w / 2, powers["input-handed"] / tot, w, label="input handedness")
+ax.bar(orders + w / 2, powers["converted"] / tot, w, label="converted")
+ax.set_xlabel("diffraction order m")
+ax.set_ylabel("relative power")
+ax.set_title(f"polarization grating (half-wave LC, period {PERIOD})")
+ax.legend(fontsize=8)
+fig.tight_layout()
+fig.savefig(OUT / "polarization_grating.png", dpi=150)
+plt.close(fig)
+conv = powers["converted"]
+eff = float(conv[np.argmax(conv)] / tot)
+m_pk = int(orders[np.argmax(conv)])
+print(f"polarization_grating.png  converted-handedness peak at m={m_pk}, "
+      f"efficiency {eff:.2f} (geometric-phase deflection)")
