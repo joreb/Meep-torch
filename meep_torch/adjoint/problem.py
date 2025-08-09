@@ -68,7 +68,11 @@ class OptimizationProblem:
     def _objective(self, rho: torch.Tensor):
         r = rho
         if self.filter_radius > 0:
-            r = conic_filter(r, self.filter_radius, self.dx)
+            if r.dim() == 3:
+                from .filters import conic_filter3d
+                r = conic_filter3d(r, self.filter_radius, self.dx)
+            else:
+                r = conic_filter(r, self.filter_radius, self.dx)
         r = tanh_projection(r, self.beta, self.eta)
         eps = self.region.paint(self.base_eps, r)
         return self.run_fn(eps)
@@ -87,3 +91,77 @@ class OptimizationProblem:
         rho[i, j] += h
         with torch.no_grad():
             return float(self._objective(rho))
+
+
+class DesignRegion3D:
+    """3D analog of DesignRegion: trilinear paint into an eps voxel box."""
+
+    def __init__(self, material_grid: MaterialGrid, *, ix0, ix1, iy0, iy1,
+                 iz0, iz1):
+        self.mg = material_grid
+        self.box = (ix0, ix1, iy0, iy1, iz0, iz1)
+
+    def paint(self, base_eps: torch.Tensor, rho_projected: torch.Tensor) -> torch.Tensor:
+        ix0, ix1, iy0, iy1, iz0, iz1 = self.box
+        up = F.interpolate(rho_projected[None, None],
+                           size=(ix1 - ix0, iy1 - iy0, iz1 - iz0),
+                           mode="trilinear", align_corners=False)[0, 0]
+        eps = base_eps.clone()
+        eps[ix0:ix1, iy0:iy1, iz0:iz1] = self.mg.eps(up)
+        return eps
+
+
+class RobustOptimizationProblem(OptimizationProblem):
+    """Worst-case (minimax) optimization.
+
+    Scenarios: the eroded/dilated/nominal triple via projection thresholds
+    `etas` (three-field robust topology optimization), and/or a LIST of
+    run functions (frequencies, incidence angles, ...). The returned
+    objective is the smooth soft-min over all scenarios
+    (-logsumexp(-k J)/k; k -> inf gives the hard min, autograd flows to
+    every active scenario) -- maximizing it maximizes the worst case.
+    """
+
+    def __init__(self, run_fns, base_eps, design_region, *,
+                 etas=(0.5,), softmin_k: float = 50.0, **kw):
+        self.run_fns = run_fns if isinstance(run_fns, (list, tuple)) else [run_fns]
+        self.etas = tuple(etas)
+        self.softmin_k = float(softmin_k)
+        super().__init__(self.run_fns[0], base_eps, design_region, **kw)
+
+    def _objective(self, rho: torch.Tensor):
+        r = rho
+        if self.filter_radius > 0:
+            if r.dim() == 3:
+                from .filters import conic_filter3d
+                r = conic_filter3d(r, self.filter_radius, self.dx)
+            else:
+                r = conic_filter(r, self.filter_radius, self.dx)
+        js = []
+        for eta in self.etas:
+            proj = tanh_projection(r, self.beta, eta)
+            eps = self.region.paint(self.base_eps, proj)
+            for fn in self.run_fns:
+                js.append(fn(eps))
+        J = torch.stack([j if torch.is_tensor(j) else torch.as_tensor(j)
+                         for j in js])
+        k = self.softmin_k
+        return -torch.logsumexp(-k * J, dim=0) / k
+
+    def scenario_values(self):
+        """Hard per-scenario objectives at the current rho (reporting)."""
+        vals = []
+        with torch.no_grad():
+            r = self.rho
+            if self.filter_radius > 0:
+                if r.dim() == 3:
+                    from .filters import conic_filter3d
+                    r = conic_filter3d(r, self.filter_radius, self.dx)
+                else:
+                    r = conic_filter(r, self.filter_radius, self.dx)
+            for eta in self.etas:
+                eps = self.region.paint(self.base_eps,
+                                        tanh_projection(r, self.beta, eta))
+                for fn in self.run_fns:
+                    vals.append(float(fn(eps)))
+        return vals

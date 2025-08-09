@@ -50,3 +50,21 @@ def tanh_projection(rho: torch.Tensor, beta: float, eta: float = 0.5) -> torch.T
         + torch.tanh(beta * (rho - eta))
     den = math.tanh(beta * eta) + math.tanh(beta * (1 - eta))
     return num / den
+
+
+def _conv_norm3d(rho: torch.Tensor, kern: torch.Tensor) -> torch.Tensor:
+    k = kern[None, None]
+    x = rho[None, None]
+    pad = tuple(s // 2 for s in kern.shape)
+    num = F.conv3d(x, k, padding=pad)
+    den = F.conv3d(torch.ones_like(x), k, padding=pad)
+    return (num / den)[0, 0]
+
+
+def conic_filter3d(rho: torch.Tensor, radius: float, dx: float) -> torch.Tensor:
+    """3D conic blur (minimum lengthscale for 3D design regions)."""
+    n = max(1, int(math.ceil(radius / dx)))
+    ax = torch.arange(-n, n + 1, dtype=rho.dtype, device=rho.device) * dx
+    X, Y, Z = torch.meshgrid(ax, ax, ax, indexing="ij")
+    kern = torch.clamp(1.0 - torch.sqrt(X ** 2 + Y ** 2 + Z ** 2) / radius, min=0.0)
+    return _conv_norm3d(rho, kern)
