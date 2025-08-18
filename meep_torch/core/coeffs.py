@@ -45,6 +45,9 @@ class TMCoeffs(NamedTuple):
     mc1y: torch.Tensor | None = None   # (nm, nx-1, ny) on the Hy grid
     mc2y: torch.Tensor | None = None
     mc3y: torch.Tensor | None = None
+    # W5.75 instantaneous chi2 (second-order): None -> has_chi2 fast-path
+    chi2: torch.Tensor | None = None      # (nx, ny)
+    has_chi2: bool = False
 
 
 def _as_field(val, grid: Grid, default: float) -> torch.Tensor:
@@ -63,6 +66,7 @@ def build_tm_coeffs(
     poles: Sequence = (),
     pole_masks: Sequence[torch.Tensor] | None = None,
     chi3=None,
+    chi2=None,
     npml: int = 0,
     y_pmc: bool = False,
     sigma_d=None,
@@ -74,7 +78,9 @@ def build_tm_coeffs(
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
     x3 = _as_field(chi3, grid, 0.0)
+    x2 = _as_field(chi2, grid, 0.0)
     has_kerr = bool((x3 != 0).any())
+    has_chi2 = bool((x2 != 0).any())
 
     cond = {}
     if sigma_d is not None or sigma_b is not None or mu is not None:
@@ -151,6 +157,7 @@ def build_tm_coeffs(
 
     return TMCoeffs(
         dt=dt, dx=dx, eps_inf=eps, chi3=x3, has_kerr=has_kerr,
+        chi2=x2, has_chi2=has_chi2,
         c1=c1, c2=c2, c3=c3, y_pmc=y_pmc,
         b_hy=b_hy[None, :], a_hy=a_hy[None, :], k_hy=k_hy[None, :],
         b_hx=b_hx[:, None], a_hx=a_hx[:, None], k_hx=k_hx[:, None],
@@ -198,6 +205,10 @@ class TECoeffs(NamedTuple):
     inv_xy_x: torch.Tensor | None = None   # (nx-1, ny)
     inv_yy_y: torch.Tensor | None = None   # (nx, ny-1)
     inv_xy_y: torch.Tensor | None = None   # (nx, ny-1)
+    # W5.75 instantaneous chi2 (second-order): None -> has_chi2 fast-path
+    chi2_x: torch.Tensor | None = None      # (nx-1, ny)
+    chi2_y: torch.Tensor | None = None      # (nx, ny-1)
+    has_chi2: bool = False
 
 
 def _avg_to_ex(v: torch.Tensor) -> torch.Tensor:
@@ -216,6 +227,7 @@ def build_te_coeffs(
     poles: Sequence = (),
     pole_masks: Sequence[torch.Tensor] | None = None,
     chi3=None,
+    chi2=None,
     npml: int = 0,
     sigma_d=None,
     sigma_b=None,
@@ -225,10 +237,13 @@ def build_te_coeffs(
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
     x3 = _as_field(chi3, grid, 0.0)
+    x2 = _as_field(chi2, grid, 0.0)
     has_kerr = bool((x3 != 0).any())
+    has_chi2 = bool((x2 != 0).any())
 
     eps_x, eps_y = _avg_to_ex(eps), _avg_to_ey(eps)
     chi3_x, chi3_y = _avg_to_ex(x3), _avg_to_ey(x3)
+    chi2_x, chi2_y = _avg_to_ex(x2), _avg_to_ey(x2)
 
     cond = {}
     if eps_tensor is not None:
@@ -297,6 +312,7 @@ def build_te_coeffs(
     return TECoeffs(
         dt=dt, dx=dx,
         eps_x=eps_x, eps_y=eps_y, chi3_x=chi3_x, chi3_y=chi3_y, has_kerr=has_kerr,
+        chi2_x=chi2_x, chi2_y=chi2_y, has_chi2=has_chi2,
         c1x=c1x, c2x=c2x, c3x=c3x, c1y=c1y, c2y=c2y, c3y=c3y,
         b_hx=b_hx[:, None], a_hx=a_hx[:, None], k_hx=k_hx[:, None],
         b_hy=b_hy[None, :], a_hy=a_hy[None, :], k_hy=k_hy[None, :],

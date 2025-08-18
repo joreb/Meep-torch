@@ -126,12 +126,13 @@ def step_tm(
     # --- ADE Lorentz poles: P(n+1) = c1 P(n) + c2 P(n-1) + c3 Ez(n) ---
     P_new = m.c1 * state.P_cur + m.c2 * state.P_prev + m.c3 * state.Ez
 
-    # --- E from D (instantaneous Kerr via fixed point) ---
+    # --- E from D (instantaneous chi2/chi3 via fixed point) ---
+    # D = eps*E + chi2*E^2 + chi3*E^3  ->  E = rhs / (eps + chi2*E + chi3*E^2)
     rhs = Dz - P_new.sum(0)
     Ez = rhs / m.eps_inf
-    if m.has_kerr:
+    if m.has_kerr or m.has_chi2:
         for _ in range(3):
-            Ez = rhs / (m.eps_inf + m.chi3 * Ez * Ez)
+            Ez = rhs / (m.eps_inf + m.chi2 * Ez + m.chi3 * Ez * Ez)
 
     if Mx_new is not None:
         return TMState(Ez, Hx, Hy, Dz, P_new, state.P_cur, psi_Ezy, psi_Ezx,

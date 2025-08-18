@@ -87,7 +87,10 @@ def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = N
     Px_new = m.c1x * state.Px_cur + m.c2x * state.Px_prev + m.c3x * state.Ex
     Py_new = m.c1y * state.Py_cur + m.c2y * state.Py_prev + m.c3y * state.Ey
 
-    # --- E from D (instantaneous Kerr via fixed point) ---
+    # --- E from D (instantaneous chi2/chi3 via fixed point) ---
+    # D = eps*E + chi2*E^2 + chi3*|E|^2*E  ->  E = rhs/(eps + chi2*E + chi3*|E|^2)
+    # chi2 here is the per-component self-term (scalar d_iii reduction); the
+    # full d-tensor cross-terms are dropped -- TM is the W5.75 SHG target.
     rhs_x = Dx - Px_new.sum(0)
     rhs_y = Dy - Py_new.sum(0)
     if m.inv_xx_x is not None:
@@ -97,12 +100,12 @@ def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = N
     else:
         Ex = rhs_x / m.eps_x
         Ey = rhs_y / m.eps_y
-    if m.has_kerr:
+    if m.has_kerr or m.has_chi2:
         for _ in range(3):
             E2x = Ex * Ex + _avg4_to_ex(Ey) ** 2
             E2y = Ey * Ey + _avg4_to_ey(Ex) ** 2
-            Ex = rhs_x / (m.eps_x + m.chi3_x * E2x)
-            Ey = rhs_y / (m.eps_y + m.chi3_y * E2y)
+            Ex = rhs_x / (m.eps_x + m.chi2_x * Ex + m.chi3_x * E2x)
+            Ey = rhs_y / (m.eps_y + m.chi2_y * Ey + m.chi3_y * E2y)
 
     # --- Hz update (from E at n+1/2) ---
     dEy_dx = (Ey[1:, :] - Ey[:-1, :]) / dx                      # (nx-1, ny-1)
