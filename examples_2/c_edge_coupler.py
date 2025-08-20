@@ -92,6 +92,7 @@ opt.rho = rho.detach().clamp(0.0, 1.0)
 
 r = tanh_projection(conic_filter(opt.rho, 0.15, dx), 32.0)
 eps_fin = region.paint(base, r)
+np.save(OUT / "c_edge_coupler_rho.npy", r.detach().numpy())
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 5.6))
 ax1.plot(history, "bo-")
 ax1.set_xlabel("iteration")

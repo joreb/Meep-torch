@@ -125,6 +125,6 @@ ax.set_title(f"LiNbO3 ring, chi2 pump at resonance: SHG line at 2f0 "
              f"(P ratio {p_2f0 / p_f0:.1e})")
 ax.legend(fontsize=8)
 fig.tight_layout()
-fig.savefig(OUT / "b_ring_nonlinear.png", dpi=150)
+fig.savefig(OUT / "b_ring_Lithium_Niobate_nonlinear.png", dpi=150)
 plt.close(fig)
-print("b_ring_nonlinear.png written")
+print("b_ring_Lithium_Niobate_nonlinear.png written")

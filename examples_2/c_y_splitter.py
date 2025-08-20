@@ -101,6 +101,7 @@ opt.rho = rho.detach().clamp(0.0, 1.0)
 full = torch.cat([opt.rho.flip(1), opt.rho], dim=1)
 r = tanh_projection(conic_filter(full, 0.15, dx), 32.0)
 eps_fin = region.paint(base, r)
+np.save(OUT / "c_y_splitter_rho.npy", r.detach().numpy())
 with torch.no_grad():
     p1, p2 = run_fn(eps_fin)
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 5.6))
