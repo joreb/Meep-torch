@@ -24,8 +24,14 @@ class TEState(NamedTuple):
     psi_Hzx: torch.Tensor  # (nx-2, ny-1)
 
 
-def init_te_state(grid: Grid, n_poles: int = 0) -> TEState:
+def init_te_state(grid: Grid, n_poles: int = 0, n_poles_y: int | None = None) -> TEState:
+    """Allocate TE state. n_poles sizes the Ex-axis polarization buffers
+    (Px_cur/Px_prev); n_poles_y sizes the Ey-axis buffers (Py_cur/Py_prev)
+    and defaults to n_poles (shared-poles case). Per-axis dispersion passes
+    differing counts (poles + poles_x vs poles + poles_y)."""
     nx, ny = grid.nx, grid.ny
+    if n_poles_y is None:
+        n_poles_y = n_poles
     return TEState(
         Hz=grid.zeros(nx - 1, ny - 1),
         Ex=grid.zeros(nx - 1, ny),
@@ -34,8 +40,8 @@ def init_te_state(grid: Grid, n_poles: int = 0) -> TEState:
         Dy=grid.zeros(nx, ny - 1),
         Px_cur=grid.zeros(n_poles, nx - 1, ny),
         Px_prev=grid.zeros(n_poles, nx - 1, ny),
-        Py_cur=grid.zeros(n_poles, nx, ny - 1),
-        Py_prev=grid.zeros(n_poles, nx, ny - 1),
+        Py_cur=grid.zeros(n_poles_y, nx, ny - 1),
+        Py_prev=grid.zeros(n_poles_y, nx, ny - 1),
         psi_Eyx=grid.zeros(nx - 1, ny - 1),
         psi_Exy=grid.zeros(nx - 1, ny - 1),
         psi_Hzy=grid.zeros(nx - 1, ny - 2),

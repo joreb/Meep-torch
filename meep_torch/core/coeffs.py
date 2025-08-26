@@ -60,6 +60,53 @@ def _as_field(val, grid: Grid, default: float) -> torch.Tensor:
     return torch.full((grid.nx, grid.ny), float(val), dtype=grid.dtype, device=grid.device)
 
 
+def _pole_recurrence(pole, dt):
+    """ADE recurrence scalars for one dispersive pole.
+
+    pole = (fn, gamma, sigma) or (fn, gamma, sigma, fc): the restoring
+    frequency w0 = 2 pi*fn drives c1/c2; the coupling frequency
+    wc = 2 pi*(fc or fn) drives c3. fc defaults to fn (Lorentz, the
+    existing 3-tuple behaviour); fc != fn gives a Drude pole
+    (fn=0, fc=fp -> no restoring, coupling at the plasma frequency).
+    Returns (c1, c2, c3) scalars; c3 still needs the spatial mask.
+    """
+    fn, gamma, sigma = pole[0], pole[1], pole[2]
+    fc = pole[3] if len(pole) > 3 else fn
+    w0 = 2 * math.pi * fn
+    wc = 2 * math.pi * fc
+    G = 2 * math.pi * gamma
+    den = 1.0 + G * dt / 2.0
+    c1 = (2.0 - w0 * w0 * dt * dt) / den
+    c2 = -(1.0 - G * dt / 2.0) / den
+    c3 = sigma * wc * wc * dt * dt / den
+    return c1, c2, c3
+
+
+def _axis_pole_coeffs(grid, dt, eps_ref, shared, axis_poles, shared_masks,
+                      axis_masks, shape, avg):
+    """Build (c1, c2, c3) for one TE E-axis: shared poles act on BOTH axes,
+    axis_poles act on THIS axis only. Masks: shared_masks for the shared
+    poles, axis_masks for the axis-only poles (None -> uniform). `avg`
+    Yee-averages the cell-center mask onto the E-node shape."""
+    allp = list(shared) + list(axis_poles)
+    n = len(allp)
+    c1 = grid.zeros(n, *shape)
+    c2 = grid.zeros(n, *shape)
+    c3 = grid.zeros(n, *shape)
+    ns = len(shared)
+    for k, pole in enumerate(allp):
+        cv1, cv2, cv3 = _pole_recurrence(pole, dt)
+        if k < ns:
+            m = shared_masks[k] if shared_masks is not None else None
+        else:
+            m = axis_masks[k - ns] if axis_masks is not None else None
+        mask = (m if m is not None else torch.ones_like(eps_ref)).to(eps_ref)
+        c1[k] = cv1
+        c2[k] = cv2
+        c3[k] = cv3 * avg(mask)
+    return c1, c2, c3
+
+
 def build_tm_coeffs(
     grid: Grid,
     eps_inf=None,
@@ -125,14 +172,11 @@ def build_tm_coeffs(
     c2 = grid.zeros(n_poles, grid.nx, grid.ny)
     c3 = grid.zeros(n_poles, grid.nx, grid.ny)
     for k, pole in enumerate(poles):
-        fn, gamma, sigma = pole[0], pole[1], pole[2]
-        w0 = 2 * math.pi * fn
-        G = 2 * math.pi * gamma
-        den = 1.0 + G * dt / 2.0
+        cv1, cv2, cv3 = _pole_recurrence(pole, dt)
         mask = pole_masks[k] if pole_masks is not None else torch.ones_like(eps)
-        c1[k] = (2.0 - w0 * w0 * dt * dt) / den * torch.ones_like(eps)
-        c2[k] = -(1.0 - G * dt / 2.0) / den * torch.ones_like(eps)
-        c3[k] = (sigma * w0 * w0 * dt * dt / den) * mask.to(eps)
+        c1[k] = cv1 * torch.ones_like(eps)
+        c2[k] = cv2 * torch.ones_like(eps)
+        c3[k] = cv3 * mask.to(eps)
 
     if npml * 2 >= grid.nx or (npml * 2 >= grid.ny and not y_pmc):
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
@@ -233,6 +277,10 @@ def build_te_coeffs(
     sigma_b=None,
     mu=None,
     eps_tensor=None,
+    poles_x: Sequence = (),
+    poles_y: Sequence = (),
+    pole_masks_x: Sequence[torch.Tensor] | None = None,
+    pole_masks_y: Sequence[torch.Tensor] | None = None,
 ) -> TECoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -272,26 +320,15 @@ def build_te_coeffs(
         cond["hz1"] = (1 - sbz * dt / 2) / (1 + sbz * dt / 2)
         cond["hz2"] = dt / (muz * (1 + sbz * dt / 2))
 
-    n_poles = len(poles)
-    c1x = grid.zeros(n_poles, grid.nx - 1, grid.ny)
-    c2x = grid.zeros(n_poles, grid.nx - 1, grid.ny)
-    c3x = grid.zeros(n_poles, grid.nx - 1, grid.ny)
-    c1y = grid.zeros(n_poles, grid.nx, grid.ny - 1)
-    c2y = grid.zeros(n_poles, grid.nx, grid.ny - 1)
-    c3y = grid.zeros(n_poles, grid.nx, grid.ny - 1)
-    for k, pole in enumerate(poles):
-        fn, gamma, sigma = pole[0], pole[1], pole[2]
-        w0 = 2 * math.pi * fn
-        G = 2 * math.pi * gamma
-        den = 1.0 + G * dt / 2.0
-        mask = pole_masks[k] if pole_masks is not None else torch.ones_like(eps)
-        mask = mask.to(eps)
-        c1x[k] = (2.0 - w0 * w0 * dt * dt) / den * torch.ones_like(eps_x)
-        c2x[k] = -(1.0 - G * dt / 2.0) / den * torch.ones_like(eps_x)
-        c3x[k] = (sigma * w0 * w0 * dt * dt / den) * _avg_to_ex(mask)
-        c1y[k] = (2.0 - w0 * w0 * dt * dt) / den * torch.ones_like(eps_y)
-        c2y[k] = -(1.0 - G * dt / 2.0) / den * torch.ones_like(eps_y)
-        c3y[k] = (sigma * w0 * w0 * dt * dt / den) * _avg_to_ey(mask)
+    # Per-axis poles: shared `poles` act on BOTH Ex and Ey; poles_x/poles_y act
+    # on one axis only (per-axis Drude -> hyperbolic media). Empty by default
+    # -> c1x/c1y both have len(poles), matching the pre-per-axis behaviour.
+    c1x, c2x, c3x = _axis_pole_coeffs(
+        grid, dt, eps, poles, poles_x, pole_masks, pole_masks_x,
+        (grid.nx - 1, grid.ny), _avg_to_ex)
+    c1y, c2y, c3y = _axis_pole_coeffs(
+        grid, dt, eps, poles, poles_y, pole_masks, pole_masks_y,
+        (grid.nx, grid.ny - 1), _avg_to_ey)
 
     if npml * 2 >= grid.nx or npml * 2 >= grid.ny:
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
