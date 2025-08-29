@@ -253,6 +253,10 @@ class TECoeffs(NamedTuple):
     chi2_x: torch.Tensor | None = None      # (nx-1, ny)
     chi2_y: torch.Tensor | None = None      # (nx, ny-1)
     has_chi2: bool = False
+    # Oriented (tensor) poles: cross-drive of Px by Ey / Py by Ex.
+    # None -> stepper fast-path (grid-aligned poles only).
+    c3xy: torch.Tensor | None = None        # (np_x, nx-1, ny)
+    c3yx: torch.Tensor | None = None        # (np_y, nx, ny-1)
 
 
 def _avg_to_ex(v: torch.Tensor) -> torch.Tensor:
@@ -281,6 +285,8 @@ def build_te_coeffs(
     poles_y: Sequence = (),
     pole_masks_x: Sequence[torch.Tensor] | None = None,
     pole_masks_y: Sequence[torch.Tensor] | None = None,
+    poles_tensor: Sequence = (),
+    pole_masks_tensor: Sequence[torch.Tensor] | None = None,
 ) -> TECoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -329,6 +335,37 @@ def build_te_coeffs(
     c1y, c2y, c3y = _axis_pole_coeffs(
         grid, dt, eps, poles, poles_y, pole_masks, pole_masks_y,
         (grid.nx, grid.ny - 1), _avg_to_ey)
+
+    # Oriented (tensor) poles: pole = (fn, gamma, (sxx, sxy, syy)) or
+    # (fn, gamma, S, fc). The in-plane susceptibility tensor chi(f)*S
+    # (S = u u^T for an oriented Lorentz oscillator) appends one pole to
+    # EACH axis stack; the off-diagonal sxy drives Px from Yee-averaged Ey
+    # (c3xy) and Py from Ex (c3yx) -- non-grid-aligned optic axes.
+    c3xy = c3yx = None
+    if len(poles_tensor):
+        npx0, npy0 = c1x.shape[0], c1y.shape[0]
+        tc1x = grid.zeros(len(poles_tensor), grid.nx - 1, grid.ny)
+        tc2x, tc3x, tc3xy = (torch.zeros_like(tc1x) for _ in range(3))
+        tc1y = grid.zeros(len(poles_tensor), grid.nx, grid.ny - 1)
+        tc2y, tc3y, tc3yx = (torch.zeros_like(tc1y) for _ in range(3))
+        for k, pole in enumerate(poles_tensor):
+            fn, gamma, (sxx, sxy, syy) = pole[0], pole[1], pole[2]
+            fc = pole[3] if len(pole) > 3 else fn
+            cv1, cv2, cv3 = _pole_recurrence((fn, gamma, 1.0, fc), dt)
+            m = (pole_masks_tensor[k] if pole_masks_tensor is not None
+                 else torch.ones_like(eps)).to(eps)
+            mx, my = _avg_to_ex(m), _avg_to_ey(m)
+            tc1x[k], tc2x[k] = cv1, cv2
+            tc1y[k], tc2y[k] = cv1, cv2
+            tc3x[k], tc3xy[k] = cv3 * sxx * mx, cv3 * sxy * mx
+            tc3y[k], tc3yx[k] = cv3 * syy * my, cv3 * sxy * my
+        c1x = torch.cat([c1x, tc1x]); c2x = torch.cat([c2x, tc2x])
+        c3x = torch.cat([c3x, tc3x])
+        c1y = torch.cat([c1y, tc1y]); c2y = torch.cat([c2y, tc2y])
+        c3y = torch.cat([c3y, tc3y])
+        c3xy = torch.cat([grid.zeros(npx0, grid.nx - 1, grid.ny), tc3xy])
+        c3yx = torch.cat([grid.zeros(npy0, grid.nx, grid.ny - 1), tc3yx])
+        cond["c3xy"], cond["c3yx"] = c3xy, c3yx
 
     if npml * 2 >= grid.nx or npml * 2 >= grid.ny:
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")

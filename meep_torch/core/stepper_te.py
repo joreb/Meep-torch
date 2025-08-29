@@ -92,6 +92,10 @@ def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = N
     # --- ADE Lorentz poles: P(n+1/2) = c1 P(n-1/2) + c2 P(n-3/2) + c3 E(n-1/2) ---
     Px_new = m.c1x * state.Px_cur + m.c2x * state.Px_prev + m.c3x * state.Ex
     Py_new = m.c1y * state.Py_cur + m.c2y * state.Py_prev + m.c3y * state.Ey
+    if m.c3xy is not None:
+        # oriented poles: off-diagonal chi drives Px from Ey (and Py from Ex)
+        Px_new = Px_new + m.c3xy * _avg4_to_ex(state.Ey)
+        Py_new = Py_new + m.c3yx * _avg4_to_ey(state.Ex)
 
     # --- E from D (instantaneous chi2/chi3 via fixed point) ---
     # D = eps*E + chi2*E^2 + chi3*|E|^2*E  ->  E = rhs/(eps + chi2*E + chi3*|E|^2)
