@@ -15,7 +15,10 @@ class PointProbe:
         self.ix, self.iy = ix, iy
 
     def sample(self, state, t_idx: int) -> torch.Tensor:
-        return state.Ez[self.ix, self.iy]
+        # clone: a bare view pins that step's ENTIRE Ez tensor alive in the
+        # stack-reduce buffer (functional stepper -> new Ez per step ->
+        # n_steps full grids retained; 108 GB observed). Autograd-safe.
+        return state.Ez[self.ix, self.iy].clone()
 
 
 class DFTFieldsMonitor:
