@@ -8,7 +8,10 @@ from .stepper_te import TEState, step_te
 
 
 def _run_chunk(step_fn, state, coeffs, step0: int, k: int, source, monitors):
-    partials = [[] for _ in monitors]
+    # sum-reduce monitors (DFT accumulators) fold in-place: storing every
+    # step's sample first (old torch.stack path) held O(n_steps) copies --
+    # tens of GB for long broadband runs -- before summing.
+    partials = [None if mon.reduce == "sum" else [] for mon in monitors]
     for s in range(k):
         t_idx = step0 + s
         if source is not None:
@@ -23,11 +26,17 @@ def _run_chunk(step_fn, state, coeffs, step0: int, k: int, source, monitors):
         else:
             state = step_fn(state, coeffs)
         for i, mon in enumerate(monitors):
-            partials[i].append(mon.sample(state, t_idx))
+            smp = mon.sample(state, t_idx)
+            if mon.reduce == "sum":
+                partials[i] = smp if partials[i] is None else partials[i] + smp
+            else:
+                partials[i].append(smp)
     outs = []
     for mon, ps in zip(monitors, partials):
-        stacked = torch.stack(ps)
-        outs.append(stacked.sum(0) if mon.reduce == "sum" else stacked)
+        if mon.reduce == "sum":
+            outs.append(ps)
+        else:
+            outs.append(torch.stack(ps))
     return state, outs
 
 
