@@ -16,11 +16,18 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 OUT = pathlib.Path(__file__).parent
 gf.gpdk.PDK.activate()
 
+# All waveguide geometry goes on the SiN layer WGN (34, 0) in every GDS
+# (fab-deck convention for this platform; the LiNbO3 copy keeps the same
+# layer, its material assignment lives in the deck).
+SIN_LAYER = (34, 0)
+
 # --- (a)/(b): ring GDS (same geometry; b gets a LiNbO3-labeled copy) ---
-ring = gf.components.ring_single(radius=5.0, gap=0.2)
+ring = gf.components.ring_single(radius=5.0, gap=0.2).copy()
+ring.flatten()                       # remap_layers skips referenced subcells
+ring.remap_layers({(1, 0): SIN_LAYER})
 ring.write_gds(OUT / "a_ring_SiN.gds")
 ring.write_gds(OUT / "b_ring_SiN.gds")
-ring.write_gds(OUT / "b_ring_Lithium_Niobate.gds")   # layer mapping = LN in fab deck
+ring.write_gds(OUT / "b_ring_Lithium_Niobate.gds")
 print("export_gds  rings written (a_ring_SiN, b_ring_SiN, b_ring_Lithium_Niobate)")
 
 
@@ -38,7 +45,7 @@ def design_to_gds(npz_or_recompute, name):
     npoly = 0
     for path in cs.allsegs[0]:
         if len(path) >= 3:
-            comp.add_polygon(np.asarray(path), layer=(1, 0))
+            comp.add_polygon(np.asarray(path), layer=SIN_LAYER)
             npoly += 1
     plt.close(fig)
     comp.write_gds(OUT / f"{name}.gds")
