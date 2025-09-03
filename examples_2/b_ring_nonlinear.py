@@ -148,6 +148,54 @@ def _fwhm_q(f0, fr, spec, half_win=0.02):
     return f0 / fwhm if fwhm > 0 else float("nan")
 
 
+def make_png(out, fr_shg, spec_shg, shift_1x, shift_4x, kerr_ratio,
+             shg_ratio, q_harm, q_ext, gap, radius, f0, gq, gshg, gkerr):
+    """2-panel figure: SHG spectrum (top, short title + gate box) and Kerr
+    free-ringdown red-shift bars with the x4 expectation (bottom)."""
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(7.2, 6.6), height_ratios=[3, 2])
+    ax0.semilogy(fr_shg, np.maximum(spec_shg, 1e-12), lw=0.8)
+    ax0.axvline(f0, color="g", ls=":", label="pump $f_0$")
+    ax0.axvline(2 * f0, color="r", ls=":", label="SHG $2 f_0$")
+    ax0.set_xlim(0, 3 * f0)
+    ax0.set_xlabel("frequency (c/um)")
+    ax0.set_ylabel("ring spectrum (norm.)")
+    ax0.set_title(f"LiNbO3 ring chi2 pump at resonance (r={radius}, Q={q_harm:.0f})")
+    ax0.legend(fontsize=8, loc="upper right")
+    gate_txt = (f"gap={gap:.2f}  Q_ext={q_ext:.0f}\n"
+                f"SHG 4x={shg_ratio:.2f}  Kerr 4x={kerr_ratio:.2f}\n"
+                f"gates: Q={'Y' if gq else 'N'}  SHG={'Y' if gshg else 'N'}  "
+                f"Kerr={'Y' if gkerr else 'N'}")
+    ax0.text(0.015, 0.97, gate_txt, transform=ax0.transAxes, fontsize=8,
+             va="top", ha="left", family="monospace",
+             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.6", alpha=0.85))
+    xs = ["1x", "4x"]
+    vals = [shift_1x * 1e4, shift_4x * 1e4]
+    ax1.bar(xs, vals, width=0.5, color="#3a7", label="measured $\\Delta f$")
+    expect = [vals[0], vals[0] * 4.0]            # linear-in-power: shift(4x) = 4*shift(1x)
+    ax1.plot(xs, expect, "k--o", ms=4, lw=1.0, label="x4 expectation")
+    for x, v in zip(xs, vals):
+        ax1.text(x, v, f"{v:.3f}", ha="center", va="bottom", fontsize=8)
+    ax1.set_ylabel("Kerr red-shift $f_{ref}-f$  ($10^{-4}$)")
+    ax1.set_title(f"Kerr free-ringdown shift (ratio={kerr_ratio:.2f}, want 4.0)")
+    ax1.legend(fontsize=8, loc="upper left")
+    ax1.set_ylim(0, max(vals + expect) * 1.25)
+    fig.tight_layout()
+    fig.savefig(out / "b_ring_Lithium_Niobate_nonlinear.png", dpi=150)
+    plt.close(fig)
+    print("b_ring_Lithium_Niobate_nonlinear.png written")
+
+
+# --replot: regenerate the png from the saved npz without an 80min rerun.
+if "--replot" in sys.argv:
+    _d = np.load(OUT / "b_ring_nonlinear_data.npz")
+    make_png(OUT, _d["FR_SHG"], _d["SPEC_SHG"], float(_d["SHIFT_1X"]),
+             float(_d["SHIFT_4X"]), float(_d["KERR_RATIO"]), float(_d["SHG_RATIO"]),
+             float(_d["Q_HARM"]), float(_d["Q_EXT"]), float(_d["GAP"]),
+             float(_d["RADIUS"]), float(_d["F0"]), bool(_d["gate_q"]),
+             bool(_d["gate_shg"]), bool(_d["gate_kerr"]))
+    sys.exit(0)
+
+
 # ---------------------------------------------------------------- gate (1): Q
 def measure_resonance():
     """Sweep bus-ring gaps; pick the one whose harminv loaded Q is closest to
@@ -284,19 +332,15 @@ assert gate_shg, f"SHG ratio {SHG_RATIO:.3f} outside [3.40,4.60]"
 assert gate_kerr, f"Kerr ratio {KERR_RATIO:.3f} outside [3.20,4.80]"
 
 
-# ---------------------------------------------------------------- png (layout kept)
-fig, ax = plt.subplots(figsize=(7.2, 4))
-ax.semilogy(FR_SHG, np.maximum(SPEC_SHG, 1e-12), lw=0.8)
-ax.axvline(F0, color="g", ls=":", label="pump $f_0$")
-ax.axvline(2 * F0, color="r", ls=":", label="SHG $2 f_0$")
-ax.set_xlim(0, 3 * F0)
-ax.set_xlabel("frequency (c/um)")
-ax.set_ylabel("ring spectrum (norm.)")
-ax.set_title(f"LiNbO3 ring chi2 pump at resonance: SHG at 2f0 "
-             f"(r={RADIUS}, gap={GAP:.2f}, Q={Q_HARM:.0f}, Q_ext={Q_EXT:.0f}, "
-             f"SHG 4x={SHG_RATIO:.2f}, Kerr 4x={KERR_RATIO:.2f})")
-ax.legend(fontsize=8)
-fig.tight_layout()
-fig.savefig(OUT / "b_ring_Lithium_Niobate_nonlinear.png", dpi=150)
-plt.close(fig)
-print("b_ring_Lithium_Niobate_nonlinear.png written")
+# ---------------------------------------------------------------- persist + png
+# npz of the plot inputs so future presentation tweaks replot via --replot
+# without an 80min rerun (spectra + ringdown shifts + gate scalars/flags).
+np.savez(OUT / "b_ring_nonlinear_data.npz",
+         FR_SHG=FR_SHG, SPEC_SHG=SPEC_SHG, SHIFT_1X=SHIFT_1X, SHIFT_4X=SHIFT_4X,
+         KERR_RATIO=KERR_RATIO, SHG_RATIO=SHG_RATIO, Q_HARM=Q_HARM, Q_EXT=Q_EXT,
+         Q_FWHM=Q_FWHM, GAP=GAP, RADIUS=RADIUS, F0=F0,
+         gate_q=gate_q, gate_shg=gate_shg, gate_kerr=gate_kerr,
+         ETA_A=ETA_A, ETA_2A=ETA_2A, f_ref=f_ref, f_k1=f_k1, f_k4=f_k4)
+print("b_ring_nonlinear_data.npz written")
+make_png(OUT, FR_SHG, SPEC_SHG, SHIFT_1X, SHIFT_4X, KERR_RATIO, SHG_RATIO,
+         Q_HARM, Q_EXT, GAP, RADIUS, F0, gate_q, gate_shg, gate_kerr)

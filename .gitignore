@@ -27,6 +27,10 @@ fdtdx/
 fdtd/
 femwell/
 meep/
+"Photonics_Simulation/"
+
+# examples_2 plot-data caches (regenerable from the run via --replot; not for review)
+examples_2/*_data.npz
 
 # all dot-directories (agent tooling, caches, venvs)
 .*/
