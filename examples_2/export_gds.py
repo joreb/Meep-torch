@@ -16,18 +16,28 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 OUT = pathlib.Path(__file__).parent
 gf.gpdk.PDK.activate()
 
-# All waveguide geometry goes on the SiN layer WGN (34, 0) in every GDS
-# (fab-deck convention for this platform; the LiNbO3 copy keeps the same
+# All waveguide geometry goes on the SiN layer (4, 0) in every GDS
+# (user-specified fab-deck convention; the LiNbO3 copy keeps the same
 # layer, its material assignment lives in the deck).
-SIN_LAYER = (34, 0)
+SIN_LAYER = (4, 0)
 
-# --- (a)/(b): ring GDS (same geometry; b gets a LiNbO3-labeled copy) ---
-ring = gf.components.ring_single(radius=5.0, gap=0.2).copy()
-ring.flatten()                       # remap_layers skips referenced subcells
-ring.remap_layers({(1, 0): SIN_LAYER})
-ring.write_gds(OUT / "a_ring_SiN.gds")
-ring.write_gds(OUT / "b_ring_SiN.gds")
-ring.write_gds(OUT / "b_ring_Lithium_Niobate.gds")
+def _ring_gds(radius, gap):
+    # gpdk strip DRC has radius_min=3.5; the r=3 nonlinear device is a
+    # simulation geometry, so relax the floor (same override as b_ring sim)
+    xs = gf.get_cross_section("strip").copy(radius_min=radius)
+    r = gf.components.ring_single(radius=radius, gap=gap,
+                                  cross_section=xs).copy()
+    r.flatten()                      # remap_layers skips referenced subcells
+    r.remap_layers({(1, 0): SIN_LAYER})
+    return r
+
+
+# (a): r=5 gap=0.2 (S-matrix device); (b): r=3 gap=0.30 (nonlinear device,
+# single FSR-spaced mode in band -- see b_ring_nonlinear redo)
+_ring_gds(5.0, 0.2).write_gds(OUT / "a_ring_SiN.gds")
+ring_b = _ring_gds(3.0, 0.30)
+ring_b.write_gds(OUT / "b_ring_SiN.gds")
+ring_b.write_gds(OUT / "b_ring_Lithium_Niobate.gds")
 print("export_gds  rings written (a_ring_SiN, b_ring_SiN, b_ring_Lithium_Niobate)")
 
 
