@@ -3,9 +3,10 @@
 from .filters import (conic_filter, conic_filter3d, gaussian_filter,
                       tanh_projection)
 from .problem import (DesignRegion, DesignRegion3D, MaterialGrid,
-                      OptimizationProblem, RobustOptimizationProblem)
+                      OptimizationProblem, RobustOptimizationProblem,
+                      rho_from_eps)
 
 __all__ = ["conic_filter", "conic_filter3d", "gaussian_filter",
            "tanh_projection", "MaterialGrid", "DesignRegion",
            "DesignRegion3D", "OptimizationProblem",
-           "RobustOptimizationProblem"]
+           "RobustOptimizationProblem", "rho_from_eps"]

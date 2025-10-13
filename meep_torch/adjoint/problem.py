@@ -29,6 +29,19 @@ class MaterialGrid:
         return self.eps_min + (self.eps_max - self.eps_min) * rho_projected
 
 
+def rho_from_eps(eps: torch.Tensor, region: "DesignRegion") -> torch.Tensor:
+    """Seed a design density from an existing eps map -- e.g. a rasterized
+    gdsfactory component: the region's eps box is normalized to [0, 1] via
+    the MaterialGrid endpoints and area-downsampled to the rho grid.
+    Clamped to (0.02, 0.98) so tanh projection keeps usable gradients."""
+    ix0, ix1, iy0, iy1 = region.box
+    mg = region.mg
+    r = (eps[ix0:ix1, iy0:iy1] - mg.eps_min) / (mg.eps_max - mg.eps_min)
+    r = F.interpolate(r[None, None].to(torch.float64), size=mg.shape,
+                      mode="area")[0, 0]
+    return r.clamp(0.02, 0.98)
+
+
 class DesignRegion:
     """Paints a MaterialGrid into an index box of the simulation eps map
     (bilinear upsampling from the design grid to the region cells)."""
