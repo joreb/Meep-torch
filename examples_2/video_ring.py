@@ -28,7 +28,7 @@ from meep_torch.core.stepper import init_tm_state, step_tm
 OUT = pathlib.Path(__file__).parent
 gf.gpdk.PDK.activate()
 RES = 20
-F0 = 1 / 1.5882                                    # deepest resonance from (a)
+F0 = 1 / 1.5846                                    # deepest resonance from (a) redo (RES 30 mode-overlap scan)
 
 c = gf.components.ring_single(radius=5.0, gap=0.2)
 grid, eps, ports = component_to_eps(c, res=RES, pad=1.5, n_core=2.0, n_clad=1.44)

@@ -1,26 +1,34 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c2): inverse-designed Y splitter, SiN 150 nm / SiO2
-(tidy3d Autograd-splitter-notebook style, meep-torch adjoint toolchain).
+"""device-suite (c2): inverse-designed Y splitter on the REAL SiN platform.
 
-Redone at the fdtdx quality bar: objective = |S21|^2 + |S31|^2 via the
-ports mode-overlap machinery (TE0 mode source in, TE0 overlap at each
-arm) -- true mode-to-mode transmission, reported in dB. Design half-grid
-mirrored about the axis (50/50 by construction); RES 25, rho 40x24.
+Geometry imported from gdsfactory: mmi1x2_with_sbend at 2.0 um width,
+rasterized through the gds adapter and used BOTH as the simulation base
+and as the inverse-design seed (the design region covers the MMI body;
+rho is seeded from the imported layout). Platform: SiN 150 nm on SiO2,
+lateral effective index n_core = neff(150 nm slab TE0), indices from
+the meep materials library (Si3N4 Luke, SiO2 Horiba) at 1550 nm. Objective = |S21|^2 +
+|S31|^2 via TE0 mode source + per-arm mode overlap.
 
 Run: uv run python examples_2/c_y_splitter.py
 """
 import math
 import pathlib
+import sys
 
+import gdsfactory as gf
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 
-from meep_torch.adjoint import DesignRegion, MaterialGrid
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from gds_meep_torch import component_to_eps
+
+from meep_torch.adjoint import DesignRegion, MaterialGrid, rho_from_eps
 from meep_torch.adjoint.filters import conic_filter, tanh_projection
 from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
@@ -34,47 +42,70 @@ from meep_torch.ports.mode_source import ModeSourceTM
 from meep_torch.ports.port import Port, validate_ports
 
 OUT = pathlib.Path(__file__).parent
-eps_line = np.full(400, 1.44 ** 2)
-eps_line[200 - 7: 200 + 8] = 2.0 ** 2
-NEFF_SLAB = float(solve_1d(eps_line, 0.01, 1 / 1.55, "te", k=1).neff[0])
-# 2D nominal-index convention (same as case a): the 150 nm-slab effective
-# index is only 0.007 above the SiO2 cladding -- a 2D wire at that contrast
-# holds no bound mode, so the 2D stand-in uses bulk SiN n = 2.0.
-NEFF = 2.0
-print(f"c_y_splitter  150nm slab TE0 neff = {NEFF_SLAB:.4f}; "
-      f"2D uses n_core = {NEFF}")
+gf.gpdk.PDK.activate()
 
-RES = 25
+# --- real platform: 150 nm SiN slab -> lateral effective index ---
+from meep_torch.core.materials import Si3N4, SiO2
+
+# refractive indices from the meep materials library (Lorentz fits):
+# Si3N4 K. Luke et al. (2015), SiO2 Horiba TN08 -- evaluated at 1550 nm
+N_SIN = Si3N4.n(1 / 1.55).real                      # 1.9963
+N_CLAD = SiO2.n(1 / 1.55).real                      # 1.4577
+eps_line = np.full(400, N_CLAD ** 2)
+eps_line[200 - 7: 200 + 8] = N_SIN ** 2
+NEFF = float(solve_1d(eps_line, 0.01, 1 / 1.55, "te", k=1).neff[0])
+W_WG = 2.0
+print(f"c_y_splitter  SiN 150nm/SiO2: lateral n_core = {NEFF:.4f}, "
+      f"n_clad = {N_CLAD}, W = {W_WG} um")
+
+# --- gdsfactory Y-branch (MMI 1x2 + sbends) at 2 um, output straights
+# extended so the arms run into the PML ---
+xs = gf.get_cross_section("strip").copy(width=W_WG)
+mmi = gf.components.mmi1x2_with_sbend(cross_section=xs)
+comp = gf.Component("y_splitter_2um")
+ref = comp.add_ref(mmi)
+for pname in ("o1", "o2", "o3"):
+    st = comp.add_ref(gf.components.straight(length=4.0, cross_section=xs))
+    st.connect("o1", ref.ports[pname])
+    comp.add_port(pname, port=st.ports["o2"])
+comp.flatten()
+
+RES = 20
 FCEN = 1 / 1.55
 dx = 1.0 / RES
-nx, ny = int(12.0 * RES), int(8.0 * RES)
-grid = Grid(nx=nx, ny=ny, dx=dx)
-cy = ny // 2
-jw = int(0.25 * RES)                              # 0.5 um waveguides
-SEP = int(1.2 * RES)                              # arm offset from axis
-NPML = int(0.8 * RES)
-T_RUN = 80.0
+grid, eps_base, ports = component_to_eps(comp, res=RES, pad=2.2,
+                                         n_core=NEFF, n_clad=N_CLAD)
+nx, ny = grid.nx, grid.ny
+NPML = RES                                          # 1 um
+T_RUN = 130.0
+print(f"c_y_splitter  grid {nx}x{ny} ({nx * dx:.1f} x {ny * dx:.1f} um)")
 
-base = torch.full((nx, ny), 1.44 ** 2, dtype=torch.float64)
-i_in1 = int(3.0 * RES)
-i_out0 = int(9.0 * RES)
-base[:i_in1, cy - jw: cy + jw] = NEFF ** 2
-base[i_out0:, cy + SEP - jw: cy + SEP + jw] = NEFF ** 2
-base[i_out0:, cy - SEP - jw: cy - SEP + jw] = NEFF ** 2
+o1x, o1y, _ = ports["o1"]
+o2x, o2y, _ = ports["o2"]
+o3x, o3y, _ = ports["o3"]
 
-mg = MaterialGrid((40, 24), eps_min=1.44 ** 2, eps_max=NEFF ** 2)
-region = DesignRegion(mg, ix0=i_in1, ix1=i_out0,
-                      iy0=cy - int(2.0 * RES), iy1=cy + int(2.0 * RES))
+# design region: the MMI body + junction (component x ~ 0.5..11 um)
+x_shift = o1x * dx + 4.0 + 0.25                     # component x=0 in grid um
+ix0 = int((x_shift + 0.5) * RES)
+ix1 = int((x_shift + 11.0) * RES)
+iy0 = int(o1y - 3.5 * RES)
+iy1 = int(o1y + 3.5 * RES)
+NRX, NRY = 105, 70                                  # 100 nm design pixels
+mg = MaterialGrid((NRX, NRY), eps_min=N_CLAD ** 2, eps_max=NEFF ** 2)
+region = DesignRegion(mg, ix0=ix0, ix1=ix1, iy0=iy0, iy1=iy1)
 
-SPAN = int(0.9 * RES)
-p_in = Port(axis="x", index=int(1.4 * RES), lo=cy - SPAN, hi=cy + SPAN,
-            direction=+1)
-p_up = Port(axis="x", index=nx - int(1.4 * RES), lo=cy + SEP - SPAN,
-            hi=cy + SEP + SPAN, direction=-1)
-p_dn = Port(axis="x", index=nx - int(1.4 * RES), lo=cy - SEP - SPAN,
-            hi=cy - SEP + SPAN, direction=-1)
+# rho seed = the imported layout inside the design box (core API)
+seed = rho_from_eps(eps_base, region)
+
+SPAN = int(1.8 * RES)
+p_in = Port(axis="x", index=max(o1x + 6, NPML + 4), lo=o1y - SPAN,
+            hi=o1y + SPAN, direction=+1)
+p_up = Port(axis="x", index=min(o2x - 6, nx - NPML - 4), lo=o2y - SPAN,
+            hi=o2y + SPAN, direction=-1)
+p_dn = Port(axis="x", index=min(o3x - 6, nx - NPML - 4), lo=o3y - SPAN,
+            hi=o3y + SPAN, direction=-1)
 validate_ports([p_in, p_up, p_dn], grid, NPML)
-pulse = GaussianPulse(FCEN, 0.2)                    # t_end=50 < T_RUN
+pulse = GaussianPulse(FCEN, 0.2)                    # t_end = 50 < T_RUN
 
 
 def s_params(eps):
@@ -83,50 +114,42 @@ def s_params(eps):
     mons = [FluxMonitorTM(grid, [FCEN], x_normal=True, idx=p.index,
                           lo=p.lo, hi=p.hi) for p in (p_in, p_up, p_dn)]
     _, accs = run_tm(init_tm_state(grid), coeffs, int(round(T_RUN / grid.dt)),
-                     source=src, monitors=mons, checkpoint_every=250)
+                     source=src, monitors=mons, checkpoint_every=400)
     out = []
     for p, acc in zip((p_in, p_up, p_dn), accs):
         el = eps.detach()[p.index, p.lo:p.hi]
         out.append(decompose(acc, el, dx, [FCEN], "tm", 1, axis_sign=-1.0))
     a_in = out[0][0][0, 0]
     return (out[1][0][0, 0] / a_in, out[2][0][0, 0] / a_in,
-            out[0][1][0, 0] / a_in)                # s_up, s_dn, s11
+            out[0][1][0, 0] / a_in)
 
 
-def objective(rho_half):
-    rho = torch.cat([rho_half, rho_half.flip(1)], dim=1)   # mirror symmetry
-    r = tanh_projection(conic_filter(rho, 0.12, dx), BETA)
-    s_up, s_dn, _ = s_params(region.paint(base, r))
+def objective(rho):
+    r = tanh_projection(conic_filter(rho, 0.15, dx), BETA)
+    s_up, s_dn, _ = s_params(region.paint(eps_base, r))
     return (s_up.conj() * s_up + s_dn.conj() * s_dn).real
 
 
-# half-seed: S-bend band from the input axis (j=12, top edge of the half)
-# to the lower arm center, so the optimizer starts from a working Y-branch
-seed = torch.full((40, 12), 0.1, dtype=torch.float64)
-j_arm = (2.0 - 1.2) / 4.0 * 24                     # arm center in rho rows
-for i in range(40):
-    jc = 12 - (12 - j_arm) * (i / 39) ** 1.3
-    j0, j1 = int(round(jc)) - 2, int(round(jc)) + 2
-    seed[i, max(j0, 0):min(j1, 12)] = 0.9
 rho = seed.clone().requires_grad_(True)
-adam = torch.optim.Adam([rho], lr=0.04)
+adam = torch.optim.Adam([rho], lr=0.03)
 history = []
-for it in range(36):
-    BETA = [8, 16, 32, 64][min(it // 9, 3)]
+for it in range(30):
+    BETA = [8, 16, 32, 64][min(it // 8, 3)]
     adam.zero_grad()
     J = objective(rho.clamp(0.0, 1.0))
     (-J).backward()
     adam.step()
     history.append(float(J))
-    if it % 6 == 0 or it == 35:
+    if it % 5 == 0 or it == 29:
         print(f"c_y_splitter  it={it} beta={BETA}: total T = "
               f"{float(J) * 100:.1f}%")
 
 BETA = 64
-rho_full = torch.cat([rho.detach().clamp(0, 1),
-                      rho.detach().clamp(0, 1).flip(1)], dim=1)
-r = tanh_projection(conic_filter(rho_full, 0.12, dx), BETA)
-eps_fin = region.paint(base, r).detach()
+rho_f = rho.detach().clamp(0, 1)
+# mirror-symmetrize (device is nominally symmetric; averages out noise)
+rho_f = 0.5 * (rho_f + rho_f.flip(1))
+r = tanh_projection(conic_filter(rho_f, 0.15, dx), BETA)
+eps_fin = region.paint(eps_base, r).detach()
 with torch.no_grad():
     s_up, s_dn, s11 = s_params(eps_fin)
     coeffs = build_tm_coeffs(grid, eps_inf=eps_fin, npml=NPML)
@@ -134,27 +157,31 @@ with torch.no_grad():
     mon = DFTFieldsMonitor(grid, [FCEN], "Ez")
     _, (acc,) = run_tm(init_tm_state(grid), coeffs,
                        int(round(T_RUN / grid.dt)), source=src,
-                       monitors=[mon])
+                       monitors=[mon], checkpoint_every=400)
 ez = np.abs((acc[0, 0] + 1j * acc[0, 1]).numpy())
 T_up, T_dn = float(abs(s_up) ** 2), float(abs(s_dn) ** 2)
 tot = T_up + T_dn
 il_db = -10 * math.log10(tot)
 imb = abs(T_up - T_dn) / tot
-np.save(OUT / "c_y_splitter_rho.npy", rho_full.numpy())
+np.save(OUT / "c_y_splitter_rho.npy", rho_f.numpy())
 print(f"c_y_splitter  |S21|^2={T_up * 100:.1f}% |S31|^2={T_dn * 100:.1f}% "
-      f"insertion loss {il_db:.2f} dB, imbalance {imb * 100:.2f}%, "
+      f"IL {il_db:.2f} dB, imbalance {imb * 100:.2f}%, "
       f"|S11|^2={float(abs(s11) ** 2) * 100:.2f}%")
 
-fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(14, 4))
+fig, axs = plt.subplots(2, 2, figsize=(12, 7.5))
+ax1, ax2, ax3, ax4 = axs.flat
 ax1.plot(np.array(history) * 100, "bo-")
-ax1.set_xlabel("iteration"); ax1.set_ylabel(r"$|S_{21}|^2 + |S_{31}|^2$  [%]")
-ax1.set_title(f"Y splitter: IL {il_db:.2f} dB, imbalance {imb * 100:.2f}%")
-ax2.imshow(eps_fin.numpy().T, origin="lower", cmap="viridis",
+ax1.set_xlabel("iteration"); ax1.set_ylabel(r"$|S_{21}|^2 + |S_{31}|^2$ [%]")
+ax1.set_title(f"IL {il_db:.2f} dB, imbalance {imb * 100:.2f}%")
+ax2.imshow(eps_base.numpy().T, origin="lower", cmap="viridis",
            extent=[0, nx * dx, 0, ny * dx])
-ax2.set_title("final design (mirror-symmetric)")
-ax3.imshow(ez.T, origin="lower", cmap="inferno", extent=[0, nx * dx, 0, ny * dx])
-ax3.set_title(r"$|E_z|$ at 1550 nm")
-for ax in (ax2, ax3):
+ax2.set_title("gdsfactory mmi1x2_with_sbend seed (W = 2 um)")
+ax3.imshow(eps_fin.numpy().T, origin="lower", cmap="viridis",
+           extent=[0, nx * dx, 0, ny * dx])
+ax3.set_title("optimized design (SiN 150 nm eff. index)")
+ax4.imshow(ez.T, origin="lower", cmap="inferno", extent=[0, nx * dx, 0, ny * dx])
+ax4.set_title(r"$|E_z|$ at 1550 nm")
+for ax in (ax2, ax3, ax4):
     ax.set_xlabel("x [um]")
 fig.tight_layout()
 fig.savefig(OUT / "c_y_splitter.png", dpi=150)
