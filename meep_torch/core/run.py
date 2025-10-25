@@ -67,11 +67,42 @@ def _make_runner(step_fn, state_cls):
             absorb(outs)
             return state, acc
 
+        # The autograd graph reaches ``coeffs`` through the chunk_fn closure
+        # (coeffs is built from eps <- rho), NOT through the ``*state`` inputs
+        # (init_tm_state -> grid.zeros: no requires_grad). With only ``*state``
+        # passed to checkpoint, use_reentrant=False saw no requires_grad INPUT
+        # and silently no-op'd: the full n_steps graph was retained regardless
+        # of checkpoint_every (measured: CHKPT=64 ~12 GB/iter, NOT ~1.5 GB).
+        # Fix: pass the grad-carrying coeffs leaves as explicit checkpoint args
+        # so checkpoint sees a grad input and recomputes each chunk on backward.
+        # The closure still supplies the values (same tensor objects -> the
+        # graph links); the trailing leaves just tell checkpoint what to save
+        # and recompute, collapsing saved-for-backward to chunk-boundary state.
+        grad_leaves = tuple(
+            t for t in coeffs if torch.is_tensor(t) and t.requires_grad
+        )
         n_tensors = len(state)
 
+        if not grad_leaves:
+            # forward-only (no autograd graph): plain chunked run with no
+            # checkpoint wrapper -- it would no-op without a grad input and
+            # only add overhead. Monitor partials still fold per chunk.
+            step0 = 0
+            while step0 < n_steps:
+                k = min(checkpoint_every, n_steps - step0)
+                state, outs = _run_chunk(
+                    step_fn, state, coeffs, step0, k, source, monitors)
+                absorb(outs)
+                step0 += k
+            return state, acc
+
         def chunk_fn(step0, k, *tensors):
+            # trailing grad_leaves are ignored here -- the closure ``coeffs``
+            # holds the same tensor objects and supplies their values; the
+            # leaves exist only as checkpoint args to engage recomputation.
             st, outs = _run_chunk(
-                step_fn, state_cls(*tensors), coeffs, step0, k, source, monitors
+                step_fn, state_cls(*tensors[:n_tensors]), coeffs,
+                step0, k, source, monitors,
             )
             return (*st, *outs)
 
@@ -81,7 +112,8 @@ def _make_runner(step_fn, state_cls):
             # Monitor sampling runs inside the checkpointed region by design:
             # per-chunk partials are O(1)-sized outputs of the chunk, so memory
             # stays bounded; they are recomputed on backward (cheap vs. field state).
-            flat = checkpoint(chunk_fn, step0, k, *state, use_reentrant=False)
+            flat = checkpoint(
+                chunk_fn, step0, k, *state, *grad_leaves, use_reentrant=False)
             state = state_cls(*flat[:n_tensors])
             absorb(list(flat[n_tensors:]))
             step0 += k
