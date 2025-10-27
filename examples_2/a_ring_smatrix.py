@@ -28,6 +28,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+torch.set_num_threads(16)   # two heavy jobs share the 32-core box
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from gds_meep_torch import component_to_eps
 

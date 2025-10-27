@@ -21,6 +21,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
+torch.set_num_threads(16)   # two heavy jobs share the 32-core box
 import torch.nn.functional as F
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
