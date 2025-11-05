@@ -25,14 +25,14 @@ def dft_fields(acc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,
-              n_modes: int, axis_sign: float = -1.0):
+              n_modes: int, axis_sign: float = -1.0, bc: str = "pec"):
     Ec, Hc = dft_fields(acc)
     nf = len(freqs)
     a_p = torch.zeros(nf, n_modes, dtype=torch.complex128)
     a_m = torch.zeros(nf, n_modes, dtype=torch.complex128)
     eps_line = eps_line.detach()
     for i, f in enumerate(freqs):
-        modes = solve_1d(eps_line, dx, f, pol, k=n_modes)
+        modes = solve_1d(eps_line, dx, f, pol, k=n_modes, bc=bc)
         for m in range(n_modes):
             prof = modes.profiles[m]
             neff = float(modes.neff[m])

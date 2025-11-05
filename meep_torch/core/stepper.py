@@ -30,9 +30,10 @@ class TMState(NamedTuple):
 
 
 def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
-                  n_mpoles: int = 0) -> TMState:
+                  n_mpoles: int = 0, y_mirror: int = 0) -> TMState:
     nx, ny = grid.nx, grid.ny
-    ny_e = ny if y_pmc else ny - 2
+    # psi_Hxy rows: PEC interior ny-2; both-wall PMC ny; even-mirror lo ny-1
+    ny_e = ny if y_pmc else (ny - 1 if y_mirror == +1 else ny - 2)
     mag = {}
     if n_mpoles:
         mag = dict(
@@ -105,6 +106,12 @@ def step_tm(
         dHx_dy = (Hx_pad[1:-1, 1:] - Hx_pad[1:-1, :-1]) / dx      # (nx-2, ny)
         dHy_dx = (Hy[1:, :] - Hy[:-1, :]) / dx                    # (nx-2, ny)
         pad_spec = (0, 0, 1, 1)                                   # pad x only
+    elif m.y_mirror_lo:
+        # even-mirror cut at j=0: PMC wall low (H=0 ghost), PEC top
+        Hx_pad = F.pad(Hx, (1, 0))                                # low ghost only
+        dHx_dy = (Hx_pad[1:-1, 1:] - Hx_pad[1:-1, :-1]) / dx      # (nx-2, ny-1)
+        dHy_dx = (Hy[1:, :-1] - Hy[:-1, :-1]) / dx                # (nx-2, ny-1)
+        pad_spec = (0, 1, 1, 1)                                   # pad top y + x
     else:
         dHx_dy = (Hx[1:-1, 1:] - Hx[1:-1, :-1]) / dx              # (nx-2, ny-2)
         dHy_dx = (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / dx              # (nx-2, ny-2)

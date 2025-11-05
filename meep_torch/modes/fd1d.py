@@ -93,8 +93,13 @@ def _finalize(neff2: np.ndarray, vecs: np.ndarray, k: int):
 
 
 def solve_1d(eps_line, dx: float, f: float, pol: str, k: int = 1, bc: str = "pec"):
-    if bc != "pec":
-        raise ValueError(f"only bc='pec' (Dirichlet) supported, got {bc!r}")
+    """bc="pec": Dirichlet both ends. bc="pmc_lo": Neumann (magnetic wall)
+    at the LOW end, Dirichlet high -- the even-mirror half-domain case
+    (fdtdx symmetry +1): profiles are the y >= 0 half of even modes."""
+    if bc not in ("pec", "pmc_lo"):
+        raise ValueError(f"bc must be 'pec' or 'pmc_lo', got {bc!r}")
+    if bc == "pmc_lo" and pol != "tm":
+        raise ValueError("bc='pmc_lo' implemented for pol='tm' only")
     if pol not in ("tm", "te"):
         raise ValueError(f"pol must be 'tm' or 'te', got {pol!r}")
     k0 = 2.0 * np.pi * f
@@ -104,6 +109,11 @@ def solve_1d(eps_line, dx: float, f: float, pol: str, k: int = 1, bc: str = "pec
         eps = np.asarray(eps_line, dtype=np.float64)
     if pol == "tm":
         A = _tm_operator(eps, dx, k0)
+        if bc == "pmc_lo":
+            # Neumann ghost f(-1) = f(0): second-difference row 0 becomes
+            # (-1, 1)/dx^2 instead of (-2, 1)/dx^2. The operator carries
+            # D2/k0^2, so the adjustment is scaled the same way.
+            A[0, 0] += 1.0 / (dx * dx * k0 * k0)
         vals, vecs = np.linalg.eigh(A)            # ascending, all real
     else:
         A = _te_operator(eps, dx, k0)            # nonsymmetric

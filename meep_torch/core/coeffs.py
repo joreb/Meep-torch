@@ -48,6 +48,8 @@ class TMCoeffs(NamedTuple):
     # W5.75 instantaneous chi2 (second-order): None -> has_chi2 fast-path
     chi2: torch.Tensor | None = None      # (nx, ny)
     has_chi2: bool = False
+    # even-mirror half-domain (build_tm_coeffs y_mirror=+1)
+    y_mirror_lo: bool = False
 
 
 def _as_field(val, grid: Grid, default: float) -> torch.Tensor:
@@ -121,6 +123,7 @@ def build_tm_coeffs(
     mu=None,
     m_poles: Sequence = (),
     m_pole_masks: Sequence[torch.Tensor] | None = None,
+    y_mirror: int = 0,
 ) -> TMCoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -186,6 +189,11 @@ def build_tm_coeffs(
             n, npml if use_pml else 0, offset, dt, dx, dtype=grid.dtype, device=grid.device
         )
 
+    if y_mirror not in (0, +1):
+        raise ValueError(f"y_mirror must be 0 or +1 (even/PMC), got {y_mirror}")
+    if y_mirror and y_pmc:
+        raise ValueError("y_mirror and y_pmc are mutually exclusive")
+
     # H updates: dEz/dy at half-y (ny-1); dEz/dx at half-x (nx-1)
     b_hy, a_hy, k_hy = prof(grid.ny - 1, 0.5, use_pml=not y_pmc)
     b_hx, a_hx, k_hx = prof(grid.nx - 1, 0.5)
@@ -196,13 +204,24 @@ def build_tm_coeffs(
     b_ey_f, a_ey_f, k_ey_f = prof(grid.ny, 0.0, use_pml=not y_pmc)
     if y_pmc:
         b_ey, a_ey, k_ey = b_ey_f, a_ey_f, k_ey_f
+    elif y_mirror == +1:
+        # fdtdx-style even mirror: PMC wall at the LOW-y cut, PML high-y
+        # only. Kill the low-side PML in the y profiles; the D update keeps
+        # rows 0..ny-2 (axis row live, top row PEC behind its PML).
+        for t in (b_hy, a_hy):
+            t[:npml] = 0.0
+        k_hy[:npml] = 1.0
+        for t in (b_ey_f, a_ey_f):
+            t[:npml] = 0.0
+        k_ey_f[:npml] = 1.0
+        b_ey, a_ey, k_ey = b_ey_f[:-1], a_ey_f[:-1], k_ey_f[:-1]
     else:
         b_ey, a_ey, k_ey = b_ey_f[1:-1], a_ey_f[1:-1], k_ey_f[1:-1]
 
     return TMCoeffs(
         dt=dt, dx=dx, eps_inf=eps, chi3=x3, has_kerr=has_kerr,
         chi2=x2, has_chi2=has_chi2,
-        c1=c1, c2=c2, c3=c3, y_pmc=y_pmc,
+        c1=c1, c2=c2, c3=c3, y_pmc=y_pmc, y_mirror_lo=(y_mirror == +1),
         b_hy=b_hy[None, :], a_hy=a_hy[None, :], k_hy=k_hy[None, :],
         b_hx=b_hx[:, None], a_hx=a_hx[:, None], k_hx=k_hx[:, None],
         b_ex=b_ex[:, None], a_ex=a_ex[:, None], k_ex=k_ex[:, None],

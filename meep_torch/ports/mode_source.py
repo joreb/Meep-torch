@@ -19,7 +19,10 @@ _TE_SRC_OFFSET = 12
 
 
 class ModeSourceTM:
-    def __init__(self, grid, coeffs, port, profile, fcen, mode=0):
+    def __init__(self, grid, coeffs, port, profile, fcen, mode=0, bc="pec"):
+        # bc="pmc_lo": half-domain even-mirror port (build_tm_coeffs
+        # y_mirror=+1, port.lo at the cut plane) -- the solver returns the
+        # upper half of the even mode.
         self.profile, self.dt, self.d = profile, grid.dt, port.direction
         dx = grid.dx
         if port.axis == "x":
@@ -28,9 +31,12 @@ class ModeSourceTM:
             eps_line = coeffs.eps_inf[port.lo:port.hi, port.index].detach()
         if coeffs.c3.numel() and self._line_dispersive(coeffs.c3, port):
             raise ValueError("dispersive media on port line unsupported")
-        modes = solve_1d(eps_line, dx, fcen, "tm", k=mode + 1)
+        modes = solve_1d(eps_line, dx, fcen, "tm", k=mode + 1, bc=bc)
         neff = float(modes.neff[mode])
-        clad = float(torch.sqrt(torch.max(eps_line[0], eps_line[-1])))
+        # cladding reference: line ends -- except the pmc_lo cut plane,
+        # where the LOW end is the core center (mirror axis)
+        clad = float(torch.sqrt(eps_line[-1] if bc == "pmc_lo"
+                                else torch.max(eps_line[0], eps_line[-1])))
         if neff <= clad + 1e-9:
             raise ValueError(f"no guided mode at port (neff={neff:.4f} <= cladding {clad:.4f})")
         prof = modes.profiles[mode].to(grid.dtype)
