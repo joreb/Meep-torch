@@ -61,9 +61,11 @@ vmax = max(abs(f).max() for f in frames[len(frames) // 2:]) * 0.6
 fig, ax = plt.subplots(figsize=(10, 4))
 im = ax.imshow(frames[0].T, origin="lower", cmap="RdBu", vmin=-vmax,
                vmax=vmax, extent=[0, nx * dx, 0, ny * dx])
+core = (eps_fin > 0.5 * (float(eps_fin.min()) + float(eps_fin.max()))).numpy()
+ax.imshow(np.ma.masked_where(~core, core).T, origin="lower", cmap="gray",
+          alpha=0.22, extent=[0, nx * dx, 0, ny * dx])   # in/out guides visible
 ax.contour(np.linspace(0, nx * dx, nx), np.linspace(0, ny * dx, ny),
-           eps_fin.numpy().T, levels=[float(eps_fin.mean())], colors="k",
-           linewidths=0.4)
+           core.T.astype(float), levels=[0.5], colors="k", linewidths=0.8)
 ax.set_title("edge coupler: astigmatic beam (4.0 um) -> SiN guide, $E_z$")
 ax.set_xlabel("x [um]")
 

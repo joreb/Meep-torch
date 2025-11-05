@@ -77,9 +77,11 @@ vmax = max(abs(f).max() for f in frames[len(frames) // 2:]) * 0.6
 fig, ax = plt.subplots(figsize=(9, 4))
 im = ax.imshow(frames[0].T, origin="lower", cmap="RdBu", vmin=-vmax,
                vmax=vmax, extent=[0, nx * dx, 0, ny * dx])
+core = (eps2d > 0.5 * (float(eps2d.min()) + float(eps2d.max()))).numpy()
+ax.imshow(np.ma.masked_where(~core, core).T, origin="lower", cmap="gray",
+          alpha=0.22, extent=[0, nx * dx, 0, ny * dx])   # waveguides visible
 ax.contour(np.linspace(0, nx * dx, nx), np.linspace(0, ny * dx, ny),
-           eps2d.numpy().T, levels=[float(eps2d.mean())], colors="k",
-           linewidths=0.4)
+           core.T.astype(float), levels=[0.5], colors="k", linewidths=0.8)
 ax.set_title("Y splitter, CW 1550 nm (2D eff. index): $E_z$")
 ax.set_xlabel("x [um]")
 
@@ -116,6 +118,11 @@ vmax3 = max(abs(f).max() for f in frames3[len(frames3) // 2:]) * 0.6
 fig, ax = plt.subplots(figsize=(9, 4))
 im = ax.imshow(frames3[0].T, origin="lower", cmap="RdBu", vmin=-vmax3,
                vmax=vmax3, extent=[0, n3x * dx3, 0, n3y * dx3])
+core3 = (eps3[:, :, kmid] > 0.5 * (float(eps3.min()) + float(eps3.max()))).numpy()
+ax.imshow(np.ma.masked_where(~core3, core3).T, origin="lower", cmap="gray",
+          alpha=0.22, extent=[0, n3x * dx3, 0, n3y * dx3])
+ax.contour(np.linspace(0, n3x * dx3, n3x), np.linspace(0, n3y * dx3, n3y),
+           core3.T.astype(float), levels=[0.5], colors="k", linewidths=0.8)
 ax.set_title("Y splitter TRUE 3D (SiN 150 nm): core-plane $E_y$")
 ax.set_xlabel("x [um]")
 
