@@ -1,18 +1,24 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (a): SiN ring resonator on the REAL platform -- gdsfactory
-geometry, FDTD, mode-overlap S-matrix, detuning response.
+"""device-suite (a): SiN ring resonator, HALF-RING coupler extraction.
 
-Platform: SiN 150 nm on SiO2 (user spec): lateral effective index
-n_core = neff(150 nm slab TE0), indices from the meep materials
-library (Si3N4 Luke, SiO2 Horiba) at 1550 nm. Ring r = 50 um,
-waveguide width 4.0 um, bus gap 0.8 um -- weakly guided, so fields
-extend far and the ring is large (FSR ~ 5 nm). RES 15 (16 cells per
-in-medium wavelength, adequate at this contrast).
+A full r = 50 um weakly-guided ring needs >= 10 round trips (~6000 tu on
+a 3M-cell grid) for resonances to form in FDTD. Instead (user directive)
+only the LOWER HALF of the gdsfactory ring_single is simulated: the ring
+side-guides run vertically at the cut plane and exit cleanly into the
+top PML. Two short runs extract the full coupler physics:
 
-|S21|^2 / |S11|^2: TE0 mode source + mode-overlap decomposition at the
-two bus ports, single broadband run. Transient: CW mode drive at three
-detunings around the deepest interior resonance.
+  run 1 (bus-driven):  t(f) = bus through amplitude, kappa(f) = amplitude
+                       coupled into the ring (right arc port),
+  run 2 (arc-driven):  A(f) = arc-end to arc-end amplitude = t * a(f),
+                       a(f) = BARE half-loop propagation (bend loss+phase).
+
+The ring spectrum is then assembled analytically at arbitrary resolution
+(all-pass: S21 = (t - a^2)/(1 - t a^2), a^2 = bare full loop = (A/t)^2),
+giving exact FSR and Q without ever waiting for FDTD ring buildup.
+
+Platform: SiN 150 nm / SiO2, meep materials-library indices, lateral
+effective index; r = 50 um, W = 4 um, gap = 0.6 um.
 
 Run: uv run python examples_2/a_ring_smatrix.py
 """
@@ -28,16 +34,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-torch.set_num_threads(16)   # two heavy jobs share the 32-core box
+torch.set_num_threads(16)
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from gds_meep_torch import component_to_eps
 
 from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
-from meep_torch.core.monitors import FluxMonitorTM, PointProbe
+from meep_torch.core.materials import Si3N4, SiO2
+from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
-from meep_torch.core.sources import ContinuousSource, GaussianPulse
+from meep_torch.core.sources import GaussianPulse
 from meep_torch.core.stepper import init_tm_state
 from meep_torch.modes.fd1d import solve_1d
 from meep_torch.ports.mode_monitor import decompose
@@ -47,123 +54,143 @@ from meep_torch.ports.port import Port, validate_ports
 OUT = pathlib.Path(__file__).parent
 gf.gpdk.PDK.activate()
 
-from meep_torch.core.materials import Si3N4, SiO2
-
-# refractive indices from the meep materials library (Lorentz fits):
-# Si3N4 K. Luke et al. (2015), SiO2 Horiba TN08 -- evaluated at 1550 nm
-N_SIN = Si3N4.n(1 / 1.55).real                      # 1.9963
-N_CLAD = SiO2.n(1 / 1.55).real                      # 1.4577
+N_SIN = Si3N4.n(1 / 1.55).real
+N_CLAD = SiO2.n(1 / 1.55).real
 eps_line = np.full(400, N_CLAD ** 2)
 eps_line[200 - 7: 200 + 8] = N_SIN ** 2
 NEFF = float(solve_1d(eps_line, 0.01, 1 / 1.55, "te", k=1).neff[0])
-R_RING, W_WG, GAP = 50.0, 4.0, 0.8
-print(f"a_ring  SiN 150nm/SiO2: n_core = {NEFF:.4f}, n_clad = {N_CLAD}; "
-      f"r = {R_RING}, W = {W_WG}, gap = {GAP}")
-
+R_RING, W_WG, GAP = 50.0, 4.0, 0.6
 RES = 15
 FCEN = 1 / 1.55
 dx = 1.0 / RES
+print(f"a_ring  half-ring method: n_core={NEFF:.4f} n_clad={N_CLAD:.4f} "
+      f"r={R_RING} W={W_WG} gap={GAP}")
+
 xs = gf.get_cross_section("strip").copy(width=W_WG)
 c = gf.components.ring_single(radius=R_RING, gap=GAP, cross_section=xs)
-grid, eps, ports = component_to_eps(c, res=RES, pad=3.0,
-                                    n_core=NEFF, n_clad=N_CLAD)
-nx, ny = grid.nx, grid.ny
-NPML = RES
-print(f"a_ring  grid {nx}x{ny} ({nx * dx:.0f} x {ny * dx:.0f} um)")
-
+grid_f, eps_f, ports = component_to_eps(c, res=RES, pad=3.0,
+                                        n_core=NEFF, n_clad=N_CLAD)
 o1x, o1y, _ = ports["o1"]
 o2x, o2y, _ = ports["o2"]
+
+# --- crop at the ring-center height (side guides vertical there) and
+# rebuild a half grid with clad + top PML above the cut ---
+NPML = RES
+j_center = o1y + int((W_WG / 2 + GAP + W_WG / 2 + R_RING) * RES)
+PAD_TOP = int(2.0 * RES) + NPML
+ny_h = j_center + PAD_TOP
+nx_h = grid_f.nx
+grid = Grid(nx=nx_h, ny=ny_h, dx=dx)
+eps = torch.full((nx_h, ny_h), N_CLAD ** 2, dtype=grid.dtype)
+eps[:, :j_center] = eps_f[:, :j_center]
+eps[:, j_center:] = eps[:, j_center - 1: j_center]   # extend guides straight up
+print(f"a_ring  half grid {nx_h}x{ny_h} ({nx_h * dx:.0f} x {ny_h * dx:.0f} um)")
+
+coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=NPML)
 SPAN = int(3.5 * RES)
 p_in = Port(axis="x", index=max(o1x + 4, NPML + 4), lo=o1y - SPAN,
             hi=o1y + SPAN, direction=+1)
-p_out = Port(axis="x", index=min(o2x - 4, nx - NPML - 4), lo=o2y - SPAN,
-             hi=o2y + SPAN, direction=-1)
-validate_ports([p_in, p_out], grid, NPML)
-coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=NPML)
+p_thru = Port(axis="x", index=min(o2x - 4, nx_h - NPML - 4), lo=o2y - SPAN,
+              hi=o2y + SPAN, direction=-1)
+# arc ports: vertical guides at x = x_center +/- (R + W/2), y-normal planes
+x_cen = nx_h // 2
+ix_arm = int(R_RING * RES)
+j_arc = ny_h - NPML - int(2.0 * RES)                 # 2 um below the top edge
+p_arcL = Port(axis="y", index=j_arc, lo=x_cen - ix_arm - SPAN,
+              hi=x_cen - ix_arm + SPAN, direction=-1)
+p_arcR = Port(axis="y", index=j_arc, lo=x_cen + ix_arm - SPAN,
+              hi=x_cen + ix_arm + SPAN, direction=-1)
+validate_ports([p_in, p_thru, p_arcL, p_arcR], grid, NPML)
 
-NFREQ = 160
-DF_BAND = 0.0125                                    # ~30 nm, ~6 FSR
+NFREQ = 60
+DF_BAND = 0.006
 freqs = np.linspace(FCEN - DF_BAND / 2, FCEN + DF_BAND / 2, NFREQ).tolist()
-FW = 0.04                                           # pulse: t_end = 250
-T_RUN = 650.0
-mons = [FluxMonitorTM(grid, freqs, x_normal=True, idx=p.index, lo=p.lo, hi=p.hi)
-        for p in (p_in, p_out)]
-src = ModeSourceTM(grid, coeffs, p_in, GaussianPulse(FCEN, FW), FCEN)
-with torch.no_grad():
-    _, accs = run_tm(init_tm_state(grid), coeffs, int(round(T_RUN / grid.dt)),
-                     source=src, monitors=mons, checkpoint_every=400)
-e1 = eps[p_in.index, p_in.lo:p_in.hi]
-e2 = eps[p_out.index, p_out.lo:p_out.hi]
-a1p, a1m = decompose(accs[0], e1, dx, freqs, "tm", 1, axis_sign=-1.0)
-a2p, a2m = decompose(accs[1], e2, dx, freqs, "tm", 1, axis_sign=-1.0)
-s21 = (a2p[:, 0] / a1p[:, 0]).numpy()
-s11 = (a1m[:, 0] / a1p[:, 0]).numpy()
-lam = 1.0 / np.array(freqs)
-T = np.abs(s21) ** 2
-R = np.abs(s11) ** 2
+T_RUN = 500.0                                       # single-pass: no buildup
+PULSE = GaussianPulse(FCEN, 0.04)
 
-EDGE = NFREQ // 10
-i0 = EDGE + int(np.argmin(T[EDGE:NFREQ - EDGE]))
-f0 = freqs[i0]
+
+def eline(p):
+    if p.axis == "x":
+        return eps[p.index, p.lo:p.hi]
+    return eps[p.lo:p.hi, p.index]
+
+
+def run_ports(src_port, mons_ports):
+    src = ModeSourceTM(grid, coeffs, src_port, PULSE, FCEN)
+    mons = [FluxMonitorTM(grid, freqs, x_normal=(p.axis == "x"), idx=p.index,
+                          lo=p.lo, hi=p.hi) for p in mons_ports]
+    with torch.no_grad():
+        _, accs = run_tm(init_tm_state(grid), coeffs,
+                         int(round(T_RUN / grid.dt)), source=src,
+                         monitors=mons, checkpoint_every=400)
+    out = {}
+    for p, acc, name in zip(mons_ports, accs, range(len(mons_ports))):
+        sign = -1.0 if p.axis == "x" else +1.0
+        out[name] = decompose(acc, eline(p), dx, freqs, "tm", 1,
+                              axis_sign=sign)
+    return out
+
+# run 1: bus-driven
+r1 = run_ports(p_in, [p_in, p_thru, p_arcR])
+a_in = r1[0][0][:, 0]
+t = (r1[1][0][:, 0] / a_in).numpy()                  # through (+x out)
+kap = (r1[2][0][:, 0] / a_in).numpy()                # into ring, +y out at R
+
+# run 2: arc-driven (down the right side, through coupler, up the left)
+r2 = run_ports(p_arcR, [p_arcR, p_arcL])
+a_inR = r2[0][1][:, 0]                               # -y incident (a_minus)
+A = (r2[1][0][:, 0] / a_inR).numpy()                 # +y outgoing at L
+a_half = A / t                                       # bare half loop
+loop = a_half ** 2                                   # bare full loop a^2
+
+print(f"a_ring  at 1550: |t|^2={abs(t[NFREQ//2])**2:.3f} "
+      f"|kappa|^2={abs(kap[NFREQ//2])**2:.3f} "
+      f"|a_loop|={abs(loop[NFREQ//2]):.4f} "
+      f"(|t|^2+|k|^2={abs(t[NFREQ//2])**2+abs(kap[NFREQ//2])**2:.3f})")
+
+# --- analytic assembly on a dense grid ---
+fd = np.linspace(freqs[0], freqs[-1], 6000)
+ti = np.interp(fd, freqs, t.real) + 1j * np.interp(fd, freqs, t.imag)
+# interpolate loop magnitude and UNWRAPPED phase (phase winds ~2pi/FSR)
+lm = np.interp(fd, freqs, np.abs(loop))
+lp = np.interp(fd, freqs, np.unwrap(np.angle(loop)))
+loop_d = lm * np.exp(1j * lp)
+S21 = (ti - loop_d) / (1 - ti * loop_d)
+T = np.abs(S21) ** 2
+lam_d = 1e3 / fd
+
+i0 = int(np.argmin(T))
 half = (T[i0] + np.median(T)) / 2
 i_lo = i0
 while i_lo > 0 and T[i_lo] < half:
     i_lo -= 1
 i_hi = i0
-while i_hi < NFREQ - 1 and T[i_hi] < half:
+while i_hi < len(fd) - 1 and T[i_hi] < half:
     i_hi += 1
-Q = f0 / max(freqs[i_hi] - freqs[i_lo], 1e-9)
-dips = [i for i in range(EDGE, NFREQ - EDGE)
-        if T[i] < 0.8 * np.median(T) and T[i] <= T[i - 1] and T[i] < T[i + 1]]
-fsr_nm = None
-if len(dips) >= 2:
-    fsr_nm = abs(1 / freqs[dips[0]] - 1 / freqs[dips[-1]]) / (len(dips) - 1) * 1e3
-print(f"a_ring  deepest resonance lambda={1e3 / f0:.2f} nm |S21|^2={T[i0]:.3f} "
-      f"Q~{Q:.0f}" + (f" FSR~{fsr_nm:.2f} nm" if fsr_nm else " (single dip)"))
+Q = fd[i0] / max(fd[i_hi] - fd[i_lo], 1e-12)
+dips = [i for i in range(2, len(fd) - 2)
+        if T[i] < 0.6 * np.median(T) and T[i] <= T[i - 1] and T[i] < T[i + 1]]
+fsr_nm = (abs(1e3 / fd[dips[0]] - 1e3 / fd[dips[-1]]) / (len(dips) - 1)
+          if len(dips) >= 2 else float("nan"))
+print(f"a_ring  deepest dip lambda={lam_d[i0]:.2f} nm |S21|^2={T[i0]:.3f} "
+      f"Q={Q:.0f} FSR={fsr_nm:.2f} nm extinction "
+      f"{10 * math.log10(max(np.median(T), 1e-12) / max(T[i0], 1e-12)):.1f} dB")
 
-
-def transient(detune_kappa):
-    kappa = f0 / Q / 2
-    f_d = f0 + detune_kappa * kappa
-    src_cw = ModeSourceTM(grid, coeffs, p_in, ContinuousSource(f_d, width=20.0),
-                          f_d)
-    probe = PointProbe(nx // 2, ny - NPML - int(3.0 * RES))  # ring top
-    n = int(round(400.0 / grid.dt))
-    with torch.no_grad():
-        _, (series,) = run_tm(init_tm_state(grid), coeffs, n, source=src_cw,
-                              monitors=[probe], checkpoint_every=400)
-    s = series.numpy() ** 2
-    w = max(1, int(round(1.0 / f_d / grid.dt)))
-    env = np.convolve(s, np.ones(w) / w, mode="valid")
-    return np.arange(len(env)) * grid.dt, env
-
-
-fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4.2))
-ax1.plot(lam * 1e3, T, "b-", lw=1.1, label=r"$|S_{21}|^2$")
-ax1.plot(lam * 1e3, R, "r-", lw=0.8, alpha=0.6, label=r"$|S_{11}|^2$")
-ax1.axvline(1e3 / f0, color="gray", ls=":", lw=0.8)
-ax1.set_xlabel("wavelength [nm]"); ax1.set_ylabel("power")
-ax1.set_title(f"r=50 um SiN ring: Q~{Q:.0f}"
-              + (f", FSR {fsr_nm:.1f} nm" if fsr_nm else ""))
-ax1.legend(fontsize=8); ax1.set_ylim(0, 1.1)
-
-step = max(1, nx // 800)
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12.5, 4.4))
+ax1.plot(lam_d, T, "b-", lw=0.9)
+ax1.axvline(lam_d[i0], color="gray", ls=":", lw=0.8)
+ax1.set_xlabel("wavelength [nm]"); ax1.set_ylabel(r"$|S_{21}|^2$")
+ax1.set_title(f"r=50 um SiN ring (half-ring method): "
+              f"Q={Q:.0f}, FSR={fsr_nm:.2f} nm")
+ax1.set_ylim(0, 1.05)
+step = max(1, nx_h // 900)
 ax2.imshow(eps.numpy()[::step, ::step].T, origin="lower", cmap="viridis",
-           extent=[0, nx * dx, 0, ny * dx])
-ax2.set_title(f"ring_single r={R_RING:.0f}, W={W_WG}, gap={GAP} um")
+           extent=[0, nx_h * dx, 0, ny_h * dx])
+ax2.set_title("simulated half domain (gf ring_single, cropped at midline)")
 ax2.set_xlabel("x [um]")
-
-env0_max = None
-for dk, col in ((0.0, "tab:red"), (1.0, "tab:orange"), (2.0, "tab:blue")):
-    t, env = transient(dk)
-    if env0_max is None:
-        env0_max = env.max()
-    ax3.plot(t, env / env0_max, color=col, lw=1.0,
-             label=rf"$\delta = {dk:.0f}\,\kappa$")
-ax3.set_xlabel("time [um/c]"); ax3.set_ylabel("ring intensity (norm.)")
-ax3.set_title("ring buildup vs detuning (CW mode drive)")
-ax3.legend(fontsize=8)
 fig.tight_layout()
 fig.savefig(OUT / "a_ring_smatrix.png", dpi=150)
 plt.close(fig)
-print("a_ring_smatrix.png written")
+np.savez(OUT / "a_ring_coupler_data.npz", freqs=freqs, t=t, kappa=kap,
+         A=A, loop=loop)
+print("a_ring_smatrix.png written (+ a_ring_coupler_data.npz)")
