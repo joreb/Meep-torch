@@ -414,8 +414,11 @@ ax4.imshow(ez.T, origin="lower", cmap="inferno", extent=[0, nx * dx, 0, ny * dx]
 ax4.set_title(rf"$|E_z|$ at {WL*1e3:.0f} nm")
 for ax in (ax2, ax3, ax4):
     ax.set_xlabel("x [um]")
-fig.suptitle(f"edge coupler @{WL*1e3:.0f}nm: best it{best_it:02d} eta_rel={eta_rel_fin:.2f}x, "
-             f"eta_abs={eta_abs * 100:.1f}% ({-10 * math.log10(eta_abs):.2f} dB)", y=0.995)
+# headline uses the FLUX BOUND (P_arm/P_IN), not eta_abs: the eta_rel x butt_flux
+# estimator can print >100% (peer 2cf160ec nit), which is unphysical as a headline.
+fig.suptitle(f"edge coupler @{WL*1e3:.0f}nm: best it{best_it:02d} eta_rel={eta_rel_fin:.2f}x butt, "
+             f"coupling={_p_arm_ratio * 100:.1f}% flux bound "
+             f"({-10 * math.log10(_p_arm_ratio):.2f} dB)", y=0.995)
 fig.tight_layout(rect=[0, 0, 1, 0.96])
 fig.savefig(OUT / "c_edge_coupler.png", dpi=150)
 plt.close(fig)
@@ -510,9 +513,12 @@ with torch.no_grad():
     butt_flux_v = P_arm_butt_v / P_IN_v
     eta_abs_v = eta_rel_v * butt_flux_v
     assert butt_flux_v < 1.0, f"RES=40 butt_flux {butt_flux_v:.3f} > 1.0"
+    p_arm_ratio_v = P_arm_v / P_IN_v                  # physical flux bound
+    assert p_arm_ratio_v < 1.0, f"RES=40 flux ratio {p_arm_ratio_v:.4f} >= 1.0"
 res40_line = (f"c_edge_coupler  RES=40 VALIDATION (forward-only, grid {nx_v}x{ny_v}): "
               f"eta_rel={eta_rel_v:.3f}x butt | eta_abs={eta_abs_v * 100:.2f}% "
-              f"({-10 * math.log10(eta_abs_v):.2f} dB) | butt_flux={butt_flux_v * 100:.2f}%")
+              f"({-10 * math.log10(eta_abs_v):.2f} dB) | butt_flux={butt_flux_v * 100:.2f}%"
+              f" | flux bound P_arm/P_IN={p_arm_ratio_v * 100:.2f}%")
 if res20 is not None:
     res40_line += f" [RES=20: eta_rel={res20[0]:.3f}x eta_abs={res20[1] * 100:.2f}%]"
 print(res40_line)
@@ -526,7 +532,8 @@ ez_v = np.abs((acc_v[0, 0] + 1j * acc_v[0, 1]).cpu().numpy())
 fig, axs = plt.subplots(1, 2, figsize=(12, 5))
 axs[0].imshow(eps_fin_v.cpu().numpy().T, origin="lower", cmap="viridis",
               extent=[0, nx_v * dx_v, 0, ny_v * dx_v])
-axs[0].set_title(f"RES=40 design (validate) @{WL*1e3:.0f}nm, eta_abs={eta_abs_v * 100:.1f}%")
+axs[0].set_title(f"RES=40 design (validate) @{WL*1e3:.0f}nm, eta_rel={eta_rel_v:.3f}x butt, "
+                 f"coupling={p_arm_ratio_v * 100:.1f}% flux bound")
 axs[1].imshow(ez_v.T, origin="lower", cmap="inferno",
               extent=[0, nx_v * dx_v, 0, ny_v * dx_v])
 axs[1].set_title(rf"RES=40 $|E_z|$ @ {WL*1e3:.0f} nm")
