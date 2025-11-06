@@ -3,11 +3,11 @@
 """device-suite (c1): inverse-designed edge coupler, gdsfactory-based.
 
 User mandate: only gds-based designs. A gdsfactory taper (5.5 -> 4.0 um,
-length 2 um) plus a 4 um output straight is rasterized through the gds adapter
+length 10um) plus a 4 um output straight is rasterized through the gds adapter
 and used BOTH as the simulation base and the inverse-design seed (rho is
 seeded from the imported taper via meep_torch.adjoint.rho_from_eps). The 5.5 um
-input facet (fiber side) tapers to the 4.0 um output guide over 2 um (user spec
-2026-08-15). The input beam is an ASTIGMATIC laser-diode Gaussian: 4.0 um
+input facet (fiber side) tapers to the 4.0 um output guide over 10 um (user spec
+2026-08-15, revised from 2 um -> 10 um for gentler adiabatic taper). The input beam is an ASTIGMATIC laser-diode Gaussian: 4.0 um
 lateral waist x 1.57 um vertical waist; the 2D optimization uses the 4.0 um
 lateral waist, the 3D validation (c_edge_coupler_3d) uses the full 4.0 x 1.57
 astigmatic profile on a plane source. The beam lateral (4.0 um) MATCHES the
@@ -42,6 +42,7 @@ butt_flux_coupling < 1.0 sanity assert (eta_abs honest).
 
 Run: uv run python examples_2/c_edge_coupler.py
 """
+import dataclasses
 import gc
 import math
 import os
@@ -76,6 +77,10 @@ from meep_torch.ports.port import Port, validate_ports
 
 OUT = pathlib.Path(__file__).parent
 torch.set_num_threads(24)   # peer: up to 24 cores while rings held (taskset 0-23)
+# CUDA (peer 803d4094: GPU live, engine device support verified).
+# component_to_eps rasterizes on CPU (numpy/shapely); move the Grid + eps to the
+# device after. decompose/plot take .cpu() tensors; solve_1d stays numpy/CPU.
+DEV = os.environ.get("CEC_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
 # CEC_VALIDATE_ONLY=1 -> skip the 16-iter optimize, load the saved rho.npy, and
 # run only the post-loop RES=40 forward-only validation (peer 06b7ebec: optimize
 # coarse RES=20, validate fine RES=40). Full run (no env var) does both.
@@ -112,11 +117,12 @@ print(f"c_edge_coupler  Si3N4/SiO2 (meep lib @ {WL*1e3:.0f} nm): n_core={N_SIN:.
       f"n_clad={N_CLAD:.4f} -> slab NEFF={NEFF:.4f}, W_guide={W_WG} um, "
       f"fiber astigmatic {W_FIBER:.2f}um(lateral) x 1.57um(vertical)")
 
-# --- gdsfactory taper (5.5 -> 4.0, length 2 um) + 4 um output straight ---
+# --- gdsfactory taper (5.5 -> 4.0, length 10 um) + 4 um output straight ---
 # user spec 2026-08-15: 5.5 um input facet (fiber side) -> 4.0 um output guide,
-# taper length 2 um. Output straight (4 um) carries the TE0 monitor.
+# taper length 10 um (gentler adiabatic; was 2 um). Output straight (4 um)
+# carries the TE0 monitor.
 xs = gf.get_cross_section("strip").copy(width=W_WG)
-tap = gf.components.taper(length=2.0, width1=5.5, width2=W_WG, cross_section=xs)
+tap = gf.components.taper(length=10.0, width1=5.5, width2=W_WG, cross_section=xs)
 comp = gf.Component("edge_coupler_gds")
 ref = comp.add_ref(tap)
 st = comp.add_ref(gf.components.straight(length=4.0, cross_section=xs))
@@ -137,7 +143,7 @@ NPML = RES                                            # 1 um (20 cells)
 # @ CHKPT=128; this 674nm grid is 0.69x those cells -> ~11.5 GB, fits 16 G.
 # RES=20 is adequate for this 2D eff-index model: the 150 nm slab is collapsed
 # to NEFF (fd1d at dx=10nm), so the FDTD grid only resolves the taper/guide
-# shapes (2 um taper = 40 cells, 4 um guide = 80 cells -- fine), not the slab.
+# shapes (10 um taper = 200 cells, 4 um guide = 80 cells -- fine), not the slab.
 # Peer's RES>=40 was splitter-driven (mmi small features); infeasible for the
 # coupler on a 31 GB box. (peer informed.)
 CHKPT = 128
@@ -145,23 +151,34 @@ CHKPT = 128
 # (PML=1.0 -> need >1.0 um of cladding left of the tip; 1.5 um needs pad>=2.5).
 grid, eps_base, ports = component_to_eps(comp, res=RES, pad=3.0,
                                          n_core=NEFF, n_clad=N_CLAD)
+grid = dataclasses.replace(grid, device=DEV)          # rasterize CPU, run on DEV
+eps_base = eps_base.to(DEV)
 base = eps_base   # alias for video_coupler.py (expects `base` in module scope)
 nx, ny = grid.nx, grid.ny
 T_RUN = 130.0
-print(f"c_edge_coupler  grid {nx}x{ny} ({nx * dx:.1f} x {ny * dx:.1f} um)")
+print(f"c_edge_coupler  grid {nx}x{ny} ({nx * dx:.1f} x {ny * dx:.1f} um) on {DEV}")
 
 o1x, o1y, _ = ports["o1"]                            # narrow tip (fiber side)
 o2x, o2y, _ = ports["o2"]                            # output (right)
 cy = o1y                                             # guide axis (o1/o2 collinear)
 
-# design region: the 2 um taper footprint (o1 -> straight start), y +/-3.0 um
-# (covers the 5.5 um input facet), ~100 nm rho pixels. Taper is 2 um = 40 cells
-# long -> NRX = 40/2 = 20 (region.paint 2x-upsample); NRY = 6 um / 0.1 = 60.
+# peer review fix: extend the output guide INTO the right PML. With symmetric
+# pad a gds straight always ends (pad - NPML*dx) = 2 um short of the PML, so the
+# guide tip reflects (Fabry-Perot) and contaminates the TE0 monitor. Paint the
+# W_WG core from o2x through the PML to the right edge -> clean absorption. The
+# design region below (the taper, o1x..ix1) is untouched, so an optimized rho
+# stays valid; this is an absorption tail past the monitor (p_out at o2x-2 um).
+_h = int(W_WG * RES / 2)
+eps_base[o2x:, cy - _h:cy + _h] = NEFF ** 2
+
+# design region: the 10 um taper footprint (o1 -> straight start), y +/-3.0 um
+# (covers the 5.5 um input facet), ~100 nm rho pixels. Taper is 10 um = 200 cells
+# long -> NRX = 200/2 = 100 (region.paint 2x-upsample); NRY = 6 um / 0.1 = 60.
 ix0 = o1x
 ix1 = o2x - int(4.0 * RES)                           # taper/straight boundary
 iy0 = cy - int(3.0 * RES)
 iy1 = cy + int(3.0 * RES)
-NRX, NRY = 20, 60
+NRX, NRY = 100, 60
 mg = MaterialGrid((NRX, NRY), eps_min=N_CLAD ** 2, eps_max=NEFF ** 2)
 region = DesignRegion(mg, ix0=ix0, ix1=ix1, iy0=iy0, iy1=iy1)
 seed = rho_from_eps(eps_base, region)                # taper shape as rho (core API)
@@ -169,7 +186,7 @@ seed = rho_from_eps(eps_base, region)                # taper shape as rho (core 
 # fiber: Gaussian line source, MFD 2.5 um, ~1.5 um left of the taper tip
 IX_SRC = o1x - int(1.5 * RES)
 assert IX_SRC > NPML, f"fiber ix={IX_SRC} inside PML {NPML}"
-ys = (torch.arange(ny, dtype=eps_base.dtype) + 0.5) * dx
+ys = (torch.arange(ny, dtype=eps_base.dtype, device=DEV) + 0.5) * dx
 FIBER = torch.exp(-((ys - cy * dx) / (W_FIBER / 2)) ** 2)
 # fwidth scaled with wavelength to keep the SAME relative bandwidth as the
 # calibrated 1550 nm pulse (peer note: 0.2 * 1.55 / 0.674 ~ 0.46), so the
@@ -190,7 +207,7 @@ def fiber_source(coeffs=None):
     # coeffs arg is accepted (unused) for compatibility with video_coupler.py,
     # which calls fiber_source(coeffs); the source only depends on the grid.
     src = LineSource(grid, ix=IX_SRC, j0=0, j1=ny, profile=pulse)
-    src.mask = torch.zeros(nx, ny, dtype=eps_base.dtype)
+    src.mask = torch.zeros(nx, ny, dtype=eps_base.dtype, device=DEV)
     src.mask[IX_SRC, :] = FIBER
     return src
 
@@ -210,7 +227,7 @@ def mode_amp(eps, want_flux=False):
                         lo=p_out.lo, hi=p_out.hi)
     (acc,) = _run(eps, [mon])
     el = eps.detach()[p_out.index, p_out.lo:p_out.hi]
-    a_p, _ = decompose(acc, el, dx, [FCEN], "tm", 1, axis_sign=-1.0)
+    a_p, _ = decompose(acc.cpu(), el.cpu(), dx, [FCEN], "tm", 1, axis_sign=-1.0)
     if want_flux:
         return a_p[0, 0], float(mon.flux(acc, dx)[0])
     return a_p[0, 0]
@@ -231,8 +248,10 @@ def butt_eps():
     so a butt on a DIFFERENT grid/window (the old self-contained butt_amp) gives
     |a|^2 in different units and eta_rel is invalid (redo2's 1.009x was that
     artifact). Same device grid + same p_out + same SPAN here -> comparable.
-    gds-only (straight polys rasterized on the device grid, no hand-drawn eps)."""
-    L = (o2x - o1x) * dx
+    gds-only (straight polys rasterized on the device grid, no hand-drawn eps).
+    The butt straight spans o1x..nx (into the right PML) to MATCH the device's
+    extended output guide (peer review fix) so the eta_rel ratio is fair."""
+    L = (nx - o1x) * dx                                # extend into right PML
     bc = gf.components.straight(length=L, width=W_WG, cross_section=xs)
     bpolys = bc.get_polygons_points(merge=False)[1]
     # gds straight local: o1 at (0,0), o2 at (L,0), y +/-W/2. Shift o1 to device
@@ -263,7 +282,7 @@ with torch.no_grad():
     a_butt, P_arm_butt = mode_amp(butt_eps(), want_flux=True)
     D = float(abs(a_butt) ** 2)
     print(f"RSS post-butt: {rss_mb():.0f} MB")
-    clad = torch.full((nx, ny), N_CLAD ** 2, dtype=eps_base.dtype)
+    clad = torch.full((nx, ny), N_CLAD ** 2, dtype=eps_base.dtype, device=DEV)
     P_IN = port_flux(clad, IX_SRC + int(0.5 * RES), NPML, ny - NPML)
 butt_flux_coupling = P_arm_butt / P_IN   # honest flux/flux, butt clean -> ~TE0
 print(f"c_edge_coupler  ref |a_butt|^2 = {D:.3e} (eta_rel denom); "
@@ -297,77 +316,111 @@ if OPTIMIZE:
         adam.step()
         history.append(float(J))
         np.save(OUT / f"c_edge_coupler_rho_it{it:02d}.npy",
-                rho.detach().clamp(0, 1).numpy())   # per-iter rho: evolution video
+                rho.detach().clamp(0, 1).cpu().numpy())   # per-iter rho: evolution video
         del J
         gc.collect()
         print(f"c_edge_coupler  it={it} beta={BETA}: eta_rel={float(history[-1]):.3f}x butt "
               f"[fwd {t1-t0:.1f}s bwd {t2-t1:.1f}s | RSS post-fwd {rss_post_fwd:.0f} "
               f"post-bwd {rss_mb():.0f} MB]")
 
-    T_seed = history[0]                               # gate g1 (gf taper / butt)
-    BETA = 64
-    rho_f = rho.detach().clamp(0, 1)
-    r = tanh_projection(conic_filter(rho_f, 0.15, dx), BETA)
-    eps_fin = region.paint(eps_base, r).detach()
+# --- best-iterate selection (peer review fix d79ef100): re-eval every saved
+# rho_it*.npy at BETA=64 forward-only on the FIXED geometry, pick argmax eta_rel.
+# Don't trust the last iterate -- the curve can regress (it14 1.0077x -> it15
+# 1.0022x). rho_it{it}.npy is the POST-step rho; this finds the true best
+# post-step design. ~16 forward-only runs (minutes). Builds the plot curve
+# (post-step BETA=64) uniformly in both OPTIMIZE and VALIDATE_ONLY modes.
+def _eval_rho(rho_arr):
+    r = tanh_projection(conic_filter(rho_arr, 0.15, dx), 64)
     with torch.no_grad():
-        a_fin, P_arm = mode_amp(eps_fin, want_flux=True)
-        eta_rel_fin = float(abs(a_fin) ** 2) / D
-        # HONEST eta_abs = eta_rel x butt_flux_coupling (see pre-loop notes):
-        # eta_rel (scale-free) x butt_flux (clean 4um-straight flux/flux) =
-        # device TE0 / beam power. NOT |a|^2/P_IN (~1.9x flux-scaled) nor
-        # P_arm/P_IN (device window catches stray -> the old impossible 93%).
-        eta_abs = eta_rel_fin * butt_flux_coupling
-        eta_abs_butt = butt_flux_coupling
-        coeffs = build_tm_coeffs(grid, eps_inf=eps_fin, npml=NPML)
-        mon = DFTFieldsMonitor(grid, [FCEN], "Ez")
-        _, (acc,) = run_tm(init_tm_state(grid), coeffs,
-                           int(round(T_RUN / grid.dt)), source=fiber_source(),
-                           monitors=[mon], checkpoint_every=CHKPT)
-    ez = np.abs((acc[0, 0] + 1j * acc[0, 1]).numpy())
-    np.save(OUT / "c_edge_coupler_rho.npy", rho_f.numpy())
+        a = mode_amp(region.paint(eps_base, r))
+    return float(abs(a) ** 2) / D
 
-    # ------------------------------------------------------------ gates (RES=20)
-    gate_g2 = eta_rel_fin > T_seed                     # final > seed
-    gate_g3 = eta_rel_fin >= 1.0                       # taper beats bare straight
-    print(f"c_edge_coupler  GATES: g1 seed(0)={T_seed:.3f}x | "
-          f"g2 final={eta_rel_fin:.3f}x > seed={T_seed:.3f}x={gate_g2} | "
-          f"g3 taper>=butt(1.0x)={gate_g3}")
-    print(f"c_edge_coupler  eta_rel = {eta_rel_fin:.3f}x butt | "
-          f"eta_abs = {eta_abs * 100:.2f}% ({-10 * math.log10(eta_abs):.2f} dB) "
-          f"[decompose |a|^2/P_IN; butt_abs={eta_abs_butt * 100:.2f}% | "
-          f"P_arm(flux-window, diag)={P_arm:.3e} / P_IN={P_IN:.3e}]")
-    assert gate_g2, f"final {eta_rel_fin:.4f} not > seed {T_seed:.4f}"
-    assert gate_g3, f"final {eta_rel_fin:.4f} < butt 1.0"
+T_seed = _eval_rho(seed)                               # gate g1 (gf taper / butt)
+best_it, best_j, rho_f, history = -1, -1.0, None, []
+for _p in sorted(OUT.glob("c_edge_coupler_rho_it*.npy")):
+    _it = int(_p.stem.split("_it")[1])
+    _rho = torch.tensor(np.load(_p), dtype=eps_base.dtype, device=DEV).clamp(0, 1)
+    _j = _eval_rho(_rho)
+    history.append((_it, _j))
+    if _j > best_j:
+        best_j, best_it, rho_f = _j, _it, _rho
+eta_rel_fin = best_j
+print(f"c_edge_coupler  BEST iterate = it{best_it:02d} (eta_rel={eta_rel_fin:.4f}x) "
+      f"-- using its rho for final eval/plot; seed(gf taper)={T_seed:.4f}x")
 
-    # ------------------------------------------------------------ png (4 panels)
-    fig, axs = plt.subplots(2, 2, figsize=(12, 7.5))
-    ax1, ax2, ax3, ax4 = axs.flat
-    ax1.plot(history, "bo-")
-    ax1.axhline(1.0, color="gray", ls="--", lw=0.9, label="butt (bare straight) = 1.0x")
-    ax1.axhline(T_seed, color="g", ls="--", lw=0.9, label=f"gf taper seed={T_seed:.2f}x")
-    ax1.set_xlabel("iteration"); ax1.set_ylabel(r"coupling efficiency [x butt]")
-    ax1.set_title(f"edge coupler @{WL*1e3:.0f}nm: {eta_rel_fin:.2f}x butt, "
-                  f"eta_abs={eta_abs * 100:.1f}% ({-10 * math.log10(eta_abs):.2f} dB)")
-    ax1.legend(fontsize=8)
-    ax2.imshow(eps_base.numpy().T, origin="lower", cmap="viridis",
-               extent=[0, nx * dx, 0, ny * dx])
-    ax2.set_title("gdsfactory taper seed (5.5 -> 4.0 um, len 2, fiber left -> output right)")
-    ax3.imshow(eps_fin.numpy().T, origin="lower", cmap="viridis",
-               extent=[0, nx * dx, 0, ny * dx])
-    ax3.set_title(f"optimized design (SiN 150nm eff. index @{WL*1e3:.0f}nm)")
-    ax4.imshow(ez.T, origin="lower", cmap="inferno", extent=[0, nx * dx, 0, ny * dx])
-    ax4.set_title(rf"$|E_z|$ at {WL*1e3:.0f} nm")
-    for ax in (ax2, ax3, ax4):
-        ax.set_xlabel("x [um]")
-    fig.tight_layout()
-    fig.savefig(OUT / "c_edge_coupler.png", dpi=150)
-    plt.close(fig)
-    print("c_edge_coupler.png written")
-    res20 = (eta_rel_fin, eta_abs)                     # carry into RES=40 compare
-else:
-    rho_f = torch.tensor(np.load(OUT / "c_edge_coupler_rho.npy"),
-                         dtype=eps_base.dtype).clamp(0, 1)
-    res20 = None
+BETA = 64
+r = tanh_projection(conic_filter(rho_f, 0.15, dx), BETA)
+eps_fin = region.paint(eps_base, r).detach()
+with torch.no_grad():
+    a_fin, P_arm = mode_amp(eps_fin, want_flux=True)
+    # HONEST eta_abs = eta_rel x butt_flux_coupling (see pre-loop notes): eta_rel
+    # (scale-free) x butt_flux (clean 4um-straight flux/flux) = device TE0 / beam
+    # power. NOT |a|^2/P_IN (~1.9x flux-scaled) nor P_arm/P_IN (device window
+    # catches stray -> the old impossible 93%).
+    eta_abs = eta_rel_fin * butt_flux_coupling
+    eta_abs_butt = butt_flux_coupling
+    coeffs = build_tm_coeffs(grid, eps_inf=eps_fin, npml=NPML)
+    mon = DFTFieldsMonitor(grid, [FCEN], "Ez")
+    _, (acc,) = run_tm(init_tm_state(grid), coeffs,
+                       int(round(T_RUN / grid.dt)), source=fiber_source(),
+                       monitors=[mon], checkpoint_every=CHKPT)
+ez = np.abs((acc[0, 0] + 1j * acc[0, 1]).cpu().numpy())
+np.save(OUT / "c_edge_coupler_rho.npy", rho_f.cpu().numpy())   # save BEST rho
+
+# ------------------------------------------------------------ gates (RES=20)
+gate_g2 = eta_rel_fin > T_seed                         # best > seed
+gate_g3 = eta_rel_fin >= 1.0                           # taper beats bare straight
+print(f"c_edge_coupler  GATES: g1 seed(0)={T_seed:.3f}x | "
+      f"g2 best(it{best_it:02d})={eta_rel_fin:.3f}x > seed={T_seed:.3f}x={gate_g2} | "
+      f"g3 taper>=butt(1.0x)={gate_g3}")
+print(f"c_edge_coupler  eta_rel = {eta_rel_fin:.3f}x butt (best it{best_it:02d}) | "
+      f"eta_abs = {eta_abs * 100:.2f}% ({-10 * math.log10(eta_abs):.2f} dB) "
+      f"[butt_abs={eta_abs_butt * 100:.2f}% | "
+      f"P_arm(flux-window, diag)={P_arm:.3e} / P_IN={P_IN:.3e}]")
+# eta_abs = eta_rel x butt_flux is an ESTIMATOR, not a conservation-enforced
+# number: eta_rel comes from decompose (mode overlap) while butt_flux comes from
+# Poynting flux, so their product can drift past 100% by the estimator's own
+# error (~1-2%) when the device beats butt. The physical ceiling is the device's
+# own flux ratio P_arm/P_IN. Report both and flag rather than silently printing
+# an impossible efficiency (the 93% bug taught this).
+_p_arm_ratio = P_arm / P_IN
+if eta_abs >= 1.0:
+    print(f"c_edge_coupler  WARNING: eta_abs={eta_abs * 100:.2f}% >= 100% -- NOT "
+          f"physical; estimator (mode-overlap x flux) error. Use the flux bound "
+          f"P_arm/P_IN = {_p_arm_ratio * 100:.2f}% as the honest coupling; the "
+          f"eta_rel={eta_rel_fin:.3f}x gain over butt is the reliable figure.")
+assert _p_arm_ratio < 1.0, f"device flux ratio {_p_arm_ratio:.4f} >= 1.0 (unphysical)"
+assert gate_g2, f"best {eta_rel_fin:.4f} not > seed {T_seed:.4f}"
+assert gate_g3, f"best {eta_rel_fin:.4f} < butt 1.0"
+
+# ------------------------------------------------------------ png (4 panels)
+fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+ax1, ax2, ax3, ax4 = axs.flat
+_hist_it = [h[0] for h in history]
+_hist_j = [h[1] for h in history]
+ax1.plot(_hist_it, _hist_j, "bo-", label="eta_rel per iter (post-step BETA=64)")
+ax1.plot(best_it, best_j, "r*", ms=15, label=f"best it{best_it:02d}")
+ax1.axhline(1.0, color="gray", ls="--", lw=0.9, label="butt (bare straight) = 1.0x")
+ax1.axhline(T_seed, color="g", ls="--", lw=0.9, label=f"gf taper seed={T_seed:.2f}x")
+ax1.set_xlabel("iteration"); ax1.set_ylabel(r"coupling efficiency [x butt]")
+ax1.legend(fontsize=7)
+ax2.imshow(eps_base.cpu().numpy().T, origin="lower", cmap="viridis",
+           extent=[0, nx * dx, 0, ny * dx])
+ax2.set_title("gdsfactory taper seed (5.5 -> 4.0 um, output guide into PML)")
+ax3.imshow(eps_fin.cpu().numpy().T, origin="lower", cmap="viridis",
+           extent=[0, nx * dx, 0, ny * dx])
+ax3.set_title(f"optimized design (best it{best_it:02d}, SiN 150nm @{WL*1e3:.0f}nm)")
+ax4.imshow(ez.T, origin="lower", cmap="inferno", extent=[0, nx * dx, 0, ny * dx])
+ax4.set_title(rf"$|E_z|$ at {WL*1e3:.0f} nm")
+for ax in (ax2, ax3, ax4):
+    ax.set_xlabel("x [um]")
+fig.suptitle(f"edge coupler @{WL*1e3:.0f}nm: best it{best_it:02d} eta_rel={eta_rel_fin:.2f}x, "
+             f"eta_abs={eta_abs * 100:.1f}% ({-10 * math.log10(eta_abs):.2f} dB)", y=0.995)
+fig.tight_layout(rect=[0, 0, 1, 0.96])
+fig.savefig(OUT / "c_edge_coupler.png", dpi=150)
+plt.close(fig)
+print("c_edge_coupler.png written")
+res20 = (eta_rel_fin, eta_abs)                         # carry into RES=40 compare
 
 # --- peer 06b7ebec: validate the FINAL design forward-only at RES=40 ---
 # Optimize coarse (RES=20 above), validate fine (RES=40 here). Forward-only
@@ -380,10 +433,14 @@ dx_v = 1.0 / RES_V
 NPML_V = RES_V
 grid_v, eps_base_v, ports_v = component_to_eps(comp, res=RES_V, pad=3.0,
                                                n_core=NEFF, n_clad=N_CLAD)
+grid_v = dataclasses.replace(grid_v, device=DEV)
+eps_base_v = eps_base_v.to(DEV)
 nx_v, ny_v = grid_v.nx, grid_v.ny
 o1x_v, o1y_v, _ = ports_v["o1"]
 o2x_v, o2y_v, _ = ports_v["o2"]
 cy_v = o1y_v
+_hv = int(W_WG * RES_V / 2)                          # output guide into right PML (peer d79ef100)
+eps_base_v[o2x_v:, cy_v - _hv:cy_v + _hv] = NEFF ** 2
 IX_SRC_V = o1x_v - int(1.5 * RES_V)
 assert IX_SRC_V > NPML_V, f"validate ix={IX_SRC_V} inside PML {NPML_V}"
 SPAN_V = int(2.5 * RES_V)
@@ -395,17 +452,17 @@ iy0_v = cy_v - int(3.0 * RES_V)
 iy1_v = cy_v + int(3.0 * RES_V)
 mg_v = MaterialGrid((NRX, NRY), eps_min=N_CLAD ** 2, eps_max=NEFF ** 2)
 region_v = DesignRegion(mg_v, ix0=ix0_v, ix1=ix1_v, iy0=iy0_v, iy1=iy1_v)
-rho_load = torch.tensor(np.load(OUT / "c_edge_coupler_rho.npy"), dtype=eps_base.dtype)
+rho_load = torch.tensor(np.load(OUT / "c_edge_coupler_rho.npy"), dtype=eps_base.dtype, device=DEV)
 r_v = tanh_projection(conic_filter(rho_load, 0.15, dx_v), 64)
 eps_fin_v = region_v.paint(eps_base_v, r_v).detach()
-ys_v = (torch.arange(ny_v, dtype=eps_base.dtype) + 0.5) * dx_v
+ys_v = (torch.arange(ny_v, dtype=eps_base.dtype, device=DEV) + 0.5) * dx_v
 FIBER_V = torch.exp(-((ys_v - cy_v * dx_v) / (W_FIBER / 2)) ** 2)
 pulse_v = GaussianPulse(FCEN, 0.2 * 1.55 / WL)
 
 
 def _src_v():
     s = LineSource(grid_v, ix=IX_SRC_V, j0=0, j1=ny_v, profile=pulse_v)
-    s.mask = torch.zeros(nx_v, ny_v, dtype=eps_base.dtype)
+    s.mask = torch.zeros(nx_v, ny_v, dtype=eps_base.dtype, device=DEV)
     s.mask[IX_SRC_V, :] = FIBER_V
     return s
 
@@ -422,7 +479,7 @@ def mode_amp_v(eps, want_flux=False):
                         lo=p_out_v.lo, hi=p_out_v.hi)
     (acc,) = _run_v(eps, [mon])
     el = eps.detach()[p_out_v.index, p_out_v.lo:p_out_v.hi]
-    a_p, _ = decompose(acc, el, dx_v, [FCEN], "tm", 1, axis_sign=-1.0)
+    a_p, _ = decompose(acc.cpu(), el.cpu(), dx_v, [FCEN], "tm", 1, axis_sign=-1.0)
     if want_flux:
         return a_p[0, 0], float(mon.flux(acc, dx_v)[0])
     return a_p[0, 0]
@@ -435,7 +492,7 @@ def port_flux_v(eps, idx, lo, hi):
 
 
 def butt_eps_v():
-    L = (o2x_v - o1x_v) * dx_v
+    L = (nx_v - o1x_v) * dx_v                         # extend butt into right PML (peer d79ef100)
     bc = gf.components.straight(length=L, width=W_WG, cross_section=xs)
     bpolys = bc.get_polygons_points(merge=False)[1]
     shift = np.array([o1x_v * dx_v, cy_v * dx_v])
@@ -446,7 +503,7 @@ def butt_eps_v():
 with torch.no_grad():
     a_butt_v, P_arm_butt_v = mode_amp_v(butt_eps_v(), want_flux=True)
     D_v = float(abs(a_butt_v) ** 2)
-    clad_v = torch.full((nx_v, ny_v), N_CLAD ** 2, dtype=eps_base.dtype)
+    clad_v = torch.full((nx_v, ny_v), N_CLAD ** 2, dtype=eps_base.dtype, device=DEV)
     P_IN_v = port_flux_v(clad_v, IX_SRC_V + int(0.5 * RES_V), NPML_V, ny_v - NPML_V)
     a_fin_v, P_arm_v = mode_amp_v(eps_fin_v, want_flux=True)
     eta_rel_v = float(abs(a_fin_v) ** 2) / D_v
@@ -465,9 +522,9 @@ mon_v = DFTFieldsMonitor(grid_v, [FCEN], "Ez")
 with torch.no_grad():
     _, (acc_v,) = run_tm(init_tm_state(grid_v), coeffs_v, int(round(T_RUN / grid_v.dt)),
                          source=_src_v(), monitors=[mon_v], checkpoint_every=0)
-ez_v = np.abs((acc_v[0, 0] + 1j * acc_v[0, 1]).numpy())
+ez_v = np.abs((acc_v[0, 0] + 1j * acc_v[0, 1]).cpu().numpy())
 fig, axs = plt.subplots(1, 2, figsize=(12, 5))
-axs[0].imshow(eps_fin_v.numpy().T, origin="lower", cmap="viridis",
+axs[0].imshow(eps_fin_v.cpu().numpy().T, origin="lower", cmap="viridis",
               extent=[0, nx_v * dx_v, 0, ny_v * dx_v])
 axs[0].set_title(f"RES=40 design (validate) @{WL*1e3:.0f}nm, eta_abs={eta_abs_v * 100:.1f}%")
 axs[1].imshow(ez_v.T, origin="lower", cmap="inferno",
