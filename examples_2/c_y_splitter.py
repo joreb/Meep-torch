@@ -129,6 +129,13 @@ nx, ny = nxf, nyf - cy_full
 grid = Grid(nx=nx, ny=ny, dx=dx, device=DEV)
 o1x = o1xf
 o2x, o2y = o2xf, o2yf - cy_full                        # upper-arm port in half grid
+# extend the output arm INTO the right PML (same fix as the coupler, peer
+# d79ef100): with symmetric pad the gds straight ends pad-NPML*dx short of the
+# PML, so the arm tip reflects (Fabry-Perot) back into the TE0 monitor. Paint
+# the W_WG core from o2x to the right edge -- past the monitor at o2x-2 um, and
+# outside the design region, so an optimized rho stays valid.
+_h = int(W_WG * RES / 2)
+eps_base[o2x:, o2y - _h:o2y + _h] = NEFF ** 2
 T_RUN = 130.0
 print(f"c_y_splitter  full grid {nxf}x{nyf} -> half {nx}x{ny} "
       f"({nx*dx:.1f} x {ny*dx:.1f} um), cut at full-j={cy_full}, on {DEV}")
@@ -187,11 +194,16 @@ def objective(rho):
     return (s21.conj() * s21).real                     # |S21|^2 (upper); total=2x by sym
 
 
+# CYS_VALIDATE_ONLY=1 -> skip the optimize loop and re-eval/replot from the
+# saved rho_it*.npy (the best-iterate block below reads them off disk anyway).
+# Used for presentation replots without re-running or fighting for the GPU.
+OPTIMIZE = os.environ.get("CYS_VALIDATE_ONLY") != "1"
 rho = seed.clone().requires_grad_(True)
 adam = torch.optim.Adam([rho], lr=0.03)
 history = []
-print(f"c_y_splitter  [starting 16-iter adjoint, CHKPT={CHKPT}]")
-for it in range(16):
+if OPTIMIZE:
+    print(f"c_y_splitter  [starting 16-iter adjoint, CHKPT={CHKPT}]")
+for it in range(16 if OPTIMIZE else 0):
     BETA = [8, 16, 32, 64][min(it // 4, 3)]
     adam.zero_grad()
     t0 = time.perf_counter()
@@ -267,8 +279,17 @@ print(f"c_y_splitter  GATES: g1 seed@BETA64={T_seed*100:.2f}% | "
       f"g2 best(it{best_it:02d})={T_up*100:.2f}% > seed={g2} | g3 total>50%={g3}")
 assert g2, f"final {T_up:.4f} not > seed {T_seed:.4f}"
 
-fig, axs = plt.subplots(2, 2, figsize=(12, 8))
-ax1, ax2, ax3, ax4 = axs.flat
+# full-device view (peer f0c3248e): the sim is a half-domain with a PMC at the
+# cut, but a full Y reads better. Mirror j about the cut for DISPLAY only --
+# eps[:, ::-1] stacked under eps reconstructs the even-mirror lower half.
+def _mirror(a):
+    return np.concatenate([a[:, ::-1], a], axis=1)
+
+
+eps_full = _mirror(eps_fin.cpu().numpy())
+ez_full = _mirror(ez)
+fig, axs = plt.subplots(3, 2, figsize=(12, 11))
+ax1, ax2, ax3, ax4, ax5, ax6 = axs.flat
 ax1.plot([h[0] for h in hist64], [h[1] * 200 for h in hist64], "bo-",
          label="total per iter (post-step BETA=64)")
 ax1.plot(best_it, best_j * 200, "r*", ms=15, label=f"best it{best_it:02d}")
@@ -277,15 +298,23 @@ ax1.axhline(T_seed * 200, color="g", ls="--", lw=0.9,
 ax1.set_xlabel("iteration"); ax1.set_ylabel(r"total $2|S_{21}|^2$ [%]")
 ax1.legend(fontsize=7)
 ax2.imshow(eps_base.cpu().numpy().T, origin="lower", cmap="viridis",
-           extent=[0, nx * dx, 0, ny * dx])
+           extent=[0, nx * dx, 0, ny * dx], aspect="auto")
 ax2.set_title("gdsfactory mmi1x2+bend_s seed (W=4um, upper half, PMC at bottom)")
 ax3.imshow(eps_fin.cpu().numpy().T, origin="lower", cmap="viridis",
-           extent=[0, nx * dx, 0, ny * dx])
+           extent=[0, nx * dx, 0, ny * dx], aspect="auto")
 ax3.set_title(f"optimized design (best it{best_it:02d}, SiN 150nm @{WL*1e3:.0f}nm)")
-ax4.imshow(ez.T, origin="lower", cmap="inferno", extent=[0, nx * dx, 0, ny * dx])
+ax4.imshow(ez.T, origin="lower", cmap="inferno", extent=[0, nx * dx, 0, ny * dx],
+           aspect="auto")
 ax4.set_title(rf"$|E_z|$ at {WL*1e3:.0f} nm (half-domain)")
-for ax in (ax2, ax3, ax4):
-    ax.set_xlabel("x [um]")
+_yf = 2 * ny * dx
+ax5.imshow(eps_full.T, origin="lower", cmap="viridis", extent=[0, nx * dx, 0, _yf],
+           aspect="auto")
+ax5.set_title("full device eps (mirrored about symmetry plane for display)")
+ax6.imshow(ez_full.T, origin="lower", cmap="inferno", extent=[0, nx * dx, 0, _yf],
+           aspect="auto")
+ax6.set_title(rf"full device $|E_z|$ (mirrored about symmetry plane for display)")
+for ax in (ax2, ax3, ax4, ax5, ax6):
+    ax.set_xlabel("x [um]"); ax.set_ylabel("y [um]")
 fig.suptitle(f"Y splitter @{WL*1e3:.0f}nm: best it{best_it:02d} total={tot*100:.1f}%, "
              f"IL {il_db:.2f} dB, imbalance 0% (half-domain sym)", y=0.995)
 fig.tight_layout(rect=[0, 0, 1, 0.96])
