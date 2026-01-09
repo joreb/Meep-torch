@@ -3,7 +3,7 @@
 """device-suite (a2): ADD-DROP ring -- assembled from the half-ring coupler
 extraction (see a_ring_smatrix.py).
 
-gdsfactory ring_double(r=50, W=4, both gaps 0.6) has two IDENTICAL
+gdsfactory ring_double(r=50, W=1, both gaps 0.2, 674 nm) has two IDENTICAL
 couplers, each equal to the ring_single coupler measured by the two
 half-ring FDTD runs (t, kappa, and the bare half-loop a = A/t, which is
 also exactly the coupler-to-coupler path). Two-coupler formulas:
@@ -42,7 +42,7 @@ if not DATA.exists():
     sys.exit("run examples_2/a_ring_smatrix.py first (writes the coupler npz)")
 d = np.load(DATA)
 freqs, t, kap, loop = d["freqs"], d["t"], d["kappa"], d["loop"]
-a_half = np.sqrt(np.abs(loop)) * np.exp(1j * np.unwrap(np.angle(loop)) / 2)
+a_half = np.sqrt(np.abs(loop)) * np.exp(1j * np.unwrap(np.angle(loop)) / 2)  # loop already |t|-normalized
 
 fd = np.linspace(freqs[0], freqs[-1], 6000)
 
@@ -53,7 +53,10 @@ def interp_c(z):
     return m * np.exp(1j * p)
 
 
-ti, ki, ai = interp_c(t), interp_c(kap), interp_c(a_half)
+# |t|, |kappa| real (external bus phases stripped); ring phase in a_half
+ti = np.interp(fd, freqs, np.abs(t))
+ki = np.interp(fd, freqs, np.abs(kap))
+ai = interp_c(a_half)
 D = 1 - ti ** 2 * ai ** 2
 S_thru = ti - ki ** 2 * ti * ai ** 2 / D
 S_drop = -ki ** 2 * ai / D
@@ -78,10 +81,10 @@ print(f"a_ring_adddrop  drop peak lambda={lam[i0]:.2f} nm "
       f"FSR={fsr_nm:.2f} nm")
 
 # geometry panel: gf ring_double (coarse rasterization for the figure)
-N_SIN = Si3N4.n(1 / 1.55).real
-N_CLAD = SiO2.n(1 / 1.55).real
-xs = gf.get_cross_section("strip").copy(width=4.0)
-c = gf.components.ring_double(radius=50.0, gap=0.6, cross_section=xs)
+N_SIN = Si3N4.n(1 / 0.674).real
+N_CLAD = SiO2.n(1 / 0.674).real
+xs = gf.get_cross_section("strip").copy(width=1.0)
+c = gf.components.ring_double(radius=50.0, gap=0.2, cross_section=xs)
 grid_g, eps_g, _ = component_to_eps(c, res=4, pad=3.0,
                                     n_core=N_SIN, n_clad=N_CLAD)
 
@@ -95,7 +98,7 @@ ax1.set_title(f"add-drop (half-ring method): drop Q={Q:.0f}, "
 ax1.legend(fontsize=8); ax1.set_ylim(0, 1.05)
 ax2.imshow(eps_g.numpy().T, origin="lower", cmap="viridis",
            extent=[0, grid_g.nx / 4, 0, grid_g.ny / 4])
-ax2.set_title("gdsfactory ring_double r=50 W=4 gaps=0.6")
+ax2.set_title("gdsfactory ring_double r=50 W=1 gaps=0.2 (674 nm)")
 ax2.set_xlabel("x [um]")
 fig.tight_layout()
 fig.savefig(OUT / "a_ring_adddrop.png", dpi=150)

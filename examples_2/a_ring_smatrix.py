@@ -2,8 +2,13 @@
 # Copyright (C) 2026 meep-torch contributors (original code)
 """device-suite (a): SiN ring resonator, HALF-RING coupler extraction.
 
-A full r = 50 um weakly-guided ring needs >= 10 round trips (~6000 tu on
-a 3M-cell grid) for resonances to form in FDTD. Instead (user directive)
+At 674 nm (red diode, USER spec) with W = 1.0 um: r = 50 um bends are
+lossless and the ring is effectively single-mode. W = 4.0 um was tried
+and is PHYSICS-VETOED at 674 nm: supermode beat length 1-3 mm (no
+practical gap/coupler couples), and the wide bend scrambles TE0 into
+higher lateral modes (measured 1.8 dB/rt apparent TE0 loss on lossless
+bends). A full ring still needs many round trips to resonate, so the
+half-ring coupler extraction stays: Instead (user directive)
 only the LOWER HALF of the gdsfactory ring_single is simulated: the ring
 side-guides run vertically at the cut plane and exit cleanly into the
 top PML. Two short runs extract the full coupler physics:
@@ -54,20 +59,23 @@ from meep_torch.ports.port import Port, validate_ports
 OUT = pathlib.Path(__file__).parent
 gf.gpdk.PDK.activate()
 
-N_SIN = Si3N4.n(1 / 1.55).real
-N_CLAD = SiO2.n(1 / 1.55).real
+LAM = 0.674                                         # red diode (USER spec)
+N_SIN = Si3N4.n(1 / LAM).real
+N_CLAD = SiO2.n(1 / LAM).real
 eps_line = np.full(400, N_CLAD ** 2)
 eps_line[200 - 7: 200 + 8] = N_SIN ** 2
-NEFF = float(solve_1d(eps_line, 0.01, 1 / 1.55, "te", k=1).neff[0])
-R_RING, W_WG, GAP = 50.0, 4.0, 0.6
-RES = 15
-FCEN = 1 / 1.55
+NEFF = float(solve_1d(eps_line, 0.01, 1 / LAM, "te", k=1).neff[0])
+R_RING, W_WG, GAP = 50.0, 1.0, 0.2
+LC = 4.0                                            # racetrack straight coupler
+RES = 50                                            # 20 cells per in-medium wavelength (674 nm)
+FCEN = 1 / LAM
 dx = 1.0 / RES
 print(f"a_ring  half-ring method: n_core={NEFF:.4f} n_clad={N_CLAD:.4f} "
       f"r={R_RING} W={W_WG} gap={GAP}")
 
 xs = gf.get_cross_section("strip").copy(width=W_WG)
-c = gf.components.ring_single(radius=R_RING, gap=GAP, cross_section=xs)
+c = gf.components.ring_single(radius=R_RING, gap=GAP, length_x=LC,
+                              cross_section=xs)   # racetrack: straight coupler section
 grid_f, eps_f, ports = component_to_eps(c, res=RES, pad=3.0,
                                         n_core=NEFF, n_clad=N_CLAD)
 o1x, o1y, _ = ports["o1"]
@@ -80,33 +88,43 @@ j_center = o1y + int((W_WG / 2 + GAP + W_WG / 2 + R_RING) * RES)
 PAD_TOP = int(2.0 * RES) + NPML
 ny_h = j_center + PAD_TOP
 nx_h = grid_f.nx
-grid = Grid(nx=nx_h, ny=ny_h, dx=dx)
+DEV = "cuda" if torch.cuda.is_available() else "cpu"
+grid = Grid(nx=nx_h, ny=ny_h, dx=dx, device=DEV)
 eps = torch.full((nx_h, ny_h), N_CLAD ** 2, dtype=grid.dtype)
 eps[:, :j_center] = eps_f[:, :j_center]
 eps[:, j_center:] = eps[:, j_center - 1: j_center]   # extend guides straight up
-print(f"a_ring  half grid {nx_h}x{ny_h} ({nx_h * dx:.0f} x {ny_h * dx:.0f} um)")
+eps = eps.to(DEV)
+print(f"a_ring  half grid {nx_h}x{ny_h} ({nx_h * dx:.0f} x {ny_h * dx:.0f} um) on {DEV}")
 
 coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=NPML)
-SPAN = int(3.5 * RES)
+SPAN = int(1.5 * RES)   # 0.5 um half-width + 1 um tails
 p_in = Port(axis="x", index=max(o1x + 4, NPML + 4), lo=o1y - SPAN,
             hi=o1y + SPAN, direction=+1)
 p_thru = Port(axis="x", index=min(o2x - 4, nx_h - NPML - 4), lo=o2y - SPAN,
               hi=o2y + SPAN, direction=-1)
-# arc ports: vertical guides at x = x_center +/- (R + W/2), y-normal planes
-x_cen = nx_h // 2
-ix_arm = int(R_RING * RES)
+# arc ports: locate the two vertical side guides from the eps row itself
+# (the ring center is NOT exactly the domain center -- pads/bus offsets)
 j_arc = ny_h - NPML - int(2.0 * RES)                 # 2 um below the top edge
-p_arcL = Port(axis="y", index=j_arc, lo=x_cen - ix_arm - SPAN,
-              hi=x_cen - ix_arm + SPAN, direction=-1)
-p_arcR = Port(axis="y", index=j_arc, lo=x_cen + ix_arm - SPAN,
-              hi=x_cen + ix_arm + SPAN, direction=-1)
+row = eps[:, j_arc]
+core_cols = (row > 0.5 * (float(row.min()) + float(row.max()))).nonzero().flatten()
+splits = (core_cols.diff() > 1).nonzero().flatten()
+assert len(splits) == 1, f"expected 2 side guides, got {len(splits) + 1} clusters"
+cl = core_cols[: splits[0] + 1]
+cr = core_cols[splits[0] + 1:]
+xL = int(cl.float().mean().round())
+xR = int(cr.float().mean().round())
+print(f"a_ring  arc guide centers x = {xL * dx:.1f}, {xR * dx:.1f} um")
+p_arcL = Port(axis="y", index=j_arc, lo=xL - SPAN, hi=xL + SPAN, direction=-1)
+p_arcR = Port(axis="y", index=j_arc, lo=xR - SPAN, hi=xR + SPAN, direction=-1)
 validate_ports([p_in, p_thru, p_arcL, p_arcR], grid, NPML)
 
 NFREQ = 60
-DF_BAND = 0.006
+DF_BAND = 0.008                                     # ~3.6 nm, ~4 FSR
 freqs = np.linspace(FCEN - DF_BAND / 2, FCEN + DF_BAND / 2, NFREQ).tolist()
-T_RUN = 500.0                                       # single-pass: no buildup
-PULSE = GaussianPulse(FCEN, 0.04)
+# T_RUN per geometry (silent-truncation trap): gaussian tail 2*(5/fwidth)
+# + arc transit pi*R*n + straight/coupler margin
+T_RUN = 2 * (5 / 0.05) + math.pi * R_RING * 1.7 + 80.0
+PULSE = GaussianPulse(FCEN, 0.05)
 
 
 def eline(p):
@@ -126,7 +144,7 @@ def run_ports(src_port, mons_ports):
     out = {}
     for p, acc, name in zip(mons_ports, accs, range(len(mons_ports))):
         sign = -1.0 if p.axis == "x" else +1.0
-        out[name] = decompose(acc, eline(p), dx, freqs, "tm", 1,
+        out[name] = decompose(acc.cpu(), eline(p).cpu(), dx, freqs, "tm", 1,
                               axis_sign=sign)
     return out
 
@@ -140,17 +158,26 @@ kap = (r1[2][0][:, 0] / a_in).numpy()                # into ring, +y out at R
 r2 = run_ports(p_arcR, [p_arcR, p_arcL])
 a_inR = r2[0][1][:, 0]                               # -y incident (a_minus)
 A = (r2[1][0][:, 0] / a_inR).numpy()                 # +y outgoing at L
-a_half = A / t                                       # bare half loop
-loop = a_half ** 2                                   # bare full loop a^2
+# magnitude-only normalization: dividing by complex t would strip the
+# BUS propagation phase (a path A never traveled) -- that error tripled
+# the apparent FSR. A's own phase IS the half-loop propagation phase.
+a_half = A / np.abs(t)                               # bare half loop
+loop = a_half ** 2                                   # bare full loop a^2 (phase = full loop)
 
-print(f"a_ring  at 1550: |t|^2={abs(t[NFREQ//2])**2:.3f} "
-      f"|kappa|^2={abs(kap[NFREQ//2])**2:.3f} "
-      f"|a_loop|={abs(loop[NFREQ//2]):.4f} "
-      f"(|t|^2+|k|^2={abs(t[NFREQ//2])**2+abs(kap[NFREQ//2])**2:.3f})")
+unit = abs(t[NFREQ//2])**2 + abs(kap[NFREQ//2])**2
+print(f"a_ring  at band center ({1e3/freqs[NFREQ//2]:.1f} nm): |t|^2={abs(t[NFREQ//2])**2:.3f} "
+      f"|kappa|^2={abs(kap[NFREQ//2])**2:.4f} "
+      f"|a_loop|={abs(loop[NFREQ//2]):.4f} (|t|^2+|k|^2={unit:.3f})")
+if unit < 0.8:
+    print("a_ring  WARNING: |t|^2+|kappa|^2 < 0.8 -- extraction INVALID "
+          "(T_RUN truncation or port mis-capture); Q/FSR below untrustworthy")
 
 # --- analytic assembly on a dense grid ---
 fd = np.linspace(freqs[0], freqs[-1], 6000)
-ti = np.interp(fd, freqs, t.real) + 1j * np.interp(fd, freqs, t.imag)
+# |t| only: the measured t phase is dominated by bus propagation between
+# the ports (an EXTERNAL phase); putting it in the resonance denominator
+# produced |S21| > 1 lobes. The ring round-trip phase lives in `loop`.
+ti = np.interp(fd, freqs, np.abs(t))
 # interpolate loop magnitude and UNWRAPPED phase (phase winds ~2pi/FSR)
 lm = np.interp(fd, freqs, np.abs(loop))
 lp = np.interp(fd, freqs, np.unwrap(np.angle(loop)))
@@ -184,7 +211,7 @@ ax1.set_title(f"r=50 um SiN ring (half-ring method): "
               f"Q={Q:.0f}, FSR={fsr_nm:.2f} nm")
 ax1.set_ylim(0, 1.05)
 step = max(1, nx_h // 900)
-ax2.imshow(eps.numpy()[::step, ::step].T, origin="lower", cmap="viridis",
+ax2.imshow(eps.cpu().numpy()[::step, ::step].T, origin="lower", cmap="viridis",
            extent=[0, nx_h * dx, 0, ny_h * dx])
 ax2.set_title("simulated half domain (gf ring_single, cropped at midline)")
 ax2.set_xlabel("x [um]")
