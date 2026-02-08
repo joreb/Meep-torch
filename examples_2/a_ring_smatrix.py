@@ -163,6 +163,10 @@ A = (r2[1][0][:, 0] / a_inR).numpy()                 # +y outgoing at L
 # the apparent FSR. A's own phase IS the half-loop propagation phase.
 a_half = A / np.abs(t)                               # bare half loop
 loop = a_half ** 2                                   # bare full loop a^2 (phase = full loop)
+# passive ring: no round-trip gain. Small excess = A-noise / |t|~1; large = broken.
+ex = float(np.abs(loop).max())
+assert ex < 1.05, f"|a_loop| max {ex:.4f} -- extraction broken, not noise"
+loop = np.where(np.abs(loop) > 1.0, loop / np.abs(loop), loop)
 
 unit = abs(t[NFREQ//2])**2 + abs(kap[NFREQ//2])**2
 print(f"a_ring  at band center ({1e3/freqs[NFREQ//2]:.1f} nm): |t|^2={abs(t[NFREQ//2])**2:.3f} "
@@ -184,6 +188,7 @@ lp = np.interp(fd, freqs, np.unwrap(np.angle(loop)))
 loop_d = lm * np.exp(1j * lp)
 S21 = (ti - loop_d) / (1 - ti * loop_d)
 T = np.abs(S21) ** 2
+assert T.max() <= 1.0 + 1e-6, f"|S21|^2 max {T.max():.4f} > 1 -- assembly bug"
 lam_d = 1e3 / fd
 
 i0 = int(np.argmin(T))
