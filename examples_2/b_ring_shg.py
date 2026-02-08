@@ -250,7 +250,11 @@ def extract(label, lam, n_core, n_clad, gap, coupler):
     r2 = run_ports(p_arcR, [p_arcR, p_arcL])
     a_inR = r2[0][1][:, 0]
     A = (r2[1][0][:, 0] / a_inR).numpy()
-    loop = (A / t) ** 2                          # bare full loop a^2
+    # a_half = A / |t|, NOT A / t (peer 0a2eaf0). A is the arc-to-arc amplitude;
+    # dividing by the COMPLEX t strips a bus propagation phase that the arc
+    # path never travelled, which shows up as a tripled apparent FSR. Only the
+    # coupler's magnitude belongs here.
+    loop = (A / np.abs(t)) ** 2                  # bare full loop a^2
 
     mid = nfreq // 2
     unit = abs(t[mid]) ** 2 + abs(kap[mid]) ** 2
@@ -286,11 +290,29 @@ def assemble(band, m_pump_coupler, m_sh_coupler):
     t_tot = m_pump_coupler["t"] * m_sh_coupler["t"]
     loop = m_pump_coupler["loop"]
     fd = np.linspace(freqs[0], freqs[-1], 6000)
-    ti = np.interp(fd, freqs, t_tot.real) + 1j * np.interp(fd, freqs, t_tot.imag)
-    lm = np.interp(fd, freqs, np.abs(loop))
+    # t enters the all-pass ratio as a MAGNITUDE (peer 0a2eaf0): its phase is bus
+    # propagation, which is not part of the ring round trip. Carrying complex t
+    # into the denominator produced |S21| > 1 lobes -- unphysical for a passive
+    # ring. The loop keeps its full complex phase; that is the resonance.
+    tm = np.interp(fd, freqs, np.abs(t_tot))
+    # The extracted bare loop can come out marginally ABOVE 1 where the coupler
+    # is nearly transparent (a = A/|t| divides measurement noise in A by a |t|
+    # close to 1). A passive ring cannot have round-trip gain, so clamp -- but
+    # assert the excess is small, because a LARGE excess would mean the
+    # extraction is wrong rather than merely noisy. Measured worst case here is
+    # |a^2| = 1.0194 on the pump, against two independent estimates of the same
+    # loop agreeing to 0.9939 vs 0.9915.
+    a2 = np.abs(loop)
+    assert a2.max() < 1.05, (
+        f"bare loop |a^2| = {a2.max():.4f} -- too far above 1 to be noise; "
+        f"the loop extraction is wrong, not just noisy")
+    lm = np.interp(fd, freqs, np.minimum(a2, 1.0))
     lp = np.interp(fd, freqs, np.unwrap(np.angle(loop)))
     loop_d = lm * np.exp(1j * lp)
-    T = np.abs((ti - loop_d) / (1 - ti * loop_d)) ** 2
+    T = np.abs((tm - loop_d) / (1 - tm * loop_d)) ** 2
+    assert T.max() <= 1.0 + 1e-9, (
+        f"|S21|^2 max {T.max():.4f} > 1 -- passive ring cannot amplify; "
+        f"check that t enters as a magnitude")
 
     i0 = int(np.argmin(T))
     half = (T[i0] + np.median(T)) / 2
