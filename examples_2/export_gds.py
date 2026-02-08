@@ -21,24 +21,25 @@ gf.gpdk.PDK.activate()
 # layer, its material assignment lives in the deck).
 SIN_LAYER = (4, 0)
 
-def _ring_gds(radius, gap):
-    # gpdk strip DRC has radius_min=3.5; the r=3 nonlinear device is a
-    # simulation geometry, so relax the floor (same override as b_ring sim)
-    xs = gf.get_cross_section("strip").copy(radius_min=radius)
-    r = gf.components.ring_single(radius=radius, gap=gap,
-                                  cross_section=xs).copy()
+def _ring_gds(radius, gap, width, length_x=0.01, double=False):
+    xs = gf.get_cross_section("strip").copy(width=width, radius_min=min(radius, 3.5))
+    fac = gf.components.ring_double if double else gf.components.ring_single
+    r = fac(radius=radius, gap=gap, length_x=length_x,
+            cross_section=xs).copy()
     r.flatten()                      # remap_layers skips referenced subcells
     r.remap_layers({(1, 0): SIN_LAYER})
     return r
 
 
-# (a): r=5 gap=0.2 (S-matrix device); (b): r=3 gap=0.30 (nonlinear device,
-# single FSR-spaced mode in band -- see b_ring_nonlinear redo)
-_ring_gds(5.0, 0.2).write_gds(OUT / "a_ring_SiN.gds")
-ring_b = _ring_gds(3.0, 0.30)
-ring_b.write_gds(OUT / "b_ring_SiN.gds")
-ring_b.write_gds(OUT / "b_ring_Lithium_Niobate.gds")
-print("export_gds  rings written (a_ring_SiN, b_ring_SiN, b_ring_Lithium_Niobate)")
+# (a): 674 nm devices -- W=1 um, r=50, racetrack coupler LC=4, gap 0.2
+_ring_gds(50.0, 0.2, 1.0, length_x=4.0).write_gds(OUT / "a_ring_SiN.gds")
+_ring_gds(50.0, 0.2, 1.0, length_x=4.0, double=True).write_gds(
+    OUT / "a_ring_adddrop_SiN.gds")
+# (b): poled TFLN SHG ring -- r=50, W=1.2 ridge, single bus gap 0.25
+# (QPM poling is a fab layer, not drawn here)
+_ring_gds(50.0, 0.25, 1.2, length_x=4.0).write_gds(
+    OUT / "b_ring_Lithium_Niobate.gds")
+print("export_gds  rings written (a_ring_SiN, a_ring_adddrop_SiN, b_ring_Lithium_Niobate)")
 
 
 def design_to_gds(npz_or_recompute, name):
@@ -74,10 +75,18 @@ def final_design(script):
 # import mode? ponytail: re-run both scripts IS the deterministic source,
 # but they take minutes. Instead the scripts now save rho (npy) -- see
 # the small patches applied alongside this file.
+def _load_rho(name):
+    import numpy as _np
+    r = _np.load(OUT / f"{name}_rho.npy")
+    if name == "c_y_splitter":                    # half-domain rho: mirror
+        r = _np.concatenate([r[:, ::-1], r], axis=1)
+    return r
+
+
 for name in ("c_edge_coupler", "c_y_splitter"):
     npy = OUT / f"{name}_rho.npy"
     if not npy.exists():
         print(f"export_gds  {name}_rho.npy missing -- run examples_2/{name}.py first")
         continue
-    rho = np.load(npy)
+    rho = _load_rho(name)
     design_to_gds((rho, (0, rho.shape[0] * 0.05, 0, rho.shape[1] * 0.05)), name)
