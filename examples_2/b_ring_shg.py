@@ -63,7 +63,8 @@ from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
-from meep_torch.core.sources import GaussianPulse
+from meep_torch.core.monitors import PointProbe
+from meep_torch.core.sources import ContinuousSource, GaussianPulse
 from meep_torch.core.stepper import init_tm_state
 from meep_torch.ports.mode_monitor import decompose
 from meep_torch.ports.mode_source import ModeSourceTM
@@ -93,8 +94,17 @@ LC = 4.0                 # racetrack straight coupler section
 # geometry needed), but BOTH bands are measured through BOTH couplers: the SH
 # coupler still perturbs the pump round trip and vice versa, so the assembled
 # round trip needs t from both.
-GAP_PUMP = float(os.environ.get("BRS_GAP_PUMP", "0.44"))   # target |k|^2 ~ 0.04 @1348
-GAP_SH = float(os.environ.get("BRS_GAP_SH", "0.20"))       # target |k|^2 ~ 0.03-0.05 @674
+# SINGLE BUS is the settled architecture (peer 3db9578c/89ee2cda). Two buses
+# were measured and REJECTED: the SH bus at 0.20 couples 59% of the PUMP out per
+# round trip, and with that cross term the pump has NO resonance at all
+# (|t_tot|=0.61 against a lossless loop -> zero dips). A phase-mismatched SH bus
+# width was scanned and proved impossible (b_ring_buswidth_scan.py). So one bus
+# at the compromise gap: the pump resonates (Q~4700) and the SH still escapes
+# (|k|^2~0.031). BRS_TWOBUS=1 restores the two-bus measurement for the record.
+TWO_BUS = os.environ.get("BRS_TWOBUS") == "1"
+GAP_SINGLE_BUS = float(os.environ.get("BRS_GAP1", "0.25"))
+GAP_PUMP = float(os.environ.get("BRS_GAP_PUMP", "0.44"))   # two-bus only
+GAP_SH = float(os.environ.get("BRS_GAP_SH", "0.20"))       # two-bus only
 # RES is a real tradeoff here, sized against MEASURED GPU throughput
 # (~0.3e9 cell-steps/s on the GPU, from the coupler run). An r=50 half-ring is
 # ~4400 x 2300 at RES=40, and each wavelength needs 2 runs:
@@ -294,6 +304,12 @@ def assemble(band, m_pump_coupler, m_sh_coupler):
     # propagation, which is not part of the ring round trip. Carrying complex t
     # into the denominator produced |S21| > 1 lobes -- unphysical for a passive
     # ring. The loop keeps its full complex phase; that is the resonance.
+    # group index from the measured loop phase slope: the round-trip phase is
+    # 2*pi*f*n_g*L, so d(phase)/df = 2*pi*n_g*L. This is the MEASURED n_g, which
+    # is what sets the true FSR -- better than reusing the phase index.
+    ph = np.unwrap(np.angle(loop))
+    dphi_df = np.polyfit(freqs, ph, 1)[0]
+    n_g_est = abs(dphi_df) / (2 * math.pi * 2 * math.pi * R_RING)
     tm = np.interp(fd, freqs, np.abs(t_tot))
     # The extracted bare loop can come out marginally ABOVE 1 where the coupler
     # is nearly transparent (a = A/|t| divides measurement noise in A by a |t|
@@ -322,16 +338,35 @@ def assemble(band, m_pump_coupler, m_sh_coupler):
     while hi < len(fd) - 1 and T[hi] < half:
         hi += 1
     Q = fd[i0] / max(fd[hi] - fd[lo], 1e-12)
-    dips = [i for i in range(2, len(fd) - 2)
-            if T[i] < 0.6 * np.median(T) and T[i] <= T[i - 1] and T[i] < T[i + 1]]
+    # Dip finding by PROMINENCE, not by an absolute fraction of the median. A
+    # shallow-but-real resonance (the pump dips to 0.73 against a 0.996 median,
+    # 1.2 dB extinction) never crosses a 0.6*median threshold, so the old test
+    # returned FSR=nan while 359 interpolation-ripple minima sat in the array.
+    # Require each minimum to be the deepest point within half an expected FSR
+    # and to stand clear of the local baseline by a fraction of the full depth.
+    med = float(np.median(T))
+    depth = med - float(T.min())
+    fsr_expect_f = 1.0 / (n_g_est * 2 * math.pi * R_RING)   # FSR in freq units
+    win = max(int(0.5 * fsr_expect_f / (fd[1] - fd[0])), 3)
+    dips = []
+    for i in range(win, len(fd) - win):
+        if T[i] > med - 0.25 * depth:
+            continue                       # not deep enough to be a resonance
+        if T[i] <= T[i - win:i + win + 1].min():
+            if not dips or (i - dips[-1]) > win:
+                dips.append(i)
     fsr = (abs(1e3 / fd[dips[0]] - 1e3 / fd[dips[-1]]) / (len(dips) - 1)
            if len(dips) >= 2 else float("nan"))
     ext = 10 * math.log10(max(np.median(T), 1e-12) / max(T[i0], 1e-12))
+    fsr_analytic = (1e3 * (1.0 / freqs[len(freqs) // 2]) ** 2
+                    / (n_g_est * 2 * math.pi * R_RING))
     print(f"b_ring_shg  ASSEMBLED {band}: dip {1e3/fd[i0]:.2f} nm |S21|^2={T[i0]:.3f} "
-          f"Q={Q:.0f} FSR={fsr:.3f} nm extinction {ext:.1f} dB "
+          f"Q={Q:.0f} FSR={fsr:.3f} nm (analytic {fsr_analytic:.3f} at measured "
+          f"n_g={n_g_est:.3f}) extinction {ext:.1f} dB "
           f"[|t_pump_c|={abs(m_pump_coupler['t'][len(freqs)//2]):.4f} "
           f"|t_sh_c|={abs(m_sh_coupler['t'][len(freqs)//2]):.4f}]")
-    return dict(band=band, fd=fd, T=T, Q=Q, fsr=fsr, i0=i0, ext=ext)
+    return dict(band=band, fd=fd, T=T, Q=Q, fsr=fsr, i0=i0, ext=ext,
+                n_g=n_g_est, fsr_analytic=fsr_analytic, f0=fd[i0])
 
 
 # --- poled full-ring nonlinear SHG (peer 998a3c70) ---------------------------
@@ -344,14 +379,13 @@ def assemble(band, m_pump_coupler, m_sh_coupler):
 # short scale check, which exists to catch a chi2 magnitude error BEFORE the
 # long grinds rather than after (peer's instruction, and the same discipline
 # that caught the truncated-T_RUN Q earlier).
-GAP_SINGLE = float(os.environ.get("BRS_GAP1", "0.25"))   # single-bus fallback
 RES_NL = int(os.environ.get("BRS_RES_NL", "30"))
 CHI2 = float(os.environ.get("BRS_CHI2", "0.5"))
 
 
 def build_full_ring(lam, n_core, n_clad, res):
     """Full (not half) ring_single on its own grid, plus the signed chi2 mask."""
-    c = gf.components.ring_single(radius=R_RING, gap=GAP_SINGLE, length_x=LC,
+    c = gf.components.ring_single(radius=R_RING, gap=GAP_SINGLE_BUS, length_x=LC,
                                   cross_section=XS)
     grid_f, eps_f, ports = component_to_eps(c, res=res, pad=2.0,
                                             n_core=n_core, n_clad=n_clad)
@@ -371,13 +405,22 @@ def build_full_ring(lam, n_core, n_clad, res):
     cx = 0.5 * (x_lo + x_hi)
     cy = y_hi - (R_RING + W_WG / 2.0) * res
     pol = poling_mask(core, float(cx), float(cy))
-    return grid_f, eps, core, pol, ports, (cx, cy)
+    # bus source port + a probe INSIDE the ring (top of the ring, opposite the
+    # bus, so the probe sees circulating field rather than the bus directly).
+    o1x, o1y, _ = ports["o1"]
+    npml_nl = int(res)
+    span = int(round((W_WG / 2 + 0.8) * res))
+    p_src = Port(axis="x", index=max(o1x + 4, npml_nl + 4),
+                 lo=o1y - span, hi=o1y + span, direction=+1)
+    ring_probe = (int(round(cx)), int(y_hi) - int(round(W_WG / 2 * res)))
+    assert core[ring_probe] > 0, "ring probe is not inside the LiNbO3 core"
+    return grid_f, eps, core, pol, p_src, ring_probe, (cx, cy)
 
 
 def nl_scale_check():
     """SHORT run (T~1000) to sanity-check the chi2 conversion magnitude."""
     lam, nco, ncl = BANDS["pump 1348"]
-    grid_nl, eps, core, pol, ports, (cx, cy) = build_full_ring(
+    grid_nl, eps, core, pol, p_src, ring_probe, (cx, cy) = build_full_ring(
         lam, nco, ncl, RES_NL)
     npos = int((pol > 0).sum())
     nneg = int((pol < 0).sum())
@@ -390,17 +433,60 @@ def nl_scale_check():
           f"(imbalance {abs(npos-nneg)/max(npos+nneg,1)*100:.1f}%)")
     assert abs(npos - nneg) / max(npos + nneg, 1) < 0.10, (
         "poling mask badly unbalanced -- check the ring center estimate")
-    return grid_nl, eps, core, pol
+    print(f"b_ring_shg  ring probe at cell {ring_probe} (in core), "
+          f"bus source at x={p_src.index}")
+    return grid_nl, eps, core, pol, p_src, ring_probe
+
+
+def ring_probe_series(grid_nl, eps, pol, chi2_val, f0, amp, t_end, t_skip,
+                      ring_xy, src_port):
+    """CW-drive the poled ring at f0; return the Ez time series in the ring."""
+    coeffs = build_tm_coeffs(grid_nl, eps_inf=eps, npml=int(RES_NL),
+                             chi2=chi2_val * pol)
+    # amplitude scales the SOURCE masks (power ~ amp^2); run_tm has no amplitude
+    # kwarg. Both the electric and the magnetic sheet must be scaled together.
+    src = ModeSourceTM(grid_nl, coeffs, src_port,
+                       ContinuousSource(f0, width=15.0), f0)
+    src.mask = src.mask * amp
+    for k in src.h_masks:
+        src.h_masks[k] = src.h_masks[k] * amp
+    n_steps = int(round(t_end / grid_nl.dt))
+    # checkpoint_every=400 bounds PointProbe's stack-reduce partials per chunk:
+    # a bare probe holds a view into the live Ez every step, which is tens of GB
+    # over a 300k-step run (see wiki bugs/monitor-sample-accumulation-oom).
+    with torch.no_grad():
+        _, (sig,) = run_tm(init_tm_state(grid_nl), coeffs, n_steps,
+                           source=src, monitors=[PointProbe(*ring_xy)],
+                           checkpoint_every=400)
+    skip = int(round(t_skip / grid_nl.dt))
+    # upcast the probe series: the SH power is orders below the pump and float32
+    # FFT noise would bury it.
+    return sig.detach().to(torch.float64).cpu().numpy()[skip:]
+
+
+def shg_conversion(sig, dt, f0):
+    """P(2f0)/P(f0) from the ring time series (Hanning to kill CW sidelobes)."""
+    fr = np.fft.rfftfreq(len(sig), dt)
+    spec = np.abs(np.fft.rfft(sig * np.hanning(len(sig)))) ** 2
+
+    def band(f, w=0.02):
+        m = (fr > f - w) & (fr < f + w)
+        return float(spec[m].max()) if m.any() else 0.0
+
+    p1, p2 = band(f0), band(2 * f0)
+    return p1, p2, (p2 / p1 if p1 > 0 else float("nan")), fr, spec
 
 
 def main():
     if not STACK_CONFIRMED:
         print("b_ring_shg  *** STACK ASSUMED (600/300/1200 nm TFLN, SiO2, TE) ***")
-    print(f"b_ring_shg  TWO-BUS r={R_RING} um W={W_WG} um LC={LC} um RES={RES} | "
-          f"gap_pump={GAP_PUMP} gap_SH={GAP_SH}")
+    arch = (f"TWO-BUS gap_pump={GAP_PUMP} gap_SH={GAP_SH}" if TWO_BUS
+            else f"SINGLE-BUS gap={GAP_SINGLE_BUS}")
+    print(f"b_ring_shg  {arch} | r={R_RING} um W={W_WG} um LC={LC} um RES={RES}")
     # 4 runs: every band through every coupler. The cross terms are NOT
     # optional -- the SH coupler sits in the pump's round trip and vice versa.
-    COUPLERS = {"pump-bus": GAP_PUMP, "SH-bus": GAP_SH}
+    COUPLERS = ({"pump-bus": GAP_PUMP, "SH-bus": GAP_SH} if TWO_BUS
+                else {"bus": GAP_SINGLE_BUS})
     m = {}
     for cname, cgap in COUPLERS.items():
         for band, (lam, nco, ncl) in BANDS.items():
@@ -418,7 +504,14 @@ def main():
               f"|kappa|^2={r['kappa2']:.4f} "
               f"[unitarity {r['unit']:.3f}]{flag}")
 
-    asm = {b: assemble(b, m[("pump-bus", b)], m[("SH-bus", b)]) for b in BANDS}
+    if TWO_BUS:
+        asm = {b: assemble(b, m[("pump-bus", b)], m[("SH-bus", b)]) for b in BANDS}
+    else:
+        # single bus: it is the only coupler in the round trip, so pass it as
+        # both factors' source -- assemble() multiplies t_pump_c * t_sh_c, so
+        # feed a unit second factor rather than squaring the real one.
+        asm = {b: assemble(b, m[("bus", b)], {"t": np.ones_like(m[("bus", b)]["t"])})
+               for b in BANDS}
 
     fig, axs = plt.subplots(2, 2, figsize=(13, 8))
     for ax, b in zip(axs[:, 0], BANDS):
@@ -447,8 +540,13 @@ def main():
              **{f"{c.split('-')[0]}_{b.split()[0]}_{n}": m[(c, b)][n]
                 for (c, b) in m for n in ("freqs", "t", "kappa", "loop")})
     print("b_ring_shg.png written (+ b_ring_shg_data.npz)")
-    print(f"b_ring_shg  FINAL GDS = gf.components.ring_double(radius={R_RING}, "
-          f"gap={GAP_PUMP}, gap_top={GAP_SH}, length_x={LC})")
+    gds = (f"gf.components.ring_double(radius={R_RING}, gap={GAP_PUMP}, "
+           f"gap_top={GAP_SH}, length_x={LC})" if TWO_BUS else
+           f"gf.components.ring_single(radius={R_RING}, gap={GAP_SINGLE_BUS}, "
+           f"length_x={LC}) + QPM poling Lambda={QPM_LAMBDA:.3f} um")
+    print(f"b_ring_shg  FINAL GDS = {gds}")
+    print(f"b_ring_shg  pump f0 for the nonlinear runs = {asm['pump 1348']['f0']:.6f} "
+          f"(lam={1e3/asm['pump 1348']['f0']:.2f} nm), Q={asm['pump 1348']['Q']:.0f}")
 
 
 if __name__ == "__main__":
