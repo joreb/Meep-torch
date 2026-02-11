@@ -56,12 +56,12 @@ for t in range(n_steps):
     a = cw.amplitude((t + 0.5) * grid.dt)
     st = step_tm(st, coeffs, a, fib.mask)
     if t % every == 0:
-        frames.append(st.Ez.numpy().copy())
-vmax = max(abs(f).max() for f in frames[len(frames) // 2:]) * 0.6
+        frames.append(st.Ez.abs().cpu().numpy())
+vmax = max(f.max() for f in frames[len(frames) // 2:]) * 0.6
 fig, ax = plt.subplots(figsize=(10, 4))
-im = ax.imshow(frames[0].T, origin="lower", cmap="RdBu", vmin=-vmax,
+im = ax.imshow(frames[0].T, origin="lower", cmap="inferno", vmin=0,
                vmax=vmax, extent=[0, nx * dx, 0, ny * dx])
-core = (eps_fin > 0.5 * (float(eps_fin.min()) + float(eps_fin.max()))).numpy()
+core = (eps_fin > 0.5 * (float(eps_fin.min()) + float(eps_fin.max()))).cpu().numpy()
 ax.imshow(np.ma.masked_where(~core, core).T, origin="lower", cmap="gray",
           alpha=0.22, extent=[0, nx * dx, 0, ny * dx])   # in/out guides visible
 ax.contour(np.linspace(0, nx * dx, nx), np.linspace(0, ny * dx, ny),
