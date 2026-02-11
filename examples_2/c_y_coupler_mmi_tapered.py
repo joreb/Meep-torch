@@ -59,7 +59,11 @@ xs = gf.get_cross_section("strip")            # DEFAULT cross-section (0.5 um)
 # variant is geometrically degenerate (4 um output tapers at +/-1.125 um
 # centers overlap -> self-intersecting polygon), so default means the
 # native 0.5 um strip throughout.
-mmi = gf.components.mmi_tapered()
+# length_mmi=34 = 3*Lpi/8 for this platform (Lpi = 4 n W_e^2 / 3 lam,
+# W_e ~ 5.3 um incl. Goos-Haenchen penetration, n=1.632 @674nm); outputs
+# moved onto the two-fold image positions +/- W_e/4 = +/-1.32 um.
+mmi = gf.components.mmi_tapered(length_mmi=34.0,
+                                output_positions=[-1.32, 1.32])
 comp = gf.Component("y_coupler_mmi_tapered")
 ref = comp.add_ref(mmi)
 for pname in ("o1", "o2", "o3"):
@@ -122,7 +126,7 @@ core = (eps_c > 0.5 * (float(eps_c.min()) + float(eps_c.max()))).numpy()
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7))
 ax1.imshow(eps_c.numpy().T, origin="lower", cmap="viridis",
            extent=[0, nx * dx, 0, ny * dx], aspect="auto")
-ax1.set_title("gdsfactory mmi_tapered 1x2 (DEFAULT parameters, 0.5 um strip, 674 nm)")
+ax1.set_title("gdsfactory mmi_tapered 1x2 (length_mmi=34, outputs on image positions, 674 nm)")
 ax1.set_ylabel("y [um]")
 im = ax2.imshow(ez.T, origin="lower", cmap="inferno",
                 extent=[0, nx * dx, 0, ny * dx], aspect="auto")
