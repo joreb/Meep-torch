@@ -3,12 +3,8 @@
 """device-suite (c2d): Y coupler from gdsfactory mmi_tapered -- FULL-domain
 characterization (no symmetry exploited, per user spec), 674 nm.
 
-Component (user parameters):
-  mmi_tapered(inputs=1, outputs=2, width=4.0, width_taper_in=2.0,
-              length_taper_in=5.0, width_taper_out=4.0,
-              length_taper_out=5.0, width_taper=1.0, length_taper=10.0,
-              length_mmi=5.5, width_mmi=5.0, gap_input_tapers=0.25,
-              gap_output_tapers=2.0, cross_section=strip(width=4.0))
+Component: gdsfactory mmi_tapered at DEFAULT parameters (user spec),
+native 0.5 um strip (the W=4 variant self-overlaps)
 plus 4 um straights on all three ports (into the PML). TE0 mode source
 2 um from the input-straight end; TE0 overlap monitors 2 um from each
 output-straight end. Platform: SiN 150 nm / SiO2, meep materials-
@@ -53,17 +49,17 @@ N_CLAD = SiO2.n(FCEN).real
 eps_line = np.full(400, N_CLAD ** 2)
 eps_line[200 - 7: 200 + 8] = N_SIN ** 2
 NEFF = float(solve_1d(eps_line, 0.01, FCEN, "te", k=1).neff[0])
-W_WG = 4.0
+W_WG = 0.5                                          # gf default strip width
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"c_y_coupler_mmi_tapered  @{WL*1e3:.0f}nm n_core={NEFF:.4f} "
       f"n_clad={N_CLAD:.4f} W={W_WG}")
 
-xs = gf.get_cross_section("strip").copy(width=W_WG)
-mmi = gf.components.mmi_tapered(
-    inputs=1, outputs=2, width=W_WG, width_taper_in=2.0, length_taper_in=5.0,
-    width_taper_out=W_WG, length_taper_out=5.0, width_taper=1.0,
-    length_taper=10.0, length_mmi=5.5, width_mmi=5.0,
-    gap_input_tapers=0.25, gap_output_tapers=2.0, cross_section=xs)
+xs = gf.get_cross_section("strip")            # DEFAULT cross-section (0.5 um)
+# FULLY default mmi_tapered (user spec) -- note the W=4 cross-section
+# variant is geometrically degenerate (4 um output tapers at +/-1.125 um
+# centers overlap -> self-intersecting polygon), so default means the
+# native 0.5 um strip throughout.
+mmi = gf.components.mmi_tapered()
 comp = gf.Component("y_coupler_mmi_tapered")
 ref = comp.add_ref(mmi)
 for pname in ("o1", "o2", "o3"):
@@ -87,7 +83,7 @@ print(f"c_y_coupler_mmi_tapered  grid {nx}x{ny} "
 o1x, o1y, _ = ports["o1"]
 o2x, o2y, _ = ports["o2"]
 o3x, o3y, _ = ports["o3"]
-SPAN = int(2.8 * RES)                               # 2 um half-width + tails
+SPAN = int(1.8 * RES)                               # 0.25 um half-width + tails
 p_in = Port(axis="x", index=max(o1x + int(2.0 * RES), NPML + 4),
             lo=o1y - SPAN, hi=o1y + SPAN, direction=+1)
 p_up = Port(axis="x", index=min(o2x - int(2.0 * RES), nx - NPML - 4),
@@ -126,7 +122,7 @@ core = (eps_c > 0.5 * (float(eps_c.min()) + float(eps_c.max()))).numpy()
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7))
 ax1.imshow(eps_c.numpy().T, origin="lower", cmap="viridis",
            extent=[0, nx * dx, 0, ny * dx], aspect="auto")
-ax1.set_title("gdsfactory mmi_tapered 1x2 (user parameters, W=4 um, 674 nm)")
+ax1.set_title("gdsfactory mmi_tapered 1x2 (DEFAULT parameters, 0.5 um strip, 674 nm)")
 ax1.set_ylabel("y [um]")
 im = ax2.imshow(ez.T, origin="lower", cmap="inferno",
                 extent=[0, nx * dx, 0, ny * dx], aspect="auto")
