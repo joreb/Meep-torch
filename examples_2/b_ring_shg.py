@@ -477,6 +477,66 @@ def shg_conversion(sig, dt, f0):
     return p1, p2, (p2 / p1 if p1 > 0 else float("nan")), fr, spec
 
 
+def kerr_ringdown(sig, dt, f0_cold, floor_rel):
+    """Kerr law from ONE free ringdown: instantaneous frequency vs stored energy.
+
+    Charge the ring, cut the source, and let it ring freely. There is no drive
+    to walk off, so the shift can be made large (high charge amplitude) while
+    staying a clean measurement -- the CW alternative cannot do both at this Q:
+    a perturbative amplitude (0.4 linewidths) sits only 2.6x above the
+    frequency floor, and a resolvable amplitude (1.6 linewidths) has already
+    walked the resonance off the drive.
+
+    Instantaneous frequency via the PHASE DERIVATIVE OF THE ANALYTIC SIGNAL
+    (Hilbert transform), not sliding harminv: the phase derivative is local by
+    construction, so its time resolution is set by the smoothing window alone,
+    whereas a sliding harminv window imposes its own 1/T floor on top and would
+    blur exactly the early-decay region where the shift is largest. Envelope
+    from the same analytic signal gives instantaneous stored energy U ~ |a|^2.
+
+    Returns (t, f_inst, U) with the transient edges trimmed.
+    """
+    from scipy.signal import hilbert
+    z = hilbert(sig - sig.mean())
+    ph = np.unwrap(np.angle(z))
+    env = np.abs(z)
+    # smooth over ~10 optical cycles: long enough to kill carrier ripple, short
+    # enough to track the decay (tau is thousands of cycles).
+    w = max(int(round(10.0 / (f0_cold * dt))), 5)
+    k = np.ones(w) / w
+    f_inst = np.convolve(np.gradient(ph, dt) / (2 * np.pi), k, mode="same")
+    U = np.convolve(env ** 2, k, mode="same")
+    trim = w
+    return (np.arange(len(sig)) * dt)[trim:-trim], f_inst[trim:-trim], U[trim:-trim]
+
+
+def kerr_gates(t, f_inst, U, f0_cold, floor_rel):
+    """(g3a) f vs U linear over the resolvable window; (g3b) late f -> cold f0."""
+    shift = f_inst - f0_cold
+    resolvable = np.abs(shift) > 3.0 * floor_rel * f0_cold
+    g3a_ok = False
+    slope = r2 = float("nan")
+    if resolvable.sum() > 50:
+        u, f = U[resolvable], f_inst[resolvable]
+        slope, icept = np.polyfit(u, f, 1)
+        pred = slope * u + icept
+        ss_res = float(((f - pred) ** 2).sum())
+        ss_tot = float(((f - f.mean()) ** 2).sum())
+        r2 = 1.0 - ss_res / max(ss_tot, 1e-30)
+        g3a_ok = r2 >= 0.99
+    # late ringdown: last 10% of the record, where U has drained
+    tail = slice(int(0.9 * len(f_inst)), None)
+    f_late = float(np.mean(f_inst[tail]))
+    g3b_ok = abs(f_late - f0_cold) <= floor_rel * f0_cold
+    print(f"b_ring_shg  KERR g3a: df/dU={slope:.4e}, R^2={r2:.4f} over "
+          f"{int(resolvable.sum())} samples (shift > 3x floor) -> "
+          f"{'PASS' if g3a_ok else 'FAIL'}")
+    print(f"b_ring_shg  KERR g3b: late f={f_late:.6f} vs cold f0={f0_cold:.6f} "
+          f"(|df|={abs(f_late-f0_cold):.2e}, floor={floor_rel*f0_cold:.2e}) -> "
+          f"{'PASS' if g3b_ok else 'FAIL'}")
+    return dict(slope=slope, r2=r2, f_late=f_late, g3a=g3a_ok, g3b=g3b_ok)
+
+
 def main():
     if not STACK_CONFIRMED:
         print("b_ring_shg  *** STACK ASSUMED (600/300/1200 nm TFLN, SiO2, TE) ***")
