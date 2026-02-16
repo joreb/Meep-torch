@@ -35,9 +35,9 @@ exec(compile(head, "splitter_head", "exec"), g)
 
 from meep_torch.adjoint.filters import conic_filter, tanh_projection
 from meep_torch.core.materials import Si3N4
-from meep_torch.core.monitors_3d import FluxMonitor3D, run_3d
+from meep_torch.core.monitors_3d import FluxMonitor3D
 from meep_torch.core.sources import GaussianPulse
-from meep_torch.core.stepper_3d import build_3d_coeffs, init_3d_state
+from meep_torch.core.stepper_3d_lean import build_lean, run_3d_lean
 from meep_torch.ports.validate3d import ModePlaneSourceX, extrude
 
 grid2, eps_base, region = g["grid"], g["eps_base"], g["region"]
@@ -84,18 +84,22 @@ s3 = lambda j: int(j * RES3 / RES2)
 IX_SRC = max(s3(o1x) + 6, NPML + 4)
 IX_OUT = min(s3(o2x) - 6, nx - NPML - 4)
 ARM = int(1.2 * RES3)
-
-
 def run_case(e3, wins):
-    c = build_3d_coeffs(nx, ny, nz, dx3, eps=e3, npml=NPML, device=DEV,
-                        dtype=DT3)
-    src = ModePlaneSourceX(e3, dx3, IX_SRC, FCEN, GaussianPulse(FCEN, 0.2),
-                           c.dt)
+    c = build_lean(nx, ny, nz, dx3, e3, NPML, dtype=DT3, device=DEV)
+    src = ModePlaneSourceX(e3.to(DEV, dtype=DT3), dx3, IX_SRC, FCEN,
+                           GaussianPulse(FCEN, 0.2), c.dt)
     mons = [FluxMonitor3D(c.dt, [FCEN], normal="x", idx=IX_OUT,
                           win=(w0, w1, NPML, nz - NPML)) for (w0, w1) in wins]
-    _, accs = run_3d(init_3d_state(nx, ny, nz, npml=NPML, device=DEV, dtype=DT3), c,
-                     int(round(T_RUN / c.dt)), source=src, monitors=mons)
-    return [float(m.flux(a, dx3)[0]) for m, a in zip(mons, accs)], src.neff
+    _, accs = run_3d_lean(c, int(round(T_RUN / c.dt)), source=src,
+                          monitors=mons, compile=(DEV == "cuda"))
+    if DEV == "cuda":
+        print(f"  run peak VRAM {torch.cuda.max_memory_allocated()/1e9:.1f} GB")
+        torch.cuda.reset_peak_memory_stats()
+    neff = src.neff
+    del c, src
+    if DEV == "cuda":
+        torch.cuda.empty_cache()
+    return [float(m.flux(a, dx3)[0]) for m, a in zip(mons, accs)], neff
 
 
 (p_ref,), neff_in = run_case(eps3_ref, [(s3(o1y) - ARM, s3(o1y) + ARM)])
