@@ -44,9 +44,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 from meep_torch.adjoint.filters import conic_filter, tanh_projection
 from meep_torch.core.materials import Si3N4, SiO2
-from meep_torch.core.monitors_3d import FluxMonitor3D, PlaneSource, run_3d
+from meep_torch.core.monitors_3d import FluxMonitor3D, PlaneSource
 from meep_torch.core.sources import GaussianPulse
-from meep_torch.core.stepper_3d import build_3d_coeffs, init_3d_state
+from meep_torch.core.stepper_3d_lean import build_lean, run_3d_lean
 from meep_torch.ports.validate3d import extrude
 
 OUT = pathlib.Path(__file__).parent
@@ -198,9 +198,14 @@ def astigmatic_source(dt):
 
 
 def run_case(e3, label):
-    """Forward-only 3D run; returns guided power through the output plane."""
-    c = build_3d_coeffs(nx, ny, nz, dx3, eps=e3, npml=NPML,
-                        dtype=DT3, device=DEV)
+    """Forward-only 3D run; returns guided power through the output plane.
+
+    Uses the memory-lean forward stepper (in-place fields + shell-only CPML):
+    the general step_3d peaked at 12.1 GB on this grid, which fights the peer
+    session for a GPU. Lean is forward-only, which is all a validation
+    needs, and is parity-gated against step_3d in the core tests.
+    """
+    c = build_lean(nx, ny, nz, dx3, eps=e3, npml=NPML, dtype=DT3, device=DEV)
     src = astigmatic_source(c.dt)
     # aperture the flux plane to the guide + a decay margin, and keep the PML
     # out of the integral, so stray cladding light is not counted as guided.
@@ -211,11 +216,12 @@ def run_case(e3, label):
     # samples live on DEV, so move it or every sample() raises a device
     # mismatch. (Same fix applies to any 3D monitor used on GPU.)
     mon.freqs = mon.freqs.to(device=DEV)
+    # the lean stepper uses dt = 0.5*dx/sqrt(3) (3D Courant), NOT the 2D-style
+    # dt of build_3d_coeffs, so take the step count from ITS dt.
     n_steps = int(round(T_RUN / c.dt))
     with torch.no_grad():
-        _, (acc,) = run_3d(init_3d_state(nx, ny, nz, npml=NPML,
-                                        dtype=DT3, device=DEV),
-                           c, n_steps, source=src, monitors=[mon])
+        (acc,) = run_3d_lean(c, n_steps, source=src, monitors=[mon],
+                             compile=os.environ.get("CEC3_COMPILE") == "1")
     p = float(mon.flux(acc, dx3)[0])
     print(f"c_edge_coupler_3d  {label}: P_guided = {p:.6e}")
     return p
