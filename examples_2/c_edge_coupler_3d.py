@@ -65,7 +65,17 @@ H_CORE = 0.150
 # affordable: PAD_Z=1.5 costs 6.6 GB and OOMs beside a concurrent 3D run,
 # PAD_Z=1.0 costs 4.5 GB. Reducing RES instead would have been the wrong trade
 # -- it is the 150 nm core resolution, not the padding, that sets validity.
-PAD_Z = float(os.environ.get("CEC3_PADZ", "1.0"))
+# PAD_Z must hold the 1.57 um VERTICAL beam waist in NON-PML space. This is the
+# number I got wrong first time: at PAD_Z=1.0 with 1 um of PML each side, only
+# 15% of the beam power is launched outside the absorber -- the run then
+# measures a beam that is not the specified one. PAD_Z=2.0 contains 99%.
+PAD_Z = float(os.environ.get("CEC3_PADZ", "2.0"))
+# The 3D domain is cropped laterally/longitudinally to pay for that z padding:
+# the 2D pad=3.0 was sized for the 2D run, and 20 x 11.5 um is far more x/y than
+# a 4 um beam into a 4 um guide needs. 16 x 8 um still contains >99% of the
+# lateral beam outside the PML. RES stays 40 -- the 150 nm core resolution is
+# the one thing that must not be traded.
+PAD_XY = float(os.environ.get("CEC3_PADXY", "1.2"))
 RES3 = int(os.environ.get("CEC3_RES", "40"))     # 6 cells across the core
 # float32 by default: this is a FORWARD-ONLY validation (no adjoint), it halves
 # both memory and step time, and the reported number is a RATIO of two runs on
@@ -98,7 +108,7 @@ _st.connect("o1", _ref.ports["o2"])
 comp.add_port("o1", port=_ref.ports["o1"])
 comp.add_port("o2", port=_st.ports["o2"])
 comp.flatten()
-grid2, eps_base, ports2 = component_to_eps(comp, res=RES2, pad=3.0,
+grid2, eps_base, ports2 = component_to_eps(comp, res=RES2, pad=PAD_XY,
                                            n_core=NEFF2D, n_clad=N_CLAD)
 o1x, o1y, _ = ports2["o1"]
 o2x, o2y, _ = ports2["o2"]
@@ -131,9 +141,29 @@ eps3 = to3d(eps2d)
 eps3_ref = to3d(eps2d_ref)
 nx, ny, nz = eps3.shape
 CY, CZ = int(round(cy2 * RES3 / RES2)), nz // 2
-IX_SRC = max(int(round((o1x - 1.5 * RES2) * RES3 / RES2)), NPML + 4)
+# with the tighter pad the facet sits closer to the edge; keep the source in
+# non-PML cladding but still ahead of the facet.
+IX_SRC = max(int(round((o1x - 0.8 * RES2) * RES3 / RES2)), NPML + 6)
 IX_OUT = min(int(round((o2x - 2.0 * RES2) * RES3 / RES2)), nx - NPML - 4)
 assert IX_SRC > NPML, "source inside the PML"
+# GUARD: the beam must actually be launched into non-PML space. A Gaussian
+# whose tails sit in the absorber is not the beam we specified, and the run
+# would silently measure something else (first attempt: PAD_Z=1.0 put 85% of
+# the vertical beam power inside the PML). Check both transverse axes.
+def _contained(waist, extent_cells, center_cell):
+    u = (np.arange(extent_cells) + 0.5) * dx3
+    inten = np.exp(-2 * ((u - center_cell * dx3) / (waist / 2)) ** 2)
+    return inten[NPML:extent_cells - NPML].sum() / inten.sum()
+
+
+_fy = _contained(W_BEAM_LAT, ny, CY)
+_fz = _contained(W_BEAM_VER, nz, CZ)
+print(f"c_edge_coupler_3d  beam containment outside PML: "
+      f"lateral {_fy*100:.1f}%, vertical {_fz*100:.1f}%")
+assert _fy > 0.95 and _fz > 0.95, (
+    f"beam is being launched into the PML (lateral {_fy:.1%}, vertical "
+    f"{_fz:.1%}) -- raise PAD_Z/PAD_XY; the run would measure a clipped beam")
+
 T_RUN = 2 * (5 / 0.2) + nx * dx3 * 1.7 + 40.0
 print(f"c_edge_coupler_3d  grid {nx}x{ny}x{nz} "
       f"({nx*dx3:.1f} x {ny*dx3:.1f} x {nz*dx3:.1f} um) on {DEV}")
@@ -161,7 +191,9 @@ def astigmatic_source(dt):
     prof = gy[:, None] * gz[None, :]
     new = torch.zeros_like(mask)
     new[IX_SRC] = prof
-    src.src = (comp_name, new)
+    # PlaneSource builds its mask on CPU in float64; the state lives on DEV in
+    # DT3, and step_3d does not move it for us.
+    src.src = (comp_name, new.to(dtype=DT3, device=DEV))
     return src
 
 
@@ -175,6 +207,10 @@ def run_case(e3, label):
     ap = int(round((W_WG / 2 + 1.0) * RES3))
     mon = FluxMonitor3D(c.dt, [FCEN], normal="x", idx=IX_OUT,
                         win=(CY - ap, CY + ap, NPML, nz - NPML), dtype=DT3)
+    # FluxMonitor3D builds its DFT frequency tensor on CPU; the fields it
+    # samples live on DEV, so move it or every sample() raises a device
+    # mismatch. (Same fix applies to any 3D monitor used on GPU.)
+    mon.freqs = mon.freqs.to(device=DEV)
     n_steps = int(round(T_RUN / c.dt))
     with torch.no_grad():
         _, (acc,) = run_3d(init_3d_state(nx, ny, nz, npml=NPML,
