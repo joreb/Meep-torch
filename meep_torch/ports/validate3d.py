@@ -49,8 +49,10 @@ class ModePlaneSourceX(PlaneSource):
         prof = np.real(np.asarray(m.Ex[..., 0]))       # (ny, nz), lab Ey
         prof = prof / (np.abs(prof).max() + 1e-300)
         prof_y = 0.5 * (prof[:-1, :] + prof[1:, :])    # Ey nodes (ny-1, nz)
-        mask = torch.zeros(nx, ny - 1, nz, dtype=eps3d.dtype)
-        mask[ix] = torch.from_numpy(prof_y).to(eps3d.dtype)
+        mask = torch.zeros(nx, ny - 1, nz, dtype=eps3d.dtype,
+                           device=eps3d.device)
+        mask[ix] = torch.from_numpy(prof_y).to(dtype=eps3d.dtype,
+                                                  device=eps3d.device)
         self.profile = profile
         self.dt = dt
         self.src = ("Ey", mask)

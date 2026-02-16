@@ -82,6 +82,8 @@ class DFTFieldsMonitor3D:
             sl = [slice(None)] * 3
             sl[axis] = idx
             F = F[tuple(sl)]
+        if self.freqs.device != F.device or self.freqs.dtype != F.dtype:
+            self.freqs = self.freqs.to(device=F.device, dtype=F.dtype)
         off = 1.0 if self.component.startswith("E") else 0.5
         t = (t_idx + off) * self.dt
         shape = [1, 1] + [1] * F.ndim
@@ -158,6 +160,8 @@ class FluxMonitor3D:
 
     def sample(self, state, t_idx: int) -> torch.Tensor:
         Ea, Ha, Eb, Hb = self._plane(state)
+        if self.freqs.device != Ea.device or self.freqs.dtype != Ea.dtype:
+            self.freqs = self.freqs.to(device=Ea.device, dtype=Ea.dtype)
         tE = (t_idx + 1.0) * self.dt
         tH = (t_idx + 0.5) * self.dt
         wE = (2 * math.pi * self.freqs)[:, None, None]
