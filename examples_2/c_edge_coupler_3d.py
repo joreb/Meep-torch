@@ -220,8 +220,8 @@ def run_case(e3, label):
     # dt of build_3d_coeffs, so take the step count from ITS dt.
     n_steps = int(round(T_RUN / c.dt))
     with torch.no_grad():
-        (acc,) = run_3d_lean(c, n_steps, source=src, monitors=[mon],
-                             compile=os.environ.get("CEC3_COMPILE") == "1")
+        _, (acc,) = run_3d_lean(c, n_steps, source=src, monitors=[mon],
+                                compile=os.environ.get("CEC3_COMPILE") == "1")
     p = float(mon.flux(acc, dx3)[0])
     print(f"c_edge_coupler_3d  {label}: P_guided = {p:.6e}")
     return p
