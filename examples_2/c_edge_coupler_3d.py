@@ -20,10 +20,23 @@ in-medium wavelength is 331 nm, so even RES=20 gives 6.6 cells per wavelength --
 but only 3.0 cells across the 150 nm core, which cannot represent the slab mode.
 RES=40 gives 6 cells across the core (13.3 per wavelength).
 
-Reported number: eta_3d = P_guided(device) / P_guided(bare 4 um straight), the
-same beam onto both, which is directly comparable to the 2D eta_rel = 1.027x.
-An absolute figure would need the same flux-vs-mode-overlap care the 2D script
-documents; the ratio is scale-free and is what the 2D gate measured.
+REPORTS TWO DIFFERENT THINGS, and conflating them is the trap:
+
+  eta_3d   = P_guided(device) / P_guided(bare 4 um straight)   -- a RATIO
+  eta_abs  = P_guided / P_launched                              -- an EFFICIENCY
+
+eta_3d can exceed 1 and that is unremarkable: the bare facet in the denominator
+is itself lossy (a Gaussian beam and the guide's TE0 mode are different field
+profiles), so beating it by a few percent takes no extra energy. It is the
+direct analogue of the 2D eta_rel = 1.027x butt.
+
+eta_abs is conservation-enforced and MUST be below 1. It comes from a third run
+-- the same beam into homogeneous cladding, integrated over the full non-PML
+cross-section -- which measures the launched power. Both absolutes are asserted
+< 1. This exists because the 2D script's first attempt at an absolute built it
+by multiplying a mode-overlap ratio by a flux ratio and printed 100.28%: two
+individually scale-free quantities measured by different instruments do not
+compose into a valid efficiency.
 
 Run: uv run python examples_2/c_edge_coupler_3d.py
 """
@@ -197,8 +210,13 @@ def astigmatic_source(dt):
     return src
 
 
-def run_case(e3, label):
-    """Forward-only 3D run; returns guided power through the output plane.
+def run_case(e3, label, full_aperture=False):
+    """Forward-only 3D run; returns power through the measurement plane.
+
+    ``full_aperture=False`` (default) apertures the plane to the guide, i.e.
+    GUIDED power. ``full_aperture=True`` integrates the whole non-PML
+    cross-section, which on a homogeneous-cladding run is the total power the
+    beam launched -- the denominator for an absolute efficiency.
 
     Uses the memory-lean forward stepper (in-place fields + shell-only CPML):
     the general step_3d peaked at 12.1 GB on this grid, which fights the peer
@@ -209,9 +227,13 @@ def run_case(e3, label):
     src = astigmatic_source(c.dt)
     # aperture the flux plane to the guide + a decay margin, and keep the PML
     # out of the integral, so stray cladding light is not counted as guided.
-    ap = int(round((W_WG / 2 + 1.0) * RES3))
-    mon = FluxMonitor3D(c.dt, [FCEN], normal="x", idx=IX_OUT,
-                        win=(CY - ap, CY + ap, NPML, nz - NPML), dtype=DT3)
+    if full_aperture:
+        win = (NPML, ny - NPML, NPML, nz - NPML)
+    else:
+        ap = int(round((W_WG / 2 + 1.0) * RES3))
+        win = (CY - ap, CY + ap, NPML, nz - NPML)
+    mon = FluxMonitor3D(c.dt, [FCEN], normal="x", idx=IX_OUT, win=win,
+                        dtype=DT3)
     # FluxMonitor3D builds its DFT frequency tensor on CPU; the fields it
     # samples live on DEV, so move it or every sample() raises a device
     # mismatch. (Same fix applies to any 3D monitor used on GPU.)
@@ -223,19 +245,43 @@ def run_case(e3, label):
         _, (acc,) = run_3d_lean(c, n_steps, source=src, monitors=[mon],
                                 compile=os.environ.get("CEC3_COMPILE") == "1")
     p = float(mon.flux(acc, dx3)[0])
-    print(f"c_edge_coupler_3d  {label}: P_guided = {p:.6e}")
+    kind = "P_total " if full_aperture else "P_guided"
+    print(f"c_edge_coupler_3d  {label}: {kind} = {p:.6e}")
     return p
 
 
 def main():
     p_dev = run_case(eps3, "device (best 2D design, extruded)")
     p_ref = run_case(eps3_ref, "reference (bare 4 um straight)")
+    # Absolute efficiency needs the LAUNCHED power, not the reference's output.
+    # Same beam into homogeneous cladding, integrated over the full non-PML
+    # cross-section, mirrors how the 2D script gets its P_IN.
+    eps3_clad = torch.full_like(eps3, N_CLAD ** 2)
+    p_in = run_case(eps3_clad, "input (beam in bare cladding)",
+                    full_aperture=True)
     eta = p_dev / p_ref
+    eta_abs_dev = p_dev / p_in
+    eta_abs_ref = p_ref / p_in
+    assert p_ref > 0 and p_in > 0, "reference or input run produced no power"
+
+    # THE RATIO IS NOT AN EFFICIENCY. eta_3d > 1 only says the taper beats a
+    # bare facet; the bare facet is itself lossy, so the denominator is small.
+    # The conservation-enforced numbers are the two absolutes, and BOTH must be
+    # below 1 -- that is what makes eta_3d > 1 unremarkable rather than
+    # impossible. (2D learned this the hard way: an eta_abs built by
+    # multiplying a mode-overlap ratio by a flux ratio printed 100.28%.)
     print(f"c_edge_coupler_3d  eta_3d = P_dev/P_ref = {eta:.4f}x straight "
-          f"({10*math.log10(max(eta,1e-12)):+.2f} dB)")
-    print(f"c_edge_coupler_3d  2D reference was eta_rel = 1.027x butt "
-          f"(RES=20) / 1.018x (RES=40 validate)")
-    assert p_ref > 0, "reference run produced no guided power"
+          f"({10*math.log10(max(eta,1e-12)):+.2f} dB)  <-- RATIO, not efficiency")
+    print(f"c_edge_coupler_3d  ABSOLUTE: device {eta_abs_dev*100:.2f}% of "
+          f"launched beam ({-10*math.log10(max(eta_abs_dev,1e-12)):.2f} dB), "
+          f"bare straight {eta_abs_ref*100:.2f}%")
+    print(f"c_edge_coupler_3d  2D for comparison: eta_rel = 1.027x butt, "
+          f"flux bound P_arm/P_IN = 98.87% (RES=20) / 98.60% (RES=40)")
+    for nm, v in (("device", eta_abs_dev), ("bare straight", eta_abs_ref)):
+        assert v < 1.0, (
+            f"{nm} absolute efficiency {v:.4f} >= 1 -- unphysical; the guided "
+            f"power exceeds the launched beam power, so a monitor window or "
+            f"the input normalization is wrong")
 
     fig, axs = plt.subplots(1, 3, figsize=(15, 4.2))
     axs[0].imshow(eps3[:, :, CZ].cpu().numpy().T, origin="lower", cmap="viridis",
@@ -253,8 +299,8 @@ def main():
     axs[2].set_title(f"input beam {W_BEAM_LAT} x {W_BEAM_VER} um (astigmatic)")
     for ax in axs:
         ax.set_xlabel("um")
-    fig.suptitle(f"edge coupler 3D @{WL*1e3:.0f} nm: "
-                 f"eta_3d = {eta:.3f}x bare straight", y=0.99)
+    fig.suptitle(f"edge coupler 3D @{WL*1e3:.0f} nm: {eta_abs_dev*100:.1f}% of "
+                 f"launched beam ({eta:.3f}x bare straight)", y=0.99)
     fig.tight_layout(rect=[0, 0, 1, 0.94])
     fig.savefig(OUT / "c_edge_coupler_3d.png", dpi=150)
     plt.close(fig)
