@@ -27,7 +27,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 OUT = pathlib.Path(__file__).parent
 
 src_txt = open(OUT / "c_y_coupler_mmi_tapered.py").read()
-head = src_txt.split("def s_params(")[0]
+head = src_txt.split("# --- inverse-design optimization")[0]
+head = head.split("def s_params_opt(")[0]
 g = {"__file__": str(OUT / "c_y_coupler_mmi_tapered.py")}
 exec(compile(head, "mmi_head", "exec"), g)
 
@@ -57,6 +58,9 @@ mg = MaterialGrid((NRX, NRY), eps_min=N_CLAD ** 2, eps_max=NEFF ** 2)
 region = DesignRegion(mg, ix0=ix0, ix1=ix1, iy0=iy0, iy1=iy1)
 rr = tanh_projection(conic_filter(rho.to(torch.float64), 0.12, dx2), 64.0)
 eps2d = region.paint(eps2_base, rr).detach().cpu()
+# the exec'd 2D head ran its characterization on the GPU -- free it all
+g.clear()
+torch.cuda.empty_cache() if torch.cuda.is_available() else None
 eps2d_ref = torch.full_like(eps2d, N_CLAD ** 2)
 eps2d_ref[:, o1y - int(0.25 * RES2): o1y + int(0.25 * RES2)] = float(eps2d.max())
 
@@ -95,7 +99,7 @@ def run_case(e3, wins):
     mons = [FluxMonitor3D(c.dt, [FCEN], normal="x", idx=IX_OUT,
                           win=(w0, w1, NPML, nz - NPML)) for (w0, w1) in wins]
     _, accs = run_3d_lean(c, int(round(T_RUN / c.dt)), source=src,
-                          monitors=mons, compile=(DEV == "cuda"))
+                          monitors=mons, compile=False)   # 212M cells: inductor buffers OOM 16GB
     if DEV == "cuda":
         print(f"  run peak VRAM {torch.cuda.max_memory_allocated()/1e9:.1f} GB")
         torch.cuda.reset_peak_memory_stats()

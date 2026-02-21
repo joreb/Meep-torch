@@ -58,18 +58,26 @@ class Lean3D:
     scratch: dict = field(default_factory=dict)
 
     def buf(self, shape):
-        # 2-slot ring per shape: an H/E component's two curl terms can share
-        # a shape and must NOT alias (the first parity failure was exactly
-        # ce_z overwriting ce_y through a single shared buffer).
-        ring = self.scratch.setdefault(shape, {"bufs": [], "i": 0})
-        if len(ring["bufs"]) < 2:
-            dev = self.inv_eps["x"].device
-            t = torch.empty(*shape, dtype=self.inv_eps["x"].dtype, device=dev)
-            ring["bufs"].append(t)
+        # Global 4-slot round-robin flat pool (viewed to shape). Per-shape
+        # rings held ~24 full-size buffers on big grids (13 GB at 139M
+        # cells); 4 slots suffice because no scratch buffer is read more
+        # than two buf() calls after its own allocation (curl out reads
+        # the two derivatives allocated 1 and 2 calls earlier), and slot
+        # reuse only happens 4 calls later.
+        numel = 1
+        for s in shape:
+            numel *= s
+        pool = self.scratch.setdefault(
+            "pool", {"bufs": [], "i": 0, "cap": self.nx * self.ny * self.nz})
+        if len(pool["bufs"]) < 4:
+            t = torch.empty(pool["cap"], dtype=self.inv_eps["x"].dtype,
+                            device=self.inv_eps["x"].device)
+            pool["bufs"].append(t)
+            flat = t
         else:
-            t = ring["bufs"][ring["i"] % 2]
-        ring["i"] += 1
-        return t
+            flat = pool["bufs"][pool["i"] % 4]
+        pool["i"] += 1
+        return flat[:numel].view(shape)
 
 
 def build_lean(nx, ny, nz, dx, eps, npml, dtype=torch.float32,
@@ -178,13 +186,13 @@ def step_lean(c: Lean3D, src_amp=0.0, src=None):
     # --- H updates ---
     ce_y = _deriv_ce(c, "Ez", 1, c.axH[1], "Ez_y")
     ce_z = _deriv_ce(c, "Ey", 2, c.axH[2], "Ey_z")
-    F["Hx"].sub_((ce_y - ce_z).mul_(dt))
+    F["Hx"].sub_(ce_y.sub_(ce_z).mul_(dt))
     ce_z2 = _deriv_ce(c, "Ex", 2, c.axH[2], "Ex_z")
     ce_x = _deriv_ce(c, "Ez", 0, c.axH[0], "Ez_x")
-    F["Hy"].sub_((ce_z2 - ce_x).mul_(dt))
+    F["Hy"].sub_(ce_z2.sub_(ce_x).mul_(dt))
     ce_x2 = _deriv_ce(c, "Ey", 0, c.axH[0], "Ey_x")
     ce_y2 = _deriv_ce(c, "Ex", 1, c.axH[1], "Ex_y")
-    F["Hz"].sub_((ce_x2 - ce_y2).mul_(dt))
+    F["Hz"].sub_(ce_x2.sub_(ce_y2).mul_(dt))
 
     # --- E updates (PEC outer edge: zero-padded borders) ---
     ch_y = _deriv_ce(c, "Hz", 1, c.axE[1], "Hz_y")     # (nx-1, ny-2, nz)
@@ -216,6 +224,10 @@ def step_lean(c: Lean3D, src_amp=0.0, src=None):
         key = comp[1].lower()
         if len(src) == 2:
             F[comp].add_(src[1] * (dt * src_amp) * c.inv_eps[key])
+        elif len(src) == 3:
+            # plane-indexed: (comp, ix, plane) -- avoids a full-volume mask
+            ix, plane = src[1], src[2]
+            F[comp][ix].add_(plane * (dt * src_amp) * c.inv_eps[key][ix])
         else:
             i, j, k = src[1], src[2], src[3]
             F[comp][i, j, k] += dt * src_amp * c.inv_eps[key][i, j, k]
