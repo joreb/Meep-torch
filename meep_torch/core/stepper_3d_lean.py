@@ -248,10 +248,32 @@ def run_3d_lean(c: Lean3D, n_steps: int, *, source=None, monitors=(),
     monitors = list(monitors)
     acc = [None] * len(monitors)
     view = _StateView(c.F)
-    step = torch.compile(step_lean) if compile else step_lean
+    if compile:
+        import torch._inductor.config as ic
+        ic.memory_planning = True      # plan/reuse fused-kernel buffers
+        ic.memory_pool = "combined"    # pool intermediates + outputs
+        step = torch.compile(step_lean)
+    else:
+        step = step_lean
     for t in range(n_steps):
         amp = source.amplitude(t) if source is not None else 0.0
-        step(c, amp, source.src if source is not None else None)
+        try:
+            step(c, amp, source.src if source is not None else None)
+        except torch.OutOfMemoryError:
+            # compiled path needs an inductor-planned pool on top of the
+            # static arrays; on grids near the VRAM limit that overflows.
+            # At t=0 the state is all-zero, so recovery is exact: zero
+            # everything and continue eagerly (2.19x slower, but fits).
+            if t or step is step_lean:
+                raise
+            for f in c.F.values():
+                f.zero_()
+            for lo, hi in c.psi.values():
+                lo.zero_(); hi.zero_()
+            torch.cuda.empty_cache()
+            step = step_lean
+            print("run_3d_lean: compiled step OOM -- falling back to eager")
+            step(c, amp, source.src if source is not None else None)
         for i, mon in enumerate(monitors):
             smp = mon.sample(view, t)
             if mon.reduce == "sum":
