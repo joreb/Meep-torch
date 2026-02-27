@@ -75,18 +75,21 @@ def final_design(script):
 # import mode? ponytail: re-run both scripts IS the deterministic source,
 # but they take minutes. Instead the scripts now save rho (npy) -- see
 # the small patches applied alongside this file.
-def _load_rho(name):
-    import numpy as _np
-    r = _np.load(OUT / f"{name}_rho.npy")
-    if name == "c_y_splitter":                    # half-domain rho: mirror
-        r = _np.concatenate([r[:, ::-1], r], axis=1)
-    return r
+# all current designs are FULL-domain rhos; contour the PROJECTED density
+# (conic filter + tanh_projection at final beta -- the fabricated shape),
+# with each script's own design-pixel size and filter parameters.
+from meep_torch.adjoint.filters import conic_filter, tanh_projection
 
-
-for name in ("c_edge_coupler", "c_y_splitter"):
+DESIGNS = {                       # name -> (pixel_um, filter_radius, grid_dx)
+    "c_edge_coupler": (0.10, 0.15, 1 / 20),
+    "c_y_splitter": (0.08, 0.12, 1 / 30),
+    "c_y_coupler_mmi_tapered": (0.08, 0.12, 1 / 30),
+}
+for name, (px, fr, dx) in DESIGNS.items():
     npy = OUT / f"{name}_rho.npy"
     if not npy.exists():
         print(f"export_gds  {name}_rho.npy missing -- run examples_2/{name}.py first")
         continue
-    rho = _load_rho(name)
-    design_to_gds((rho, (0, rho.shape[0] * 0.05, 0, rho.shape[1] * 0.05)), name)
+    rho = torch.from_numpy(np.load(npy)).to(torch.float64)
+    r = tanh_projection(conic_filter(rho, fr, dx), 64.0).numpy()
+    design_to_gds((r, (0, r.shape[0] * px, 0, r.shape[1] * px)), name)
