@@ -99,7 +99,7 @@ def run_case(e3, wins):
     mons = [FluxMonitor3D(c.dt, [FCEN], normal="x", idx=IX_OUT,
                           win=(w0, w1, NPML, nz - NPML)) for (w0, w1) in wins]
     _, accs = run_3d_lean(c, int(round(T_RUN / c.dt)), source=src,
-                          monitors=mons, compile=False)   # 212M cells: inductor buffers OOM 16GB
+                          monitors=mons, compile=(DEV == "cuda"))  # auto-falls back to eager on OOM
     if DEV == "cuda":
         print(f"  run peak VRAM {torch.cuda.max_memory_allocated()/1e9:.1f} GB")
         torch.cuda.reset_peak_memory_stats()
