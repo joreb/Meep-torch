@@ -64,7 +64,8 @@ from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
 from meep_torch.core.monitors import PointProbe
-from meep_torch.core.sources import ContinuousSource, GaussianPulse
+from meep_torch.core.sources import (ContinuousSource, CustomSource,
+                                     GaussianPulse)
 from meep_torch.core.stepper import init_tm_state
 from meep_torch.ports.mode_monitor import decompose
 from meep_torch.ports.mode_source import ModeSourceTM
@@ -475,6 +476,39 @@ def shg_conversion(sig, dt, f0):
 
     p1, p2 = band(f0), band(2 * f0)
     return p1, p2, (p2 / p1 if p1 > 0 else float("nan")), fr, spec
+
+
+def charge_then_ring(grid_nl, eps, chi3_val, f0, amp, t_charge, t_ring,
+                     ring_xy, src_port):
+    """Charge the ring CW, cut the source, record the FREE decay.
+
+    The source is a gated CW (CustomSource): sin carrier with a smooth ramp on,
+    then hard off at t_charge. After that the ring rings down freely, which is
+    the whole point -- there is no drive left for the Kerr-shifted resonance to
+    walk away from, so the shift can be made large and still measured cleanly.
+    Returns only the post-cutoff series.
+    """
+    coeffs = build_tm_coeffs(grid_nl, eps_inf=eps, npml=int(RES_NL),
+                             chi3=chi3_val * (eps > 0.5 * (float(eps.min())
+                                                           + float(eps.max()))))
+    ramp = 5.0 / f0
+
+    def gated(t):
+        if t >= t_charge:
+            return 0.0
+        return math.sin(2 * math.pi * f0 * t) * min(1.0, t / ramp)
+
+    src = ModeSourceTM(grid_nl, coeffs, src_port, CustomSource(gated), f0)
+    src.mask = src.mask * amp
+    for k in src.h_masks:
+        src.h_masks[k] = src.h_masks[k] * amp
+    n_steps = int(round((t_charge + t_ring) / grid_nl.dt))
+    with torch.no_grad():
+        _, (sig,) = run_tm(init_tm_state(grid_nl), coeffs, n_steps,
+                           source=src, monitors=[PointProbe(*ring_xy)],
+                           checkpoint_every=400)
+    cut = int(round(t_charge / grid_nl.dt))
+    return sig.detach().to(torch.float64).cpu().numpy()[cut:]
 
 
 def kerr_ringdown(sig, dt, f0_cold, floor_rel):
