@@ -108,10 +108,27 @@ should be made from either existing record.
 4. Every cross-record-length eta comparison in earlier notes is void;
    only same-length comparisons survive the estimator fix.
 
-## Current state
+## Resolution (10:38)
 
-Peer is: fixing `shg_conversion` to integrated band power, rechecking
-the envelope fit against τ_field = 2513, and re-deriving the SHG
-absolute from a consistent (single-record) measurement before the Kerr
-ringdown launches. The 3D chi2 implementation (plan approved, rhs
-correction applied) remains queued behind those runs.
+The peer reproduced my Q independently (6050 vs my 5856 vs spectral
+5887 — four derivations now agree) and found the exact mechanism of its
+wrong ~494: the T=1000 record only covers 0.32 τ_field, and the charge
+curve was normalized by the record's own endpoint — a still-climbing
+curve normalized by itself looks saturated. Bonus trap found: the
+extraction npz stores the loop response with the (t/|t|)² phase
+correction already baked in; re-applying it doubles the phase slope and
+inflates n_g (goes to the wiki bug pages).
+
+The SH-lifetime explanation for the falling eta is adopted: at T=5057
+the pump is ~87% charged but the SH (Q = 48426, τ ~ 10⁴ tu) is only at
+~40% of *its* steady state — so neither existing record gives a
+steady-state absolute.
+
+**Decided plan (running now):**
+1. Absolute run at T = 3·τ_SH ≈ 30000 tu (~10 h): integrated-band
+   estimator, eta measured on the stationary tail window, labeled with
+   the SH charge fraction (90.2% at 3τ).
+2. Then Kerr ringdown at the original 12.4 h sizing (τ_field = 2513
+   was correct all along). Serialized, never overlapping on the GPU.
+3. Then the 3D chi2 implementation (plan approved, rhs correction
+   applied and numerically verified).
