@@ -1,0 +1,117 @@
+# SHG run anomaly — verification report (2026-08-17)
+
+## What we are trying to do
+
+The device-suite deliverable set includes a **second-harmonic-generation
+ring**: a periodically-poled thin-film lithium-niobate (TFLN) racetrack
+(r = 50 µm, W = 1.2 µm, single bus, gap 0.25 µm) that converts a
+1348 nm pump into 674 nm light — the same wavelength the SiN passive
+devices (edge coupler, Y splitter, mmi_tapered) are designed for.
+Material dispersion makes pump and SH walk out of phase after
+L_coh = 0.86 µm, so the design relies on quasi-phase-matching: the χ⁽²⁾
+sign is flipped every 1.72 µm of arc (Λ = 3.43 µm, ~183 domains).
+These are the Phase-3 *nonlinear FDTD* runs that measure what the
+design actually converts.
+
+## Why the current runs matter
+
+Two numbers are the whole deliverable:
+
+1. **Proof the conversion is second-order** — the P² gate: doubling the
+   pump amplitude must quadruple the conversion efficiency
+   eta = P(2f₀)/P(f₀). This is the signature that separates real χ⁽²⁾
+   physics from numerical artifacts.
+2. **An honest absolute efficiency** at steady state — the headline
+   number for the presentation, with the resonant buildup stated
+   rather than guessed.
+
+A third run (Kerr ringdown) measures the χ⁽³⁾ self-phase-modulation of
+the same ring; its runtime and its frequency-resolution floor are both
+set by the ring's photon lifetime, so it inherits any error in the Q.
+
+## What happened
+
+The P² gate passed, but the follow-up "2τ absolute" run produced an
+efficiency *lower* than the short run, which is impossible for pure
+buildup. The peer session diagnosed two bugs; this report is my
+independent verification of that diagnosis against the code and the
+extraction data. One of the two claims is confirmed, one is refuted.
+
+## What ran
+
+| Run | Record length | eta = P(2f0)/P(f0) (peak-bin) |
+|---|---|---|
+| Scale check (amp A) | T = 1000 | 4.5918e-5 |
+| Scale check (amp 2A) | T = 1000 | 1.7552e-4 → ratio 3.822, gate PASS |
+| "2τ absolute" (amp A) | T = 5057 | 1.4589e-5 — **lower than T=1000, backwards** |
+
+## Claim 1 — estimator is record-length dependent: **CONFIRMED**
+
+`shg_conversion()` in `examples_2/b_ring_shg.py` measures each band as the
+**peak FFT bin** (`spec[m].max()`). For a coherent CW tone the peak bin
+grows ~N² with record length while a less-coherent band does not, so
+eta values from records of different lengths were never comparable.
+The T=1000 vs T=5057 comparison was invalid from the start.
+
+Fix (peer, in progress): integrated band power normalized by the window
+— length-independent. The P² gate itself survives the estimator change
+(3.772 integrated vs 3.822 peak-based) because both its runs used
+identical record lengths.
+
+## Claim 2 — ring charging time is ~494 tu, so 2τ was already steady state: **REFUTED**
+
+The peer fitted a 1−1/e time of ~494 tu from the T=1000 envelope and
+concluded the loaded Q is ~1150 (not the spectral 5887), which would
+shrink the Kerr run sizing from 12.4 h to 2.4 h.
+
+Direct computation from the committed extraction data
+(`examples_2/b_ring_shg_data.npz`, pump band at f = 0.74179):
+
+| Quantity | Value |
+|---|---|
+| bus transmission \|t\| | 0.7712 (\|t\|² = 0.595 — heavy overcoupling, **that part is true**) |
+| loop amplitude a | 0.98155 |
+| group index n_g (loop-phase slope) | 2.172 |
+| round-trip time T_rt = n_g·L | 699.6 tu |
+| per-round-trip energy decay (\|t\|a)² | 0.573 |
+| energy lifetime τ_E = T_rt / −ln((\|t\|a)²) | **1256 tu** |
+| loaded Q = ω·τ_E | **5856** |
+
+Three independent derivations now agree: the assembled-spectrum Q
+(5887), the (t, a) round-trip decay (5856, 0.5% apart), and the
+original field-charging constant Q/(πf) = 2529 ≈ τ_field = 2·τ_E = 2513.
+The ~494 envelope fit is the outlier and is the number that must be
+rechecked, not the Q. Likely contaminations of that fit: the record
+starts after `t_skip` (late-stage charging only), the mode beating the
+peer itself identified, and 1−1/e of an *energy* envelope is not
+τ_field (field charges as 1−e^(−t/τ_f); energy as its square).
+
+## The falling eta still needs an explanation — but a different one
+
+With the fixed estimator eta still falls (5.94e-5 at 0.4τ → 3.75e-5 at
+2τ). The cleaner suspect: the SH resonance has its **own** photon
+lifetime (Q_SH = 48426 → τ ~ 10⁴ tu). At T = 5057 the pump is ~87%
+charged but the SH is nowhere near *its* steady state, and the ratio of
+two differently-charging signals is not monotone. No steady-state claim
+should be made from either existing record.
+
+## Consequences
+
+1. The "2τ = 75% of steady state" label is dead either way — but so is
+   "2τ WAS steady state". Neither record supports a steady-state
+   absolute claim yet.
+2. Kerr run sizing stays based on τ_field ≈ 2513 tu (~12 h), **not**
+   2.4 h. Do not launch until the envelope fit is reconciled.
+3. The P² gate result stands: 3.772 (integrated-band), pump exponent
+   exactly 2.00 — the second-order signature is solid, with a physical
+   pump-depletion shortfall at 2A.
+4. Every cross-record-length eta comparison in earlier notes is void;
+   only same-length comparisons survive the estimator fix.
+
+## Current state
+
+Peer is: fixing `shg_conversion` to integrated band power, rechecking
+the envelope fit against τ_field = 2513, and re-deriving the SHG
+absolute from a consistent (single-record) measurement before the Kerr
+ringdown launches. The 3D chi2 implementation (plan approved, rhs
+correction applied) remains queued behind those runs.
