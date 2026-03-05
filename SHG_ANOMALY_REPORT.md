@@ -124,11 +124,25 @@ the pump is ~87% charged but the SH (Q = 48426, τ ~ 10⁴ tu) is only at
 ~40% of *its* steady state — so neither existing record gives a
 steady-state absolute.
 
-**Decided plan (running now):**
-1. Absolute run at T = 3·τ_SH ≈ 30000 tu (~10 h): integrated-band
-   estimator, eta measured on the stationary tail window, labeled with
-   the SH charge fraction (90.2% at 3τ).
-2. Then Kerr ringdown at the original 12.4 h sizing (τ_field = 2513
-   was correct all along). Serialized, never overlapping on the GPU.
+**Decided plan (running now)** — after one more sizing correction, this
+time mine: I quoted τ_SH ~ 10⁴ tu, which was the *energy* lifetime;
+charging follows the *field* lifetime (2×), and the direct (t, a)
+computation for the SH band gives τ_field = 18356 tu. A 3τ run is
+therefore 67 h, not 10 h, and the cost curve has a knee (the last 15%
+of SH charge costs 22 extra hours):
+
+1. Absolute run at **T = 2.0·τ_SH = 36712 tu (~45 h)**: integrated-band
+   estimator, stationary-tail measurement, labeled "eta at 74.8% SH
+   charge", steady value quoted as eta/0.748 with the division stated.
+   Added requirement: fit the SH envelope in the record itself with τ
+   free — the fitted τ sets the final label AND arbitrates a still-open
+   1.8× discrepancy in the SH Q (85562 direct vs 48426 assembled
+   spectrum; the pump had four agreeing derivations, the SH does not
+   yet).
+2. Then Kerr ringdown at the original 12.4 h sizing (pump-resonance
+   lifetimes; τ_field = 2513 was correct all along). Serialized, never
+   overlapping on the GPU.
 3. Then the 3D chi2 implementation (plan approved, rhs correction
    applied and numerically verified).
+
+Phase 3 closes in ~2.4 days of serialized GPU time.
