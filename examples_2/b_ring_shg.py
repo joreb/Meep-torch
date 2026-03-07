@@ -511,6 +511,67 @@ def charge_then_ring(grid_nl, eps, chi3_val, f0, amp, t_charge, t_ring,
     return sig.detach().to(torch.float64).cpu().numpy()[cut:]
 
 
+def band_power(sig, dt, f, w=0.02):
+    """Integrated band power, normalised so it does NOT depend on record length.
+
+    The earlier estimator took the band PEAK, and a coherent CW tone's peak bin
+    grows with N while a less-coherent tone does not -- so peak-based eta was
+    record-length dependent and two runs of different length were never
+    comparable. (The P^2 gate survived only because both its runs had equal N.)
+    """
+    fr = np.fft.rfftfreq(len(sig), dt)
+    win = np.hanning(len(sig))
+    psd = np.abs(np.fft.rfft(sig * win)) ** 2 / (win ** 2).sum()
+    m = (fr > f - w) & (fr < f + w)
+    return float(psd[m].sum())
+
+
+def tone_envelope(sig, dt, f, n_slices=200):
+    """Slice-wise amplitude of one tone: |FFT| in its band per slice."""
+    k = len(sig) // n_slices
+    t, amp = [], []
+    for i in range(n_slices):
+        seg = sig[i * k:(i + 1) * k]
+        if len(seg) < 16:
+            continue
+        t.append((i + 0.5) * k * dt)
+        amp.append(math.sqrt(max(band_power(seg, dt, f), 0.0)))
+    return np.array(t), np.array(amp)
+
+
+def fit_charge_tau(t, amp):
+    """Fit A*(1 - exp(-t/tau)) with tau FREE; returns (A, tau, r2, coverage).
+
+    Fitting the FIELD charge curve, so the caller must pass an amplitude
+    envelope, not power. A short record cannot constrain tau -- normalising by
+    the record end then makes a still-climbing curve look saturated, which is
+    exactly how a 0.32-tau record produced a bogus tau=494. Guard: report r2 and
+    the record length in units of the fitted tau so the caller can judge.
+    """
+    # r2 is NOT evidence the tau is right: on a 0.40-tau record this fit returns
+    # r2 = 1.0000 while being 99.4% wrong, because an exponential's early rise is
+    # indistinguishable from a straight line. COVERAGE is the real criterion, so
+    # the caller must check record_length / fitted_tau. Verified on synthetic
+    # data: 0.40 tau -> 99.4% error at r2=1.0; 2.0 tau -> 0.8% error.
+    best = (None, None, -1e9)
+    for tau in np.geomspace(max(t[1], 1.0), 20.0 * t[-1], 400):
+        basis = 1.0 - np.exp(-t / tau)
+        A = float((basis * amp).sum() / max((basis * basis).sum(), 1e-30))
+        pred = A * basis
+        ss_res = float(((amp - pred) ** 2).sum())
+        ss_tot = float(((amp - amp.mean()) ** 2).sum())
+        r2 = 1.0 - ss_res / max(ss_tot, 1e-30)
+        if r2 > best[2]:
+            best = (A, tau, r2)
+    A, tau, r2 = best
+    cov = t[-1] / max(tau, 1e-30)
+    if cov < 1.0:
+        print(f"b_ring_shg  WARNING: charge fit covers only {cov:.2f} tau -- a "
+              f"sub-tau record cannot constrain tau (r2={r2:.4f} regardless). "
+              f"Treat tau={tau:.0f} as UNMEASURED.")
+    return A, tau, r2, cov
+
+
 def kerr_ringdown(sig, dt, f0_cold, floor_rel):
     """Kerr law from ONE free ringdown: instantaneous frequency vs stored energy.
 
