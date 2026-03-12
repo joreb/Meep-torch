@@ -62,7 +62,7 @@ the stored loop already is the full round trip:
 |---|---|---|
 | SHG absolute | 45 h (2τ_SH charge) — **killed by user call** | single-pass (~minutes) + assembly + validation against existing records |
 | Kerr ringdown | 12.4 h (sized off τ=2529, then wrongly 2.4 h off the 494 artifact) | ~5–6 h at corrected τ_field = 2522 — **on hold, awaiting user approval** |
-| 3D chi2 | after run queue | unchanged: plan approved, rhs correction verified; next in queue after the above |
+| 3D chi2 | after run queue | **cancelled by user (13:23): nonlinear stays 2D/2.5D.** The plan doc remains in docs/plans as a shelved record (rhs correction preserved there). Allowed ceiling on the vertical axis: a 2.5D correction — scale the effective chi2 by the pump²·SH vertical mode-overlap integral from mode profiles (one cheap mode solve, no 3D FDTD), factor stated. |
 
 ## 5. Labels on already-published statements
 
