@@ -145,8 +145,6 @@ of SH charge costs 22 extra hours):
 3. Then the 3D chi2 implementation (plan approved, rhs correction
    applied and numerically verified).
 
-Phase 3 closes in ~2.4 days of serialized GPU time.
-
 ## Plan change (12:23) — 45 h run killed, faster method under investigation
 
 USER verdict: too long. The 2τ run is killed before the descent into
@@ -164,3 +162,31 @@ formula, evaluated at the charge fractions of the two EXISTING records,
 must reproduce both measured eta values — hit those two non-steady
 points and the steady value is the same expression at charge = 1.
 Kerr is also on hold until the user re-approves its timeline.
+
+## SH-Q gap closed with zero GPU (12:29)
+
+The blocking 1.8× SH-Q discrepancy is resolved — by audit, not by any
+run. Testing the coarse-grid hypothesis cleared the assembled spectrum
+(Q converges to 50684 on refinement); the artifact was in the *direct*
+derivation, which took √(loop) as the round-trip amplitude when the
+stored `loop` already is the full round trip. Corrected, all
+derivations agree:
+
+| Band | Q | τ_field |
+|---|---|---|
+| pump (1348 nm) | 5877 (assembled 5887, 0.2%) | 2522 tu |
+| SH (674 nm) | 50361 (assembled 48426→50684 fine-grid, FWHM cross-check 50423) | 10804 tu |
+
+Two lessons recorded: (1) the pump's earlier "four-way agreement"
+concealed the same √ bug because its resonance is 5.6× broader — the
+error was 3% there and 1.8× on the SH; agreement between derivations
+sharing an input is weaker evidence than it looks. (2) The raw
+extraction samples the SH line at 5.6 linewidths *per point* — the line
+is never resolved in the data; the assembled all-pass formula
+reconstructs it analytically from (t, a), which is why it was right.
+
+**Unblocked:** SH circulating enhancement is single-valued (205), the
+CMT assembly can proceed: single-pass poled-arc run (transit-scale,
+minutes) + analytic assembly + the two existing records as validation
+points. Error budget to be reported before anything runs. No multi-day
+run needed for the SHG absolute.
