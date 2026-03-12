@@ -146,3 +146,21 @@ of SH charge costs 22 extra hours):
    applied and numerically verified).
 
 Phase 3 closes in ~2.4 days of serialized GPU time.
+
+## Plan change (12:23) — 45 h run killed, faster method under investigation
+
+USER verdict: too long. The 2τ run is killed before the descent into
+multi-day territory. Now being evaluated instead: **nonlinear
+single-pass + CMT assembly**, the same decomposition philosophy as the
+already-validated linear half-ring method. The long run was only
+measuring one unknown — the per-pass QPM conversion of the poled arc.
+That is a transit-scale measurement (hundreds of tu, minutes–hours),
+after which the steady-state ring absolute assembles analytically from
+the measured (t, κ, a) of both bands: pump circulating enhancement
+|κ_p|²/|1−t_p·a_p|², coherent two-half-arc SH generation, SH
+out-coupling. The undepleted approximation is justified by the passed
+P² gate. Validation gate with zero additional long runs: the same
+formula, evaluated at the charge fractions of the two EXISTING records,
+must reproduce both measured eta values — hit those two non-steady
+points and the steady value is the same expression at charge = 1.
+Kerr is also on hold until the user re-approves its timeline.
