@@ -89,3 +89,59 @@ the stored loop already is the full round trip:
   correction).
 - Multi-day resonant-buildup runs are a last resort; decompose into
   transit-scale measurements + audited analytic assembly first.
+
+## 7. Kerr pulse-charge sizing — corrected (2026-08-17, later)
+
+The pulse-charge Kerr variant was approved on a sidemode-suppression
+figure that turned out to be wrong, and the error is worth recording
+because it was caught only by simulating the pulse rather than
+trusting the formula.
+
+**What I predicted:** a Gaussian charge of 1400 tu gives −61.8 dB
+suppression of the ±1 FSR sidemode.
+
+**What the actual pulse spectrum gives: −15.3 dB.** That is ~3 % of
+the pump amplitude sitting in a neighbouring azimuthal mode, in a
+measurement whose entire signal is a 6.8e-5 relative frequency shift.
+Frequency pulling from a 3 % sidemode is not a small perturbation on
+that.
+
+**Why the formula lied.** Two compounding mistakes: the Gaussian
+Fourier exponent was off by a factor of two, and — the dominant term —
+it ignored **window truncation**. The source was switched on at t=0
+and off at t=T_on with the envelope still at 0.5 of its peak, and that
+hard edge broadens the spectrum far more than the Gaussian itself
+suppresses it. Suppression is set by σ, and a clean truncation needs
+T_on ≳ 2kσ with k ≳ 3, so **T_on and suppression are coupled** — you
+cannot buy suppression by shaping alone at fixed duration.
+
+**Fix.** Subtract the pedestal so the envelope reaches exactly zero at
+the source boundaries:
+
+```
+env(t) = clip( (exp(-(t-t0)²/2σ²) − exp(-k²/2)) / (1 − exp(-k²/2)), 0, None )
+```
+
+With the discontinuity removed the suppression becomes monotone in σ
+(before the fix it was not: −67.3 dB at T_on=2450 but −64.6 dB at
+T_on=2800, pure truncation ripple, which is the tell that the numbers
+were artefacts).
+
+**Corrected sizing**, pedestal-subtracted, ringdown 1.0 τ_field = 2522 tu:
+
+| T_on | k | suppression | total | runtime |
+|------|---|-------------|-------|---------|
+| 1400 | 3.0 | −9.9 dB | 3922 tu | 4.8 h |
+| 2100 | 3.0 | −36.8 dB | 4622 tu | 5.6 h |
+| **2800** | **3.0** | **−59.2 dB** | **5322 tu** | **6.5 h** |
+
+Recommended: **T_on = 2800, k = 3.0, −59.2 dB, 6.5 h.** The approved
+1400 tu charge must not be used — it fails the sidemode check it was
+approved on.
+
+Also note the flat-top alternative stays rejected, and for a sharper
+reason than before: its −328 dB sinc null must land exactly on the
+sidemode, and T_rt is known only to a few percent (our two n_g
+estimates differ by 2.6 %). A 2 % mismatch collapses that null to
+−34 dB. A null you have to hit is a liability; the Gaussian degrades
+gracefully.
