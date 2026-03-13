@@ -72,17 +72,43 @@ def _assemble(eps: np.ndarray, dx: float, omega: float, npml: int) -> sp.csc_mat
     return A.tocsc()
 
 
+def _import_torch_sla():
+    try:
+        import torch_sla
+    except ImportError as e:
+        raise ImportError(
+            "backend='torch-sla' requires the torch-sla package: uv add torch-sla"
+        ) from e
+    return torch_sla
+
+
 class _FDFDSolve(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, eps, jz, dx, omega, npml):
+    def forward(ctx, eps, jz, dx, omega, npml, backend):
         nx, ny = eps.shape
         eps_np = eps.detach().to(torch.float64).cpu().numpy()
-        b = (-1j * omega * jz.detach().to(torch.complex128).cpu().numpy()).reshape(-1)
-        lu = splu(_assemble(eps_np, dx, omega, npml))
-        E = lu.solve(b)
-        ctx.lu, ctx.E, ctx.omega = lu, E, omega
-        ctx.shape, ctx.device = (nx, ny), eps.device
-        return torch.from_numpy(E.reshape(nx, ny)).to(eps.device)
+        b_np = (-1j * omega * jz.detach().to(torch.complex128).cpu().numpy()).reshape(-1)
+        ctx.omega, ctx.shape, ctx.device, ctx.backend = omega, (nx, ny), eps.device, backend
+
+        if backend == "scipy":
+            lu = splu(_assemble(eps_np, dx, omega, npml))
+            E = lu.solve(b_np)
+            ctx.lu, ctx.E = lu, E
+            return torch.from_numpy(E.reshape(nx, ny)).to(eps.device)
+        elif backend == "torch-sla":
+            torch_sla = _import_torch_sla()
+            A = _assemble(eps_np, dx, omega, npml).tocoo()
+            n = A.shape[0]
+            row = torch.from_numpy(A.row.astype(np.int64)).to(eps.device)
+            col = torch.from_numpy(A.col.astype(np.int64)).to(eps.device)
+            val = torch.from_numpy(A.data).to(eps.device)
+            ctx.row, ctx.col, ctx.val, ctx.n = row, col, val, n
+            b = torch.from_numpy(b_np).to(eps.device)
+            E = torch_sla.solve(torch_sla.SparseTensor(val, row, col, (n, n)), b)
+            ctx.E = E.detach()
+            return E.reshape(nx, ny)
+        else:
+            raise ValueError(f"backend must be 'scipy' or 'torch-sla', got {backend!r}")
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -92,22 +118,39 @@ class _FDFDSolve(torch.autograd.Function):
         # (not dL/dconj(E) -- verified against the FD gate: the textbook
         # "-2*omega^2" reads dL/dconj(E) without PyTorch's built-in factor
         # of 2, so the *2 cancels the *2 already inside grad_output).
-        g = grad_output.detach().cpu().numpy().reshape(-1).astype(np.complex128)
-        lam = ctx.lu.solve(np.conj(g), trans="T")
-        grad_eps_np = -ctx.omega ** 2 * np.real(lam * ctx.E).reshape(ctx.shape)
-        grad_eps = torch.from_numpy(grad_eps_np).to(torch.float64).to(ctx.device)
-        return grad_eps, None, None, None, None
+        g = grad_output.detach()
+        if ctx.backend == "scipy":
+            g_np = g.cpu().numpy().reshape(-1).astype(np.complex128)
+            lam = torch.from_numpy(ctx.lu.solve(np.conj(g_np), trans="T")).to(ctx.device)
+            E = torch.from_numpy(ctx.E).to(ctx.device)
+        else:
+            torch_sla = _import_torch_sla()
+            # A^T: same (values, shape), row/col swapped -- no factorization
+            # to reuse, so this is a fresh solve (same cost class as forward).
+            AT = torch_sla.SparseTensor(ctx.val, ctx.col, ctx.row, (ctx.n, ctx.n))
+            # torch_sla's scipy backend calls .numpy() on b, which fails on a
+            # lazy conj()-view tensor -- resolve_conj() materializes it first.
+            lam = torch_sla.solve(AT, g.reshape(-1).conj().resolve_conj())
+            E = ctx.E.reshape(-1)
+        grad_eps = (-ctx.omega ** 2 * (lam * E).real).reshape(ctx.shape).to(torch.float64)
+        return grad_eps, None, None, None, None, None
 
 
 def solve_fdfd_tm(eps: torch.Tensor, dx: float, freq: float, jz: torch.Tensor,
-                   npml: int) -> torch.Tensor:
+                   npml: int, backend: str = "scipy") -> torch.Tensor:
     """Driven 2D TM solve. eps: real float64 (nx, ny), may require grad.
     jz: complex or real (nx, ny) current density; b = -i*omega*jz. Returns
-    Ez complex128 (nx, ny). Adjoint backward w.r.t. eps only (one extra LU
-    solve with the transposed factors, no jz/dx/freq/npml grad)."""
+    Ez complex128 (nx, ny). Adjoint backward w.r.t. eps only (one extra
+    transposed solve, no jz/dx/freq/npml grad).
+
+    backend: "scipy" (default, CPU, cached LU factorization) or
+    "torch-sla" (opt-in GPU-capable path via the torch-sla package, not a
+    hard dependency -- raises ImportError with an install hint if missing).
+    Same assembled matrix either way (_assemble); torch-sla only replaces
+    the linear-solve calls, not the adjoint derivation above."""
     omega = 2.0 * math.pi * freq
     jz_c = jz if torch.is_complex(jz) else jz.to(torch.complex128)
-    return _FDFDSolve.apply(eps, jz_c, dx, omega, npml)
+    return _FDFDSolve.apply(eps, jz_c, dx, omega, npml, backend)
 
 
 def _port_eps_line(eps: torch.Tensor, port) -> torch.Tensor:

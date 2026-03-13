@@ -10,6 +10,7 @@
    structure run through the FDTD path (build_tm_coeffs/run_tm/decompose),
    agreement within 5%.
 """
+import pytest
 import torch
 
 from meep_torch.core.coeffs import build_tm_coeffs
@@ -65,9 +66,9 @@ def _tiny_ports():
     )
 
 
-def _objective(eps, dx, npml, port_src, port_out):
+def _objective(eps, dx, npml, port_src, port_out, backend="scipy"):
     jz = make_mode_source(eps, port_src, FREQ, dx)
-    Ez = solve_fdfd_tm(eps, dx, FREQ, jz, npml)
+    Ez = solve_fdfd_tm(eps, dx, FREQ, jz, npml, backend=backend)
     a = mode_amplitude(Ez, eps, port_out, FREQ, dx)
     return (a.conj() * a).real
 
@@ -145,3 +146,44 @@ def test_cross_solver_parity():
 
     rel_diff = abs(T_fdfd - T_fdtd) / T_fdtd
     assert rel_diff < 0.05, f"T_fdfd={T_fdfd:.4f} T_fdtd={T_fdtd:.4f} rel_diff={rel_diff:.4f}"
+
+
+def test_backend_torch_sla_matches_scipy():
+    """Phase 2 adoption gate: torch-sla must match scipy on the actual
+    (indefinite) FDFD Helmholtz matrix, not just a diagonally-dominant
+    probe matrix -- see docs/plans/2026-08-17-fdfd-tm.md Phase 2."""
+    pytest.importorskip("torch_sla")
+    dx, npml = 0.05, 15
+    nx, ny = 100, 70
+    port_src = Port(axis="x", index=30, lo=21, hi=49, direction=+1)
+    eps_dev = _stripe_eps(nx, ny, core_lo=28, core_hi=43)
+    eps_dev[49:52, 28:43] = N_CLAD ** 2  # same notched parity structure as gate 3
+    jz = make_mode_source(eps_dev, port_src, FREQ, dx)
+    Ez_scipy = solve_fdfd_tm(eps_dev, dx, FREQ, jz, npml, backend="scipy")
+    Ez_tsla = solve_fdfd_tm(eps_dev, dx, FREQ, jz, npml, backend="torch-sla")
+    rel = ((Ez_tsla - Ez_scipy).norm() / Ez_scipy.norm()).item()
+    assert rel < 1e-8, f"torch-sla vs scipy rel err = {rel:.2e}"
+
+
+def test_backend_torch_sla_gradient():
+    pytest.importorskip("torch_sla")
+    dx, npml = 0.05, 10
+    nx, ny = 60, 40
+    port_src, port_out = _tiny_ports()
+    eps0 = _stripe_eps(nx, ny, core_lo=13, core_hi=28)
+
+    eps = eps0.clone().requires_grad_(True)
+    L = _objective(eps, dx, npml, port_src, port_out, backend="torch-sla")
+    L.backward()
+    grad = eps.grad
+
+    h = 1e-4
+    for ix, iy in [(25, 20), (30, 20), (35, 20)]:
+        ep = eps0.clone(); ep[ix, iy] += h
+        em = eps0.clone(); em[ix, iy] -= h
+        Lp = float(_objective(ep, dx, npml, port_src, port_out, backend="torch-sla"))
+        Lm = float(_objective(em, dx, npml, port_src, port_out, backend="torch-sla"))
+        fd = (Lp - Lm) / (2 * h)
+        ad = float(grad[ix, iy])
+        rel_err = abs(fd - ad) / abs(fd)
+        assert rel_err < 1e-5, f"pixel ({ix},{iy}): fd={fd:.6e} ad={ad:.6e} rel_err={rel_err:.2e}"
