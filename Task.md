@@ -12,10 +12,22 @@ make a sub folder call examples_2. Using meep-torch
         - [x] export gdsii file (examples_2/a_ring_SiN.gds)
  
     - b SiN Ring Resonators and Lithium Niobate resonators.
-        - [x] Run FDTD Simulation with Chi2 non-linearity. (chi2 added to the engine, a44f0e2; examples_2/b_ring_nonlinear.py)
-        - [x] Simulate Kerr effect (resonance red-shift -62 ppm at 4x power)
-        - [x] SHG generation (clean line at 2 f0, b_ring_nonlinear.png)
-            -[x] renamed to b_ring_Lithium_Niobate_nonlinear.png
+        - [x] Run FDTD Simulation with Chi2 non-linearity. (chi2 in the engine, a44f0e2)
+            - SUPERSEDED: the cited script b_ring_nonlinear.py was DELETED (b682d74).
+              It modelled 1550 nm / r=3 with a single flat index for all frequencies,
+              so it could not represent phase mismatch at all -- an unpoled ring at
+              674/1348 converts ~nothing across 366 coherence lengths.
+        - [~] Simulate Kerr effect -- NOT VALIDATED on the real device.
+            - The "-62 ppm at 4x power" figure came from that deleted flat-index demo.
+            - On the TFLN ring the Kerr run was sized but NEVER RAN; investigation
+              halted by USER decision. See examples_2/nonlinear/SHG_METHOD_CHANGE.md.
+        - [~] SHG generation -- partially validated on the TFLN ring.
+            - PASSED: the P^2 second-order gate, eta(2A)/eta(A) = 3.772 (want 4.0),
+              pump scaling amp^2.00 exactly. This is a genuine chi2 signature.
+            - NOT MEASURED: any trustworthy absolute conversion efficiency. Requires
+              quasi-phase-matched poling (Lambda = 3.43 um, ~183 domains), which is
+              implemented but whose steady-state efficiency was never run.
+            - All scripts, outputs and the two SHG reports: examples_2/nonlinear/.
         - [x] make video of 3d simulation (examples_2/b_ring_3d.mp4 -- 300 nm TFLN microring, true 3D)
         - [x] export gdsii file for both cases (b_ring_SiN.gds, b_ring_Lithium_Niobate.gds)
             
