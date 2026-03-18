@@ -103,6 +103,14 @@ P_unp = (a_of_x(Es_unp).abs() ** 2).numpy()
 # at the analytic Lambda loses QPM sync after ~pi/delta_k (measured first
 # failure mode of this script: gain 8x instead of hundreds). Poling at the
 # MEASURED period is also what a lab does.
+# Peer-verified mechanism (0.1% agreement): 2nd-order FD inflates
+# n_num/n by arcsin(k dx/2)/(k dx/2); the SH at 12 cells/lambda gets
+# x1.0118 while the pump at ~24 cells gets only x1.0029, and the beat
+# depends on the DIFFERENCE, so the asymmetry widens dn 0.2355->0.2560
+# (measured 0.2560). The error scales with the SH/pump resolution ratio:
+# doubling RES shrinks it ~4x (24 cells/lambda_SH -> ~2% beat error).
+# A fixed analytic-Lambda poling desyncs after ~1/(dn error) domains, so
+# self-calibration is mandatory at ring scale (183 domains over 314 um).
 seg = P_unp[i0:i1]
 pk = [k for k in range(1, len(seg) - 1) if seg[k] > seg[k - 1] and seg[k] >= seg[k + 1]
       and seg[k] > 0.1 * seg.max()]
