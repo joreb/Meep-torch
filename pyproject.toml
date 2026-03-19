@@ -1,15 +1,15 @@
 [project]
 name = "meep-torch"
 version = "0.1.0"
-description = "Differentiable 2D FDTD engine in PyTorch (meep-inspired)"
+description = "Differentiable FDTD/FDFD engine in PyTorch (meep-inspired)"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.6",
     "numpy>=1.24",
-    "code-review-graph>=2.3.7",
-    "igraph>=1.0.0",
     "scipy>=1.11",
+    "gdsfactory>=6.111.0",
+    "torch-sla>=0.3.2",
 ]
 
 [project.optional-dependencies]
@@ -21,9 +21,9 @@ gds = [
 # <3.10, so the marker makes this extra a no-op on this project's >=3.10 floor
 # (the guarded tests importorskip). Install it on a <3.10 box to run the
 # femwell parity/overlap tests live: uv pip install '.[femwell]'
-femwell = [
-    "femwell; python_version < '3.10'",
-]
+# femwell = [
+#     "femwell; python_version < '3.10'",
+# ]
 
 [dependency-groups]
 dev = [
