@@ -4,26 +4,23 @@ version = "0.1.0"
 description = "Differentiable FDTD/FDFD engine in PyTorch (meep-inspired)"
 license = "MIT"
 requires-python = ">=3.10"
+# torch pinned to a cu128 build: the accelerated sparse backends
+# (torch-strumpack cuda12x, torch-amgx cu128, cuDSS via nvmath[cu12])
+# are ABI/runtime-tied to CUDA 12.x -- cu130 torch has no matching
+# wheels (see wiki/TODO.md). Python pinned 3.12 (.python-version):
+# nvmath-python ships cp310-cp312 only.
 dependencies = [
-    "torch>=2.6",
+    "torch==2.9.*",
     "numpy>=1.24",
     "scipy>=1.11",
     "gdsfactory>=6.111.0",
-    "torch-sla>=0.3.2",
+    "torch-sla[cudss]>=0.3.2",
 ]
 
 [project.optional-dependencies]
 gds = [
     "gdstk>=1.0.1",
 ]
-# femwell is the FEM mode-solver oracle (GPL-3.0). Test-only -- it is NOT a
-# runtime dep and never enters the wheel. Its setup.py hard-bounds Python
-# <3.10, so the marker makes this extra a no-op on this project's >=3.10 floor
-# (the guarded tests importorskip). Install it on a <3.10 box to run the
-# femwell parity/overlap tests live: uv pip install '.[femwell]'
-# femwell = [
-#     "femwell; python_version < '3.10'",
-# ]
 
 [dependency-groups]
 dev = [
@@ -32,6 +29,14 @@ dev = [
     "matplotlib>=3.10.9",
     "gdstk>=1.0.1",
 ]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]

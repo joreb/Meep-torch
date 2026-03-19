@@ -4,6 +4,12 @@ import pytest
 import torch
 
 mp = pytest.importorskip("meep")
+# the repo-root reference clone `meep/` (gitignored) shadows pymeep as an
+# empty namespace package when cwd is on sys.path -- only the real
+# pymeep (conda oracle env) has Vector3
+if not hasattr(mp, "Vector3"):
+    pytest.skip("real pymeep not installed (namespace-dir shadow)",
+                allow_module_level=True)
 
 from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
