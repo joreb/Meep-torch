@@ -153,6 +153,76 @@ def solve_fdfd_tm(eps: torch.Tensor, dx: float, freq: float, jz: torch.Tensor,
     return _FDFDSolve.apply(eps, jz_c, dx, omega, npml, backend)
 
 
+def solve_fdfd_tm_real_backend(eps: torch.Tensor, dx: float, freq: float,
+                               jz: torch.Tensor, npml: int, *,
+                               backend: str = "strumpack",
+                               device: str = "cpu") -> torch.Tensor:
+    """Complex TM solve routed through a REAL-ONLY accelerated backend
+    (strumpack / cudss) via the 2N real-equivalent embedding
+    [[Ar, -Ai], [Ai, Ar]] [xr; xi] = [br; bi] -- the released
+    torch-strumpack glue casts complex to real and torch-sla's cudss path
+    has an upstream arg-count bug on complex, so the complex system never
+    reaches them directly. FORWARD-ONLY: raises if eps requires grad
+    (use the scipy path for adjoints)."""
+    if eps.requires_grad:
+        raise ValueError("real-embedded backends are forward-only; use the "
+                         "default (scipy) backend for gradients")
+    # the strumpack extension links libcusolver/libcublas from the pip
+    # nvidia-* packages but has no rpath to them; whether they are already
+    # in the process depends on import order (nvmath loads them, torch
+    # alone does not) -- preload deterministically.
+    import ctypes
+    import glob
+    import site
+    for sp_dir in site.getsitepackages():
+        for pat in ("cuda_runtime/lib/libcudart.so.12",
+                    "cublas/lib/libcublas.so.12",
+                    "cublas/lib/libcublasLt.so.12",
+                    "cusolver/lib/libcusolver.so.11",
+                    "cusparse/lib/libcusparse.so.12"):
+            for hit in glob.glob(f"{sp_dir}/nvidia/{pat}"):
+                try:
+                    ctypes.CDLL(hit, mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+    import torch_sla
+    if backend == "cudss":
+        # torch-sla 0.3.2 calls nvmath's matrix_create_csr with 12 args;
+        # every released nvmath (>=0.4) wants 13 (offset_type and
+        # index_type split). Shim the binding once: duplicate the single
+        # index-type argument into both slots. Correctness is gated by
+        # the rel-err check against the scipy path in the tests.
+        from nvmath.bindings import cudss as _cudss
+        if not getattr(_cudss.matrix_create_csr, "_mt_shim", False):
+            _orig = _cudss.matrix_create_csr
+
+            def _shim(m, n, nnz, rs, re_, ci, v, idx_t, val_t, mt, mv, ib):
+                return _orig(m, n, nnz, rs, re_, ci, v,
+                             idx_t, idx_t, val_t, mt, mv, ib)
+
+            _shim._mt_shim = True
+            _cudss.matrix_create_csr = _shim
+    omega = 2.0 * math.pi * freq
+    nx, ny = eps.shape
+    eps_np = eps.detach().to(torch.float64).cpu().numpy()
+    b_np = (-1j * omega * jz.detach().to(torch.complex128)
+            .cpu().numpy()).reshape(-1)
+    A = _assemble(eps_np, dx, omega, npml).tocoo()
+    n = A.shape[0]
+    r, c = A.row.astype(np.int64), A.col.astype(np.int64)
+    row = np.concatenate([r, r, r + n, r + n])
+    col = np.concatenate([c, c + n, c, c + n])
+    val = np.concatenate([A.data.real, -A.data.imag, A.data.imag, A.data.real])
+    dev = torch.device(device)
+    As = torch_sla.SparseTensor(
+        torch.from_numpy(val).to(dev), torch.from_numpy(row).to(dev),
+        torch.from_numpy(col).to(dev), (2 * n, 2 * n))
+    b2 = torch.from_numpy(np.concatenate([b_np.real, b_np.imag])).to(dev)
+    x = torch_sla.solve(As, b2, backend=backend).cpu().numpy()
+    E = x[:n] + 1j * x[n:]
+    return torch.from_numpy(E.reshape(nx, ny))
+
+
 def _port_eps_line(eps: torch.Tensor, port) -> torch.Tensor:
     if port.axis == "x":
         return eps[port.index, port.lo:port.hi]
