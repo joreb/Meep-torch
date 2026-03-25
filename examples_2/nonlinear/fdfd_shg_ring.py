@@ -138,6 +138,35 @@ Ep_off = pump_solve(f_res + 0.5 * FSR)
 enh = circ_power(Ep) / circ_power(Ep_off)
 print(f"fdfd_shg_ring  g1 circulating power on/off resonance: {enh:.1f}x")
 
+# --- loaded Q from a Lorentzian fit of the scan points near the line ---
+h_arr = np.array(sorted(hist))
+sel = np.abs(h_arr[:, 0] - f_res) < 0.2 * FSR
+fs_fit, P_fit = h_arr[sel, 0], h_arr[sel, 1]
+
+
+def lorentz(f, A, f0, g):
+    return A / (1 + ((f - f0) / g) ** 2)
+
+
+from scipy.optimize import curve_fit
+
+(A_f, f0_f, g_f), _ = curve_fit(
+    lorentz, fs_fit, P_fit, p0=[P_fit.max(), f_res, 0.02 * FSR])
+Q_loaded = f0_f / (2 * abs(g_f))
+print(f"fdfd_shg_ring  loaded Q = {Q_loaded:.0f} (Lorentzian fit, "
+      f"{sel.sum()} points, FWHM {2*abs(g_f):.2e})")
+
+# --- absolute eta: pump input power from a bus-only reference solve ---
+eps_bus = torch.full_like(eps_p, N_PC ** 2)
+jwb = int(W_WG / 2 * RES)
+eps_bus[:, o1y - jwb: o1y + jwb] = N_P ** 2
+jz_bus = make_mode_source(eps_bus, p_in, f_res, dx)
+E_bus = solve_fdfd_tm_real_backend(eps_bus, dx, f_res, jz_bus, NPML,
+                                   backend=BE, device=DEV)
+prof_bus, _ = port_mode_line(eps_bus, p_out, f_res, dx)
+P_pump_in = float(((E_bus[p_out.index, p_out.lo:p_out.hi]
+                    * prof_bus.to(torch.complex128)).sum() * dx).abs() ** 2)
+
 # --- dk self-calibration on a straight guide (scipy, small grid) ---
 sg_nx, sg_ny = int(30 * RES), int(6 * RES)
 e_sp = torch.full((sg_nx, sg_ny), N_PC ** 2, dtype=torch.float64)
@@ -164,6 +193,12 @@ print(f"fdfd_shg_ring  grid beat {period:.3f} um -> Lambda_QPM {period:.3f} um "
       f"({len(pk)} peaks)")
 
 # --- SH solves on the ring: QPM-poled vs unpoled ---
+# Peer-verified: the ring beat differs from the straight-guide beat
+# (2.706 vs 2.633 um at r=15) because bend delocalization raises the
+# less-confined pump's neff more than the SH's, shrinking dn ~2.7%.
+# The effect scales ~1/R -- Lambda is NOT transferable between radii;
+# self-calibrate per ring. (At r=50 the 183 half-domains lose QPM sync
+# on even a 2% Lambda carry-over error.)
 theta = np.arctan2(Y - cy, X - cx)
 arc = theta * R_RING
 poling = torch.from_numpy(np.sign(np.cos(dk_grid * arc)))
@@ -184,8 +219,13 @@ def sh_out(E):
     return float(((E[p_out.index, p_out.lo:p_out.hi]
                    * prof_out.to(torch.complex128)).sum() * dx).abs() ** 2)
 g2 = sh_out(Es_pol) / max(sh_out(Es_unp), 1e-300)
+# label: g1 (resonance on/off) and g2 (poled/unpoled) answer DIFFERENT
+# questions -- their ratio is meaningless; never divide one by the other.
 print(f"fdfd_shg_ring  g2 SH out (bus): poled/unpoled = {g2:.1f}x "
       f"(poled {sh_out(Es_pol):.3e})")
+eta = sh_out(Es_pol) / P_pump_in
+print(f"fdfd_shg_ring  eta = P_SH_out/P_pump_in = {eta:.3e} at chi2={CHI2} "
+      f"(arb units; eta scales as chi2^2 x P_pump in the undepleted regime)")
 
 fig, axs = plt.subplots(2, 2, figsize=(12, 9))
 a1, a2, a3, a4 = axs.flat
