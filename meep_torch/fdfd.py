@@ -133,7 +133,14 @@ class _FDFDSolve(torch.autograd.Function):
             lam = torch_sla.solve(AT, g.reshape(-1).conj().resolve_conj())
             E = ctx.E.reshape(-1)
         grad_eps = (-ctx.omega ** 2 * (lam * E).real).reshape(ctx.shape).to(torch.float64)
-        return grad_eps, None, None, None, None, None
+        # source gradient: b = -i*omega*jz and E = A^-1 b, so the jz
+        # cotangent is the (already computed) adjoint field scaled by
+        # conj(-i*omega) -- makes CHAINED solves differentiable (e.g. an
+        # SHG pipeline where the SH source is chi2*Ep^2 of a prior solve).
+        # Sign/conjugation verified by the finite-difference gate, same
+        # discipline as the eps gradient (angler-inspired, not ported).
+        grad_jz = ((1j * ctx.omega) * lam).conj().reshape(ctx.shape)
+        return grad_eps, grad_jz, None, None, None, None
 
 
 def solve_fdfd_tm(eps: torch.Tensor, dx: float, freq: float, jz: torch.Tensor,

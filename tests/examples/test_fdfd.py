@@ -187,3 +187,28 @@ def test_backend_torch_sla_gradient():
         ad = float(grad[ix, iy])
         rel_err = abs(fd - ad) / abs(fd)
         assert rel_err < 1e-5, f"pixel ({ix},{iy}): fd={fd:.6e} ad={ad:.6e} rel_err={rel_err:.2e}"
+
+
+def test_source_gradient_chained():
+    """jz cotangent through TWO chained solves (SHG-like: second source =
+    chi2*E1^2) against central finite differences -- the gate for the
+    angler-inspired source gradient in _FDFDSolve.backward."""
+    torch.manual_seed(0)
+    eps1 = torch.full((60, 40), 2.0, dtype=torch.float64)
+    eps1[:, 16:24] = 4.0
+    eps2 = eps1.clone() * 1.1
+    jz1 = torch.zeros(60, 40, dtype=torch.complex128)
+    jz1[15, 16:24] = 1.0
+
+    def L_of(jz_in):
+        E1 = solve_fdfd_tm(eps1, 0.05, 0.6, jz_in, 10)
+        E2 = solve_fdfd_tm(eps2, 0.05, 1.2, 1e-3 * E1 ** 2, 10)
+        a = E2[45, 16:24].sum()
+        return (a.conj() * a).real
+
+    s = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
+    L_of(s * jz1).backward()
+    h = 1e-5
+    g_fd = float((L_of((1 + h) * jz1) - L_of((1 - h) * jz1)) / (2 * h))
+    rel = abs(float(s.grad) - g_fd) / max(abs(g_fd), 1e-30)
+    assert rel < 1e-5, f"chained source gradient off: rel {rel}"
