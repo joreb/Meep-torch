@@ -212,3 +212,33 @@ def test_source_gradient_chained():
     g_fd = float((L_of((1 + h) * jz1) - L_of((1 - h) * jz1)) / (2 * h))
     rel = abs(float(s.grad) - g_fd) / max(abs(g_fd), 1e-30)
     assert rel < 1e-5, f"chained source gradient off: rel {rel}"
+
+
+def test_source_gradient_single_and_pardiso():
+    """SINGLE-solve source-gradient FD gate -- pins the SIGN, which the
+    chained gate cannot (the chain applies grad_jz twice and (-1)^2=1;
+    the first implementation's flipped sign passed the chained gate).
+    Runs scipy always, pardiso when installed. FD scaling uses python
+    floats (torch.tensor(1+h) is float32 and corrupts the step)."""
+    eps = torch.full((60, 40), 2.0, dtype=torch.float64)
+    eps[:, 16:24] = 4.0
+    jz = torch.zeros(60, 40, dtype=torch.complex128)
+    jz[15, 16:24] = 1.0
+    backends = ["scipy"]
+    try:
+        import pypardiso  # noqa: F401
+        backends.append("pardiso")
+    except ImportError:
+        pass
+    h = 1e-5
+    for be in backends:
+        def L(jz_in):
+            E = solve_fdfd_tm(eps, 0.05, 0.6, jz_in, 10, backend=be)
+            a = E[45, 16:24].sum()
+            return (a.conj() * a).real
+        s = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
+        L(s * jz).backward()
+        g_fd = float((L((1 + h) * jz) - L((1 - h) * jz)) / (2 * h))
+        rel = abs(float(s.grad) - g_fd) / abs(g_fd)
+        assert rel < 1e-6, f"{be}: single-solve source grad rel {rel}"
+        assert float(s.grad) > 0, f"{be}: sign flipped"

@@ -17,6 +17,8 @@ dependencies = [
     "torch-sla[cudss]>=0.3.2",
     "torch-strumpack",
     "torch-amgx",
+    "pymkl>=0.0.3",
+    "pypardiso>=0.4.7",
 ]
 
 [project.optional-dependencies]

@@ -107,8 +107,25 @@ class _FDFDSolve(torch.autograd.Function):
             E = torch_sla.solve(torch_sla.SparseTensor(val, row, col, (n, n)), b)
             ctx.E = E.detach()
             return E.reshape(nx, ny)
+        elif backend == "pardiso":
+            # MKL PARDISO (pypardiso): multithreaded CPU factorization,
+            # ~12x scipy SuperLU measured at 120k unknowns. Real-only
+            # solver -> 2N real embedding [[Ar,-Ai],[Ai,Ar]].
+            import pypardiso
+            A = _assemble(eps_np, dx, omega, npml).tocoo()
+            n = A.shape[0]
+            r, c, d = A.row, A.col, A.data
+            row = np.concatenate([r, r, r + n, r + n])
+            col = np.concatenate([c, c + n, c, c + n])
+            val = np.concatenate([d.real, -d.imag, d.imag, d.real])
+            A2 = sp.coo_matrix((val, (row, col)), shape=(2 * n, 2 * n)).tocsr()
+            x2 = pypardiso.spsolve(A2, np.concatenate([b_np.real, b_np.imag]))
+            E = x2[:n] + 1j * x2[n:]
+            ctx.rcd, ctx.n, ctx.E = (r, c, d), n, E
+            return torch.from_numpy(E.reshape(nx, ny)).to(eps.device)
         else:
-            raise ValueError(f"backend must be 'scipy' or 'torch-sla', got {backend!r}")
+            raise ValueError(
+                f"backend must be 'scipy', 'torch-sla' or 'pardiso', got {backend!r}")
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -123,6 +140,20 @@ class _FDFDSolve(torch.autograd.Function):
             g_np = g.cpu().numpy().reshape(-1).astype(np.complex128)
             lam = torch.from_numpy(ctx.lu.solve(np.conj(g_np), trans="T")).to(ctx.device)
             E = torch.from_numpy(ctx.E).to(ctx.device)
+        elif ctx.backend == "pardiso":
+            import pypardiso
+            g_np = np.conj(g.cpu().numpy().reshape(-1).astype(np.complex128))
+            r, c, d = ctx.rcd
+            n = ctx.n
+            # embedding of A^T (NOT embed(A).T -- that would be A^H):
+            # swap row/col PER BLOCK, keeping the same value layout
+            row = np.concatenate([c, c, c + n, c + n])
+            col = np.concatenate([r, r + n, r, r + n])
+            val = np.concatenate([d.real, -d.imag, d.imag, d.real])
+            AT2 = sp.coo_matrix((val, (row, col)), shape=(2 * n, 2 * n)).tocsr()
+            x2 = pypardiso.spsolve(AT2, np.concatenate([g_np.real, g_np.imag]))
+            lam = torch.from_numpy(x2[:n] + 1j * x2[n:]).to(ctx.device)
+            E = torch.from_numpy(ctx.E).to(ctx.device)
         else:
             torch_sla = _import_torch_sla()
             # A^T: same (values, shape), row/col swapped -- no factorization
@@ -133,13 +164,14 @@ class _FDFDSolve(torch.autograd.Function):
             lam = torch_sla.solve(AT, g.reshape(-1).conj().resolve_conj())
             E = ctx.E.reshape(-1)
         grad_eps = (-ctx.omega ** 2 * (lam * E).real).reshape(ctx.shape).to(torch.float64)
-        # source gradient: b = -i*omega*jz and E = A^-1 b, so the jz
-        # cotangent is the (already computed) adjoint field scaled by
-        # conj(-i*omega) -- makes CHAINED solves differentiable (e.g. an
-        # SHG pipeline where the SH source is chi2*Ep^2 of a prior solve).
-        # Sign/conjugation verified by the finite-difference gate, same
-        # discipline as the eps gradient (angler-inspired, not ported).
-        grad_jz = ((1j * ctx.omega) * lam).conj().reshape(ctx.shape)
+        # source gradient: E is HOLOMORPHIC in jz (E = -i*omega*A^-1 jz),
+        # so with torch's convention (grad = 2*dL/dz*) the cotangent is
+        # grad_jz = conj(-i*omega*lam) = +i*omega*conj(lam). CAUTION: a
+        # chained two-solve FD gate CANNOT catch a sign error here (the
+        # chain applies this twice and (-1)^2 = 1 -- exactly how the
+        # first version's flipped sign passed); the single-solve FD gate
+        # in test_fdfd is the one that pins the sign.
+        grad_jz = ((1j * ctx.omega) * lam.conj()).reshape(ctx.shape)
         return grad_eps, grad_jz, None, None, None, None
 
 
