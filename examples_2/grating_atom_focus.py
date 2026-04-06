@@ -109,31 +109,15 @@ def J_of(rho, beta):
     return I / I_ref
 
 
-# --- seed: IMPORTED gdsfactory grating coupler (user spec) ---
-# rasterize grating_coupler_rectangular, cut a line through the grating
-# axis, and paint its tooth pattern into the design columns.
-import gdsfactory as gf
-from gds_meep_torch import component_to_eps
-
-gf.gpdk.PDK.activate()
-gc = gf.components.grating_coupler_rectangular(n_periods=24, period=0.75,
-                                               fill_factor=0.5,
-                                               length_taper=6.0)
-_, eps_gc, ports_gc = component_to_eps(gc, res=RES, pad=1.0,
-                                       n_core=N_SIN, n_clad=1.0)
-gx, gy, _ = ports_gc["o1"]
-line = (eps_gc[:, gy] > 0.5 * (float(eps_gc.min()) + float(eps_gc.max())))
-line = line.flip(0)                     # teeth first (port is at the wg end)
-# resample the tooth line onto the NRX design columns (0.1 um voxels)
-idx = (torch.arange(NRX, dtype=torch.float64) * 0.1 * RES).long().clamp(max=line.numel() - 1)
-seed_cols = line[idx].to(torch.float64)
-# soften the binary import: fully-saturated rho kills the projection
-# gradients and pins the stock (vertical-diffracting) period -- 0.3/0.7
-# keeps the imported structure but lets the optimizer re-chirp it
-rho = (0.3 + 0.4 * seed_cols)[:, None].repeat(1, NRZ).clone().requires_grad_(True)
+# --- seed: the ANALYTIC design from grating_atom_analytic.py ---
+# (standalone script with its own plot; run it first). Softened 0.3/0.7
+# so the projection has gradients (binary seeds stall -- measured).
+seed_analytic = torch.from_numpy(
+    np.load(OUT / "grating_atom_analytic_seed.npy"))
+rho = (0.3 + 0.4 * seed_analytic)[:, None].repeat(1, NRZ).clone().requires_grad_(True)
 with torch.no_grad():
-    J_seed = float(J_of(rho.clamp(0, 1), 64.0))
-print(f"grating_atom_focus  imported-GC seed: atom/guide-peak = {J_seed:.3f}")
+    J_seed = float(J_of(seed_analytic[:, None].repeat(1, NRZ), 64.0))
+print(f"grating_atom_focus  analytic seed (binary): atom/guide-peak = {J_seed:.3f}")
 adam = torch.optim.Adam([rho], lr=0.05)
 history, post64 = [], []
 best = (-1.0, None)
