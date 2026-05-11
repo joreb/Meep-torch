@@ -62,3 +62,37 @@ def test_adjoint3d_fd_gate():
         assert rel < 1e-4, f"voxel {vox}: adjoint {g_adj} vs FD {g_fd}, rel {rel}"
         checked += 1
     assert checked == 3
+
+
+def test_adjoint3d_nonleaf_eps():
+    """eps produced by an upstream graph (the design-painting case): the
+    reverse sweep must not free the shared prefix (found by the tier-2
+    demo -- 'backward through the graph a second time')."""
+    nx, ny, nz = 26, 20, 16
+    s = torch.tensor(0.7, dtype=torch.float64, requires_grad=True)
+
+    def L_of(s_in):
+        base = torch.full((nx, ny, nz), 1.5, dtype=torch.float64)
+        mask = torch.zeros(nx, ny, nz, dtype=torch.float64)
+        mask[10:16, 8:12, 6:10] = 1.0
+        eps = base + 2.5 * s_in * mask            # shared upstream graph
+        dx = 0.05
+        c = build_3d_coeffs(nx, ny, nz, dx, eps=eps, npml=6)
+        src = _PointSrc(GaussianPulse(0.6, 0.25), c.dt,
+                        (nx // 2, ny // 2, nz // 2 - 2))
+        mon = DFTFieldsMonitor3D(c.dt, [0.6], "Ez", plane=(0, nx - 8))
+        st0 = init_3d_state(nx, ny, nz, npml=6, dtype=torch.float64)
+
+        def loss_fn(accs):
+            return (accs[0][0, 0] ** 2 + accs[0][0, 1] ** 2).sum()
+
+        L, _ = run_3d_adjoint(c, 70, 16, src, [mon], loss_fn, st0)
+        return L
+
+    L = L_of(s)
+    assert s.grad is not None
+    h = 1e-4
+    g_fd = (L_of((s + h).detach().requires_grad_(True))
+            - L_of((s - h).detach().requires_grad_(True))) / (2 * h)
+    rel = abs(float(s.grad) - g_fd) / max(abs(g_fd), 1e-30)
+    assert rel < 1e-4, f"non-leaf grad rel {rel}"

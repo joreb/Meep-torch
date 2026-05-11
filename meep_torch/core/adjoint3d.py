@@ -60,6 +60,16 @@ def run_3d_adjoint(c, n_steps: int, chunk: int, source, monitors, loss_fn,
     with requires_grad=True into build_3d_coeffs). ``loss_fn(accs)``
     must return a real scalar built from the monitor accumulators."""
     device = c.eps.device
+    # Re-leaf eps: every reverse chunk backwards through eps's own ops,
+    # and a SHARED upstream graph (rho -> filters -> paint -> eps) would
+    # be freed by the first chunk and crash the second ("backward through
+    # the graph a second time" -- found by the tier-2 demo; the FD gate
+    # used a leaf eps and could not see it). Chunks accumulate into the
+    # internal leaf; ONE outer backward at the end routes the total into
+    # whatever graph produced eps.
+    eps_src = c.eps
+    eps_leaf = eps_src.detach().clone().requires_grad_(True)
+    c = c._replace(eps=eps_leaf)
     boundaries, accs = _forward_chunks(c, n_steps, chunk, source, monitors,
                                        state0)
 
@@ -100,4 +110,6 @@ def run_3d_adjoint(c, n_steps: int, chunk: int, source, monitors, loss_fn,
         del leaves, state, chunk_accs, outputs, grads
         if device.type == "cuda":
             torch.cuda.empty_cache()
+    if eps_src.requires_grad and eps_leaf.grad is not None:
+        torch.autograd.backward(eps_src, eps_leaf.grad)
     return float(L), accs

@@ -326,6 +326,19 @@ def _inject_src(state, c, src_amp, src, eps_x, eps_y, eps_z):
             return state._replace(Ex=Ex)
         Ey = state.Ey + c.dt * src_amp * mask / eps_y
         return state._replace(Ey=Ey)
+    if len(src) == 3:                              # plane-indexed (comp, ix,
+        ix, plane = src[1], src[2]                 # plane) -- lean-stepper
+        if comp == "Ez":                           # form, no full-volume mask
+            Ez = state.Ez.clone()
+            Ez[ix] = Ez[ix] + c.dt * src_amp * plane / eps_z[ix]
+            return state._replace(Ez=Ez)
+        if comp == "Ex":
+            Ex = state.Ex.clone()
+            Ex[ix] = Ex[ix] + c.dt * src_amp * plane / eps_x[ix]
+            return state._replace(Ex=Ex)
+        Ey = state.Ey.clone()
+        Ey[ix] = Ey[ix] + c.dt * src_amp * plane / eps_y[ix]
+        return state._replace(Ey=Ey)
     i, j, k = src[1], src[2], src[3]               # soft point source
     if comp == "Ez":
         state.Ez[i, j, k] = state.Ez[i, j, k] + c.dt * src_amp / eps_z[i, j, k]
