@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c3b): video of the inverse-designed mmi_tapered coupler
+"""Example (c3b): video of the inverse-designed mmi_tapered coupler
 (674 nm). Rebuilds the optimized design exactly like the 3D validator
 (exec of the characterization head + saved rho over the same region),
 drives the TE0 mode CW and animates |Ez|. Cores shaded + outlined.

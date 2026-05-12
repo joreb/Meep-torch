@@ -2,7 +2,7 @@
 
 ## What we are trying to do
 
-The device-suite deliverable set includes a **second-harmonic-generation
+The deliverable set includes a **second-harmonic-generation
 ring**: a periodically-poled thin-film lithium-niobate (TFLN) racetrack
 (r = 50 µm, W = 1.2 µm, single bus, gap 0.25 µm) that converts a
 1348 nm pump into 674 nm light — the same wavelength the SiN passive

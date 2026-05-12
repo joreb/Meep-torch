@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c2): inverse-designed Y splitter -- DEFAULT mmi1x2_with_sbend,
+"""Example (c2): inverse-designed Y splitter -- DEFAULT mmi1x2_with_sbend,
 FULL domain (no mirror symmetry, user spec 2026-08-16), 674 nm.
 
 Geometry: gdsfactory mmi1x2_with_sbend() at DEFAULT parameters (native

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c2e): TRUE-3D validation of the inverse-designed mmi_tapered
+"""Example (c2e): TRUE-3D validation of the inverse-designed mmi_tapered
 Y coupler (674 nm, 98.5% in 2D).
 
 Rebuilds the optimized design (c_y_coupler_mmi_tapered_rho.npy over the

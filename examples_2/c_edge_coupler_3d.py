@@ -93,7 +93,7 @@ RES3 = int(os.environ.get("CEC3_RES", "40"))     # 6 cells across the core
 # float32 by default: this is a FORWARD-ONLY validation (no adjoint), it halves
 # both memory and step time, and the reported number is a RATIO of two runs on
 # the same grid, so the float32 rounding largely cancels. float64 needs ~9.5 GB
-# here, which does not fit beside the peer's concurrent 3D run on a GPU
+# here, which does not fit beside the peer's concurrent 3D run on the GPU
 # (measured: one OOM). CEC3_F64=1 forces float64.
 DT3 = torch.float64 if os.environ.get("CEC3_F64") == "1" else torch.float32
 dx3 = 1.0 / RES3
@@ -220,7 +220,7 @@ def run_case(e3, label, full_aperture=False):
 
     Uses the memory-lean forward stepper (in-place fields + shell-only CPML):
     the general step_3d peaked at 12.1 GB on this grid, which fights the peer
-    session for a GPU. Lean is forward-only, which is all a validation
+    session for the GPU. Lean is forward-only, which is all a validation
     needs, and is parity-gated against step_3d in the core tests.
     """
     c = build_lean(nx, ny, nz, dx3, eps=e3, npml=NPML, dtype=DT3, device=DEV)

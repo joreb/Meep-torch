@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c2d): Y coupler from gdsfactory mmi_tapered -- FULL-domain
+"""Example (c2d): Y coupler from gdsfactory mmi_tapered -- FULL-domain
 characterization (no symmetry exploited, per user spec), 674 nm.
 
 Component: gdsfactory mmi_tapered at DEFAULT parameters (user spec),

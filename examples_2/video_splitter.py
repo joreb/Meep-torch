@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c2c): video of the v6 Y splitter (674 nm, full domain).
+"""Example (c2c): video of the v6 Y splitter (674 nm, full domain).
 
 Rebuilds the optimized FULL-domain design from c_y_splitter.py (exec of
 its setup head + c_y_splitter_rho.npy), drives the TE0 mode CW and

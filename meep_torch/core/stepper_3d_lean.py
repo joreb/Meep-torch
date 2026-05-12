@@ -244,7 +244,7 @@ class _StateView:
 def run_3d_lean(c: Lean3D, n_steps: int, *, source=None, monitors=(),
                 compile: bool = False):
     """``compile=True`` wraps the step in torch.compile: measured 2.19x
-    per-step speedup on an GPU (kernel fusion; ~1 min warmup)."""
+    per-step speedup on the GPU (kernel fusion; ~1 min warmup)."""
     monitors = list(monitors)
     acc = [None] * len(monitors)
     view = _StateView(c.F)

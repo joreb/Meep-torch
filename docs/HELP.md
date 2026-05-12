@@ -49,7 +49,7 @@ Ez = solve_fdfd_tm(eps, dx, freq, jz, npml, backend="scipy"|"pardiso"|"torch-sla
 - `solve_fdfd_tm_real_backend(..., backend="cudss"|"strumpack", device=...)`:
   FORWARD-ONLY complex solves through GPU direct solvers via the 2N
   real embedding. cuDSS is the working GPU backend (~8M-real-unknown
-  ceiling on a GPU); strumpack crashes at ring scale.
+  ceiling on the GPU); strumpack crashes at ring scale.
 - S-parameters need a REFERENCE solve (a current sheet radiates both
   ways): ratio device/reference, same port. Never quote absolute FDFD
   amplitudes.

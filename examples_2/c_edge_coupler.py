@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c1): inverse-designed edge coupler, gdsfactory-based.
+"""Example (c1): inverse-designed edge coupler, gdsfactory-based.
 
 User mandate: only gds-based designs. A gdsfactory taper (5.5 -> 4.0 um,
 length 10um) plus a 4 um output straight is rasterized through the gds adapter

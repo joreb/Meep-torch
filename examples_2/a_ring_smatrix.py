@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (a): SiN ring resonator, HALF-RING coupler extraction.
+"""Example (a): SiN ring resonator, HALF-RING coupler extraction.
 
 At 674 nm (red diode, USER spec) with W = 1.0 um: r = 50 um bends are
 lossless and the ring is effectively single-mode. W = 4.0 um was tried

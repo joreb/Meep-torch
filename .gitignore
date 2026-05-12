@@ -27,6 +27,7 @@ fdtdx/
 fdtd/
 femwell/
 meep/
+angler/
 "Photonics_Simulation/"
 
 # examples_2 plot-data caches (regenerable from the run via --replot; not for review)

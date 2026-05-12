@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c1b): video of the astigmatic laser beam coupling into the
+"""Example (c1b): video of the astigmatic laser beam coupling into the
 inverse-designed edge coupler.
 
 Rebuilds the final design from c_edge_coupler.py's saved state

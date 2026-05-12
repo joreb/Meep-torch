@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (a2): ADD-DROP ring -- assembled from the half-ring coupler
+"""Example (a2): ADD-DROP ring -- assembled from the half-ring coupler
 extraction (see a_ring_smatrix.py).
 
 gdsfactory ring_double(r=50, W=1, both gaps 0.2, 674 nm) has two IDENTICAL

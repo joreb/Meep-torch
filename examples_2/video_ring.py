@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (a3): video of light propagating in the SiN ring.
+"""Example (a3): video of light propagating in the SiN ring.
 
 Full gdsfactory racetrack ring (r=50, W=1, LC=4, gap 0.2) at 674 nm,
 CW TE0 mode drive on the bus AT the resonance found by the half-ring

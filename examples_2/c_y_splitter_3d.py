@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (c2b): TRUE-3D validation of the v6 Y splitter (674 nm).
+"""Example (c2b): TRUE-3D validation of the v6 Y splitter (674 nm).
 
 Rebuilds the v6 full-domain design (DEFAULT mmi1x2_with_sbend seed,
 no-symmetry optimization, c_y_splitter_rho.npy), extrudes it to the

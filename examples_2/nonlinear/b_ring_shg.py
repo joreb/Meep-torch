@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite (b): TFLN ring for SHG, pump 1348 nm -> second harmonic 674 nm.
+"""Example (b): TFLN ring for SHG, pump 1348 nm -> second harmonic 674 nm.
 
 Half-ring coupler extraction, same method as a_ring_smatrix.py (peer-approved
 template): only the LOWER HALF of the gdsfactory ring_single is simulated, the
