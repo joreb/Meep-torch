@@ -10,7 +10,7 @@ embedding, GPU direct factorization.
 
 Ring: r = 10 um DEMO ring (same W=1.2/gap=0.25/TFLN-effective indices
 as the b_ring design). The production r = 50 ring needs ~22M real
-unknowns at an SH-resolving RES and cuDSS on a GPU tops out
+unknowns at an SH-resolving RES and cuDSS on the GPU tops out
 near ~8M (measured ALLOC_FAILED at 9.4M) -- documented, not hidden.
 strumpack's cuda12x wheel is GPU-mandatory and its dense kernels crash
 at ring scale (cusolver internal error), so cuDSS it is.

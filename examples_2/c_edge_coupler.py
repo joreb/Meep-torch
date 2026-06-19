@@ -77,7 +77,7 @@ from meep_torch.ports.port import Port, validate_ports
 
 OUT = pathlib.Path(__file__).parent
 torch.set_num_threads(24)   # peer: up to 24 cores while rings held (taskset 0-23)
-# CUDA (peer 803d4094: GPU live, engine device support verified).
+# CUDA (peer 803d4094: CUDA live, engine device support verified).
 # component_to_eps rasterizes on CPU (numpy/shapely); move the Grid + eps to the
 # device after. decompose/plot take .cpu() tensors; solve_1d stays numpy/CPU.
 DEV = os.environ.get("CEC_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
