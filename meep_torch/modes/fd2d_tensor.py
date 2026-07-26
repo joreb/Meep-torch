@@ -74,6 +74,11 @@ def _yee_avg(i: int, j: int, comp: np.ndarray) -> np.ndarray:
         out = _avg_x(out)
     if i == 1 or j == 1:
         out = _avg_y(out)
+    # TODO(T9 deferred / v1): the off-diagonal cross-term paths (e.g. [0,1] /
+    # [1,0], the eps_xy / eps_yx Yee components) feed the tensorial solver and
+    # are NOT differentiated by the diagonal eigengrad backward, which handles
+    # only eps_xx / eps_yy / eps_zz. Full-tensor (anisotropic) autograd is left
+    # as future work; until then gradient inputs must stay diagonal.
     return out
 
 
