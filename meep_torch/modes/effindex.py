@@ -27,6 +27,15 @@ telecom). The brief's nominal 1e-6 bound is incompatible with those library
 materials and would reject them; 0.1 keeps the contract (reject Fake with
 n = 2 + 0.5j, imag eps ~ 2.0) while passing the standard lossless stack -- see
 Concerns.
+
+Taking the real part of a slightly-complex eps is the lossless approximation.
+Its relative neff error is second order in the imaginary part:
+``~ 0.5 * (eps_i / (2*eps_r))**2`` (the first-order perturbation from dropping
+``eps_i`` is imaginary and does not shift the real neff; the real shift is the
+second-order term). For cSi at 1.55 um (eps_r ~ 12.2, eps_i ~ 0.027) this is
+``~ 6e-7`` relative, well below solver discretization error; for SiO2 (eps_i ~
+6e-4) it is ``~ 3e-10``. The lossless stack therefore pays no measurable price
+for the real-part projection.
 """
 
 from __future__ import annotations
@@ -71,6 +80,11 @@ def _check_lossy(eps_c: complex) -> float:
 
 def _padded(stack: Sequence[tuple[float, object]]) -> list[tuple[float, object]]:
     """Extend first/last layers by ``CLADDING_PAD`` um."""
+    if len(stack) < 2:
+        raise ValueError(
+            f"need at least 2 layers in the stack to pad (cladding + core), "
+            f"got {len(stack)}"
+        )
     out = [(stack[0][0] + CLADDING_PAD, stack[0][1])]
     for thickness, mat in stack[1:-1]:
         out.append((thickness, mat))
@@ -151,6 +165,11 @@ def group_index(
     """
     if pol != "tm":
         raise NotImplementedError("group_index autograd supports only TM (pol='tm')")
+    # Validate lossless up front with the same check as neff_table (the torch
+    # real-eps path below does not run _check_lossy itself, so a lossy stack
+    # would otherwise be silently projected to its real part).
+    for _thickness, mat in stack:
+        _check_lossy(_material_eps_complex(mat, float(f0)))
     f = torch.tensor(float(f0), dtype=torch.float64, requires_grad=True)
     eps_line = _eps_line_torch(stack, f, dx)
     neff = solve_1d_tm_torch(eps_line, dx, f, k=1)[0]

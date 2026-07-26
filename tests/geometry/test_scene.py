@@ -55,3 +55,16 @@ def test_te_fields_harmonic_on_vertical_edge():
     assert rm.eps_te_xx[20, 15].item() == pytest.approx(h, rel=1e-9)
     assert rm.eps_te_yy[20, 15].item() == pytest.approx(a, rel=1e-9)
     assert rm.eps_tm[20, 15].item() == pytest.approx(a, rel=1e-9)
+
+
+def test_same_material_overlap_pole_mask_is_one():
+    """Two overlapping cSi rects over SiO2: the cSi pole mask must be 1.0 in the
+    overlap interior, not 2.0. Same-pole painter's compositing (``(1-cov)*old +
+    cov``) must not double-count a pole when two shapes carrying it overlap.
+    T4 review follow-up."""
+    a = rect(0.5, 0.5, 2.5, 2.5)
+    b = rect(1.5, 1.5, 3.5, 2.9)   # overlaps a; cell-aligned edges
+    rm = rasterize_scene([(a, cSi), (b, cSi)], G, background=SiO2)
+    idx = rm.poles.index(cSi.poles[0])
+    assert rm.pole_masks[idx][20, 20].item() == pytest.approx(1.0)   # overlap interior
+    assert rm.pole_masks[idx][2, 2].item() == pytest.approx(0.0)    # background, cSi absent

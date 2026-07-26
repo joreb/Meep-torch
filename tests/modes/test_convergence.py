@@ -39,7 +39,12 @@ def _observed_order(n1, n2, n3):
     """
     d_coarse = abs(n1 - n2)
     d_fine = abs(n2 - n3)
-    assert d_fine > 1e-12, f"consecutive difference |n2-n3|={d_fine:.3e} too small to estimate order"
+    if d_fine <= 1e-12:
+        pytest.fail(
+            f"consecutive difference |n2-n3|={d_fine:.3e} too small to estimate "
+            f"observed order (n1={n1:.12f}, n2={n2:.12f}, n3={n3:.12f}, "
+            f"|n1-n2|={d_coarse:.3e})"
+        )
     return math.log(d_coarse / d_fine) / math.log(2)
 
 
