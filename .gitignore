@@ -4,3 +4,13 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+
+# local agent-tooling artifacts (not part of the library)
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+CLAUDE.md
+pr.ps1
+ruvector.db
+.code-review-graph/
