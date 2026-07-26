@@ -248,13 +248,13 @@ def _set_initial_vec(Nx, Ny):
 
 
 # --------------------------------------------------------------------------- #
-# Diagonal solver core (ported from EigSolver.solver_diagonal).
+# Diagonal-solver matrix assembly (shared by the solver and the IFT autograd
+# path). Returns the (2N, 2N) matrix and a context dict of the pieces needed
+# by the implicit-function-theorem VJP (eps_xx/eps_yy/eps_zz Yee diagonals,
+# p_mu, p_partial, q_ep, der_mats, inv_eps_zz, inv_mu_zz).
 # --------------------------------------------------------------------------- #
-def _solver_diagonal(eps_tensor, mu_tensor, der_mats, num_modes, neff_guess, vec_init):
+def _assemble_diagonal(eps_tensor, mu_tensor, der_mats):
     N = eps_tensor.shape[-1]
-    # Phase 2 scope: dielectric eps only. tidy3d's "good conductor" branch
-    # (replaces |eps| > 0.9*|pec_val| cells with a PEC sentinel eps and enables
-    # a preconditioner) is intentionally NOT ported -- no metals in Phase 2.
     eps_xx = eps_tensor[0, 0, :]
     eps_yy = eps_tensor[1, 1, :]
     eps_zz = eps_tensor[2, 2, :]
@@ -280,6 +280,30 @@ def _solver_diagonal(eps_tensor, mu_tensor, der_mats, num_modes, neff_guess, vec
     ])
     qmat = q_ep + q_partial
     mat = p_mu @ qmat + p_partial @ q_ep
+    ctx = {
+        "eps_xx": eps_xx, "eps_yy": eps_yy, "eps_zz": eps_zz,
+        "mu_xx": mu_xx, "mu_yy": mu_yy, "mu_zz": mu_zz,
+        "inv_eps_zz": inv_eps_zz, "inv_mu_zz": inv_mu_zz,
+        "p_mu": p_mu, "p_partial": p_partial, "q_ep": q_ep, "q_partial": q_partial,
+        "qmat": qmat, "der_mats": der_mats,
+    }
+    return mat, ctx
+
+
+# --------------------------------------------------------------------------- #
+# Diagonal solver core (ported from EigSolver.solver_diagonal).
+# --------------------------------------------------------------------------- #
+def _solver_diagonal(eps_tensor, mu_tensor, der_mats, num_modes, neff_guess, vec_init):
+    N = eps_tensor.shape[-1]
+    # Phase 2 scope: dielectric eps only. tidy3d's "good conductor" branch
+    # (replaces |eps| > 0.9*|pec_val| cells with a PEC sentinel eps and enables
+    # a preconditioner) is intentionally NOT ported -- no metals in Phase 2.
+    mat, ctx = _assemble_diagonal(eps_tensor, mu_tensor, der_mats)
+    dxf, dxb, dyf, dyb = der_mats
+    inv_eps_zz = ctx["inv_eps_zz"]
+    inv_mu_zz = ctx["inv_mu_zz"]
+    qmat = ctx["qmat"]
+    q_ep = ctx["q_ep"]
 
     if _is_complex(eps_tensor) or _is_complex(mu_tensor) or any(_is_complex(f) for f in der_mats):
         mat = mat.astype(np.complex128)
@@ -460,3 +484,32 @@ def solve_2d(
     Ex_t = torch.from_numpy(np.ascontiguousarray(E[0]).astype(np.complex128))
     Ey_t = torch.from_numpy(np.ascontiguousarray(E[1]).astype(np.complex128))
     return Modes2D(neff=neff_t, Ex=Ex_t, Ey=Ey_t)
+
+
+def solve_2d_diff(
+    eps_cc,
+    dx: float,
+    f: float,
+    k: int = 1,
+    npml: tuple[int, int] = (0, 0),
+    dmin_pmc: tuple[bool, bool] = (False, False),
+    dmax_pmc: tuple[bool, bool] | None = None,
+    target_neff: float | None = None,
+) -> torch.Tensor:
+    """Differentiable entry point: real neff ``(k,)`` for the diagonal solver.
+
+    Wraps :class:`meep_torch.modes.eigengrad.EigsNeff` so that ``neff`` carries
+    an implicit-function-theorem adjoint gradient w.r.t. the cell-center
+    permittivity ``eps_cc`` (requires ``eps_cc.requires_grad``). The forward
+    runs the same numpy assembly + scipy shift-invert eigenproblem as
+    :func:`solve_2d`, so the returned real neff matches
+    ``solve_2d(...).neff.real`` to machine precision. Only the Hermitian
+    (npml = 0, lossless) case is gradient-supported; PML/lossy media raise in
+    backward. A degenerate-eigenvalue guard raises ``RuntimeError("degenerate
+    ...")`` in forward when two returned eigenvalues coincide (gradients
+    unavailable). See ``eigengrad.py`` for the IFT derivation.
+    """
+    from .eigengrad import EigsNeff
+
+    return EigsNeff.apply(eps_cc, float(dx), float(f), int(k), tuple(npml),
+                          tuple(dmin_pmc), dmax_pmc, target_neff)
