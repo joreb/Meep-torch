@@ -10,7 +10,7 @@ class Grid:
     ny: int
     dx: float
     courant: float = 0.5
-    dtype: torch.dtype = torch.float64
+    dtype: torch.dtype = torch.float64  # Phase 1 default: correctness-first (spec amended); float32 opt-in, validated at scale in tests/autodiff/test_float32.py
     device: str = "cpu"
 
     def __post_init__(self):

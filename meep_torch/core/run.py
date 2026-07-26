@@ -60,6 +60,9 @@ def _make_runner(step_fn, state_cls):
         step0 = 0
         while step0 < n_steps:
             k = min(checkpoint_every, n_steps - step0)
+            # Monitor sampling runs inside the checkpointed region by design:
+            # per-chunk partials are O(1)-sized outputs of the chunk, so memory
+            # stays bounded; they are recomputed on backward (cheap vs. field state).
             flat = checkpoint(chunk_fn, step0, k, *state, use_reentrant=False)
             state = state_cls(*flat[:n_tensors])
             absorb(list(flat[n_tensors:]))

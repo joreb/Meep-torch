@@ -1,7 +1,5 @@
 import math
 
-import torch
-
 from .grid import Grid
 
 
@@ -32,8 +30,10 @@ class LineSource:
     """Soft current source on the vertical segment x=ix, y in [j0, j1)."""
 
     def __init__(self, grid: Grid, ix: int, j0: int, j1: int, profile):
-        if not (0 <= ix < grid.nx and 0 <= j0 < j1 <= grid.ny):
-            raise ValueError(f"source segment out of bounds: ix={ix}, j0={j0}, j1={j1}")
+        if not 0 <= ix < grid.nx:
+            raise ValueError(f"source ix={ix} outside grid nx={grid.nx}")
+        if not 0 <= j0 < j1 <= grid.ny:
+            raise ValueError(f"source segment j0={j0}, j1={j1} invalid for ny={grid.ny}")
         self.profile = profile
         self.dt = grid.dt
         mask = grid.zeros(grid.nx, grid.ny)
