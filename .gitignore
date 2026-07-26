@@ -14,3 +14,7 @@ CLAUDE.md
 pr.ps1
 ruvector.db
 .code-review-graph/
+
+# meep upstream source copied in as read-only reference
+reference/
+pr.ps1
