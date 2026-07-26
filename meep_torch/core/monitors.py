@@ -68,3 +68,29 @@ class FluxMonitorTM:
         ReE, ImE, ReH, ImH = acc.unbind(1)
         s = (ReE * ReH + ImE * ImH).sum(-1) * dx      # Re(Ê Ĥ*) integrated
         return -0.5 * s if self.x_normal else 0.5 * s
+
+
+class FluxMonitorTE:
+    reduce = "sum"
+
+    def __init__(self, grid: Grid, freqs, *, ix: int, lo: int, hi: int):
+        if not (1 <= ix < grid.nx - 1):
+            raise ValueError(f"ix={ix} must be interior")
+        self.ix, self.lo, self.hi = ix, lo, hi
+        self.dt = grid.dt
+        self.freqs = torch.tensor(freqs, dtype=grid.dtype, device=grid.device)
+
+    def sample(self, state, t_idx: int) -> torch.Tensor:
+        E = state.Ey[self.ix, self.lo : self.hi]
+        H = 0.5 * (state.Hz[self.ix - 1, self.lo : self.hi] + state.Hz[self.ix, self.lo : self.hi])
+        # step_te advances E to (t_idx+1/2)*dt and Hz to (t_idx+1)*dt
+        tE = (t_idx + 0.5) * self.dt
+        tH = (t_idx + 1.0) * self.dt
+        w = 2 * torch.pi * self.freqs[:, None]
+        return self.dt * torch.stack(
+            [torch.cos(w * tE) * E, -torch.sin(w * tE) * E,
+             torch.cos(w * tH) * H, -torch.sin(w * tH) * H], dim=1)
+
+    def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
+        ReE, ImE, ReH, ImH = acc.unbind(1)
+        return 0.5 * (ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sx = +Ey*Hz
