@@ -9,6 +9,13 @@ from meep_torch.core.stepper import init_tm_state
 
 F0 = 0.25          # fundamental; THG at 0.75 still resolved at dx=0.02
 
+# Settling budget: ramp completes at step ~4000 (t_ramp/dt); source→probe travel
+# time ~1800 steps (600 cells * sqrt(eps_inf=2.25) / courant=0.5).  Field at
+# ix=700 is not periodic until ~step 8000.  n_steps=16000 / steady=series[10000:]
+# gives a clean 6000-step window well past settling (~8.2 THG ratio, ±30% ok).
+_N_STEPS = 16000
+_STEADY_START = 10000
+
 
 def probe_spectrum_at(amp: float) -> tuple[float, float]:
     g = Grid(nx=1000, ny=8, dx=0.02)
@@ -24,8 +31,8 @@ def probe_spectrum_at(amp: float) -> tuple[float, float]:
     src = LineSource(g, ix=100, j0=0, j1=8, profile=Scaled(CWRamp(F0, 40.0), amp))
     probe = PointProbe(700, 4)
     s = init_tm_state(g, y_pmc=True)
-    _, (series,) = run_tm(s, m, 8000, source=src, monitors=[probe])
-    steady = series[4000:]                      # discard ramp transient
+    _, (series,) = run_tm(s, m, _N_STEPS, source=src, monitors=[probe])
+    steady = series[_STEADY_START:]               # discard ramp + travel transient
     spec = torch.fft.rfft(steady).abs()
     freqs = torch.fft.rfftfreq(len(steady), g.dt)
     def peak(f):
@@ -47,8 +54,8 @@ def test_thg_absent_without_chi3():
     src = LineSource(g, ix=100, j0=0, j1=8, profile=CWRamp(F0, 40.0))
     probe = PointProbe(700, 4)
     s = init_tm_state(g, y_pmc=True)
-    _, (series,) = run_tm(s, m, 8000, source=src, monitors=[probe])
-    steady = series[4000:]
+    _, (series,) = run_tm(s, m, _N_STEPS, source=src, monitors=[probe])
+    steady = series[_STEADY_START:]
     spec = torch.fft.rfft(steady).abs()
     freqs = torch.fft.rfftfreq(len(steady), g.dt)
     i0 = (freqs - F0).abs().argmin()
