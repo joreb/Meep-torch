@@ -58,6 +58,17 @@ def apply_bend(eps_cc, dx: float, radius: float, center_x: float):
     """Apply the bend Jacobian to the cell-center eps (the eps_zz component:
     ``eps_zz' = eps_zz * dwdz``). Returns the modified cell-center eps as the
     same array type as the input (torch.Tensor or numpy.ndarray).
+
+    WARNING: this convenience helper returns ONLY the eps_zz (cell-center)
+    scaling. The full per-component bend contraction (eps_xx/eps_yy divided by
+    dwdz, eps_zz multiplied) is applied inside ``fd2d.solve_2d`` when
+    ``bend_radius`` is passed. Do NOT combine ``apply_bend`` output with
+    ``solve_2d(..., bend_radius=...)`` -- that double-scales eps_zz. Either use
+    ``solve_2d(bend_radius=...)`` (full contraction, preferred) or feed
+    ``apply_bend`` output into ``solve_2d`` WITHOUT ``bend_radius`` (eps_zz-only
+    scaling only), but never both. Kept in ``__all__`` as an explicit
+    cell-center diagnostic helper; the double-scaling hazard is documented here
+    rather than dropping the function.
     """
     eps_np = np.asarray(eps_cc, dtype=np.float64)
     Nx, Ny = eps_np.shape
