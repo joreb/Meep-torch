@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 meep-torch contributors (original code)
 from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.stepper import step_tm
