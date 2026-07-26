@@ -19,7 +19,9 @@ Note on distribution: files remain individually reusable under their declared
 licenses. A distribution of the combined package that includes GPL-licensed
 files must comply with the corresponding GPL terms for the combined work.
 Downstream users who need a pure-MIT subset can take exactly the files marked
-MIT.
+MIT. The package currently ships only MIT-licensed files; the pyproject license
+expression will gain GPL terms if and when GPL-derived ports (femwell/MPB,
+Phase 4+) actually land in the wheel.
 
 Proprietary reference material (tidy3d-extras binary) is never included in any
 form; it is used only as an external test oracle on machines where it is
