@@ -15,8 +15,9 @@ from meep_torch.modes.fd2d import solve_2d
 #   - domain 1 x 1, core box(0, 0, 0.5, 0.5) in the corner, wavelength = 1.5 um
 #   - metallic (PEC) on left + right (x walls); natural (PMC) on top + bottom
 #     (y walls) in femwell's FEM. Our solver imposes PMC at ymin via dmin_pmc and
-#     PEC at ymax (tidy3d derivative layout supports PMC only at the low-index
-#     side); see task-7-report for the resulting approximation.
+#     PMC at ymax via dmax_pmc (the high-side mirror _apply_max_pmc doubles the
+#     forward-derivative max-face diagonal, since tidy3d's derivative layout only
+#     encodes PMC at the low-index side); see task-7-report for the approximation.
 #
 # Per-case tolerance: the strong-contrast case (eps=8) converges to the Hadley
 # reference under grid refinement (n=200 |err| ~1.5e-3), so abs=2e-3. The
