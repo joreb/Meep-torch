@@ -13,7 +13,7 @@ license of its source. Full license texts live in `LICENSES/`.
 | Overlap/effective-area calculators (if ported, Phase 4) | GPL-3.0-only | femwell (© Helge Gehring) |
 
 Every ported file carries an attribution header naming the source project, its
-original license, and the exact upstream commit it was ported from.
+copyright holders, and its original license.
 
 Note on distribution: files remain individually reusable under their declared
 licenses. A distribution of the combined package that includes GPL-licensed
