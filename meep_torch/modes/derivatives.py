@@ -2,6 +2,7 @@
 # Copyright (c) 2021 Flexcompute
 # Copyright (c) 2019 Tyler Hughes
 # Derived from the ceviche package (https://github.com/fancompute/ceviche).
+# Adaptations (c) 2026 meep-torch contributors, MIT.
 # Finite-difference derivatives and PML absorption operators expressed as sparse matrices.
 # Ported verbatim from tidy3d.components.mode.derivatives (MIT, per-file LICENSE in that
 # directory); tidy3d imports replaced with local constants.
