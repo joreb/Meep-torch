@@ -1,7 +1,9 @@
 from typing import NamedTuple
 
 import torch
+import torch.nn.functional as F
 
+from .coeffs import TMCoeffs
 from .grid import Grid
 
 
@@ -33,3 +35,51 @@ def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False) -> TMState:
         psi_Hyx=grid.zeros(nx - 2, ny_e),
         psi_Hxy=grid.zeros(nx - 2, ny_e),
     )
+
+
+def step_tm(
+    state: TMState,
+    m: TMCoeffs,
+    src_amp=0.0,
+    src_mask: torch.Tensor | None = None,
+) -> TMState:
+    dt, dx = m.dt, m.dx
+
+    # --- H update (from Ez at time n) ---
+    dEz_dy = (state.Ez[:, 1:] - state.Ez[:, :-1]) / dx            # (nx, ny-1)
+    psi_Ezy = m.b_hy * state.psi_Ezy + m.a_hy * dEz_dy
+    Hx = state.Hx - dt * (dEz_dy / m.k_hy + psi_Ezy)
+
+    dEz_dx = (state.Ez[1:, :] - state.Ez[:-1, :]) / dx            # (nx-1, ny)
+    psi_Ezx = m.b_hx * state.psi_Ezx + m.a_hx * dEz_dx
+    Hy = state.Hy + dt * (dEz_dx / m.k_hx + psi_Ezx)
+
+    # --- D update (from H at n+1/2) ---
+    if m.y_pmc:
+        Hx_pad = F.pad(Hx, (1, 1))                                # PMC: H=0 beyond wall
+        dHx_dy = (Hx_pad[1:-1, 1:] - Hx_pad[1:-1, :-1]) / dx      # (nx-2, ny)
+        dHy_dx = (Hy[1:, :] - Hy[:-1, :]) / dx                    # (nx-2, ny)
+        pad_spec = (0, 0, 1, 1)                                   # pad x only
+    else:
+        dHx_dy = (Hx[1:-1, 1:] - Hx[1:-1, :-1]) / dx              # (nx-2, ny-2)
+        dHy_dx = (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / dx              # (nx-2, ny-2)
+        pad_spec = (1, 1, 1, 1)
+
+    psi_Hyx = m.b_ex * state.psi_Hyx + m.a_ex * dHy_dx
+    psi_Hxy = m.b_ey * state.psi_Hxy + m.a_ey * dHx_dy
+    curl = dHy_dx / m.k_ex + psi_Hyx - dHx_dy / m.k_ey - psi_Hxy
+    Dz = state.Dz + dt * F.pad(curl, pad_spec)
+    if src_mask is not None:
+        Dz = Dz + dt * src_amp * src_mask
+
+    # --- ADE Lorentz poles: P(n+1) = c1 P(n) + c2 P(n-1) + c3 Ez(n) ---
+    P_new = m.c1 * state.P_cur + m.c2 * state.P_prev + m.c3 * state.Ez
+
+    # --- E from D (instantaneous Kerr via fixed point) ---
+    rhs = Dz - P_new.sum(0)
+    Ez = rhs / m.eps_inf
+    if m.has_kerr:
+        for _ in range(3):
+            Ez = rhs / (m.eps_inf + m.chi3 * Ez * Ez)
+
+    return TMState(Ez, Hx, Hy, Dz, P_new, state.P_cur, psi_Ezy, psi_Ezx, psi_Hyx, psi_Hxy)
