@@ -36,3 +36,4 @@ examples_2/*_data.npz
 # all dot-directories (agent tooling, caches, venvs)
 .*/
 !.git/
+.ua/

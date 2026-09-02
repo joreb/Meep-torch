@@ -1,19 +1,38 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""device-suite: GDSII exports -- ring (a), SiN + LiNbO3 rings (b), and the
-two inverse designs (c, binarized density -> contour polygons).
 
-Run: uv run python examples_2/export_gds.py
-"""
+# %% [markdown]
+# # Device-suite GDSII exports
+#
+# device-suite: GDSII exports -- ring (a), SiN + LiNbO3 rings (b), and the
+# inverse designs (c, binarized density -> contour polygons).
+#
+# Run: `uv run python examples_2/export_gds.py`
+# (each GDS lands in the corresponding device folder's `output/` subdirectory)
+
+# %%
 import pathlib
-import sys
 
 import gdsfactory as gf
 import numpy as np
 import torch
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
-OUT = pathlib.Path(__file__).parent
+EX2 = pathlib.Path(__file__).parent
+
+
+def _out(device_dir):
+    d = EX2 / device_dir / "output"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# %% [markdown]
+# ## Ring exports (a, b)
+# gdsfactory ring_single/ring_double flattened and remapped onto the SiN
+# layer (4, 0) -- the fab-deck convention; the LiNbO3 copy keeps the same
+# layer, its material assignment lives in the deck.
+
+# %%
 gf.gpdk.PDK.activate()
 
 # All waveguide geometry goes on the SiN layer (4, 0) in every GDS
@@ -32,37 +51,66 @@ def _ring_gds(radius, gap, width, length_x=0.01, double=False):
 
 
 # (a): 674 nm devices -- W=1 um, r=50, racetrack coupler LC=4, gap 0.2
-_ring_gds(50.0, 0.2, 1.0, length_x=4.0).write_gds(OUT / "a_ring_SiN.gds")
+_ring_gds(50.0, 0.2, 1.0, length_x=4.0).write_gds(_out("ring") / "a_ring_SiN.gds")
 _ring_gds(50.0, 0.2, 1.0, length_x=4.0, double=True).write_gds(
-    OUT / "a_ring_adddrop_SiN.gds")
+    _out("ring") / "a_ring_adddrop_SiN.gds")
 # (b): poled TFLN SHG ring -- r=50, W=1.2 ridge, single bus gap 0.25
 # (QPM poling is a fab layer, not drawn here)
 _ring_gds(50.0, 0.25, 1.2, length_x=4.0).write_gds(
-    OUT / "b_ring_Lithium_Niobate.gds")
+    _out("ring_nonlinear") / "b_ring_Lithium_Niobate.gds")
 print("export_gds  rings written (a_ring_SiN, a_ring_adddrop_SiN, b_ring_Lithium_Niobate)")
 
 
-def design_to_gds(npz_or_recompute, name):
-    """Binarized design density -> contour polygons -> GDS."""
+# %% [markdown]
+# ## Density -> polygon conversion
+# contourf (not contour) closes regions along the domain boundary and turns
+# cladding islands into hole rings; gdstk.boolean cuts the holes into
+# GDS-legal keyholes.
+
+# %%
+def design_to_gds(npz_or_recompute, name, out_dir):
+    """Binarized design density -> filled-region polygons -> GDS.
+
+    contourf (NOT contour) so regions touching the domain boundary come back
+    closed along it, and cladding islands come back as hole rings instead of
+    solid polygons; gdstk.boolean cuts the holes into GDS-legal keyholes.
+    """
+    import gdstk
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     rho, extent = npz_or_recompute
     fig, ax = plt.subplots()
-    cs = ax.contour(rho.T, levels=[0.5],
-                    extent=[extent[0], extent[1], extent[2], extent[3]])
+    cs = ax.contourf(rho.T, levels=[0.5, rho.max() + 1.0],
+                     extent=[extent[0], extent[1], extent[2], extent[3]])
+    exteriors, holes = [], []
+    for path in cs.get_paths():
+        for ring in path.to_polygons():
+            r = np.asarray(ring)
+            if len(r) < 3:
+                continue
+            rn = np.roll(r, -1, axis=0)   # shoelace (np.cross 2D gone in numpy 2)
+            signed2 = float((r[:, 0] * rn[:, 1] - rn[:, 0] * r[:, 1]).sum())
+            (exteriors if signed2 > 0 else holes).append(gdstk.Polygon(r))
+    plt.close(fig)
     comp = gf.Component(name)
     npoly = 0
-    for path in cs.allsegs[0]:
-        if len(path) >= 3:
-            comp.add_polygon(np.asarray(path), layer=SIN_LAYER)
+    for p in gdstk.boolean(exteriors, holes, "not"):
+        if len(p.points) >= 3:
+            comp.add_polygon(np.asarray(p.points), layer=SIN_LAYER)
             npoly += 1
-    plt.close(fig)
-    comp.write_gds(OUT / f"{name}.gds")
+    comp.write_gds(out_dir / f"{name}.gds")
     print(f"export_gds  {name}.gds written ({npoly} polygons)")
 
 
+# %% [markdown]
+# ## Inverse-design exports (c)
+# Each c script saves its final rho as npy in its own output/ folder; here the
+# PROJECTED density (conic filter + tanh projection at final beta -- the
+# fabricated shape) is contoured with that script's pixel and filter settings.
+
+# %%
 # --- (c): recompute the two final designs deterministically ---
 def final_design(script):
     """Re-run the optimization script's deterministic loop is expensive;
@@ -80,16 +128,17 @@ def final_design(script):
 # with each script's own design-pixel size and filter parameters.
 from meep_torch.adjoint.filters import conic_filter, tanh_projection
 
-DESIGNS = {                       # name -> (pixel_um, filter_radius, grid_dx)
-    "c_edge_coupler": (0.10, 0.15, 1 / 20),
-    "c_y_splitter": (0.08, 0.12, 1 / 30),
-    "c_y_coupler_mmi_tapered": (0.08, 0.12, 1 / 30),
+DESIGNS = {                # name -> (device_dir, pixel_um, filter_radius, grid_dx)
+    "c_edge_coupler": ("edge_coupler", 0.10, 0.15, 1 / 20),
+    "c_y_splitter": ("y_splitter", 0.08, 0.12, 1 / 30),
+    "c_y_coupler_mmi_tapered": ("mmi_coupler", 0.08, 0.12, 1 / 30),
 }
-for name, (px, fr, dx) in DESIGNS.items():
-    npy = OUT / f"{name}_rho.npy"
+for name, (ddir, px, fr, dx) in DESIGNS.items():
+    npy = _out(ddir) / f"{name}_rho.npy"
     if not npy.exists():
-        print(f"export_gds  {name}_rho.npy missing -- run examples_2/{name}.py first")
+        print(f"export_gds  {name}_rho.npy missing -- "
+              f"run examples_2/{ddir}/{name}.py first")
         continue
     rho = torch.from_numpy(np.load(npy)).to(torch.float64)
     r = tanh_projection(conic_filter(rho, fr, dx), 64.0).numpy()
-    design_to_gds((r, (0, r.shape[0] * px, 0, r.shape[1] * px)), name)
+    design_to_gds((r, (0, r.shape[0] * px, 0, r.shape[1] * px)), name, _out(ddir))

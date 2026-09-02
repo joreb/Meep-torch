@@ -13,9 +13,13 @@ class LorentzPole(NamedTuple):
 
 
 def analytic_eps(eps_inf: float, poles: Sequence[LorentzPole], f: float) -> complex:
+    # pole = (fn, gamma, sigma) or (fn, gamma, sigma, fc): coupling frequency
+    # fc defaults to fn (Lorentz); fn=0, fc=fp is Drude -- the same 4-tuple
+    # convention as coeffs._pole_recurrence.
     eps = complex(eps_inf)
     for p in poles:
-        eps += p.sigma * p.fn**2 / (p.fn**2 - f**2 - 1j * f * p.gamma)
+        fc = p[3] if len(p) > 3 else p[0]
+        eps += p[2] * fc**2 / (p[0]**2 - f**2 - 1j * f * p[1])
     return eps
 
 

@@ -74,7 +74,7 @@ def test_metal_cavity_ldos():
     sim = make_sim()
     n1 = sim.dft_ldos(fcen, 0.2, 3)             # reuse: records center Ez series
     sim.run(until=400)
-    acc, _, _ = sim._last_acc[n1]
+    acc, _, _ = sim._last_acc[n1.name]          # dft_ldos returns a DftLdos object
     series = acc.detach().numpy()
     tail = series[int(round(60.0 / sim.grid.dt)):]
     modes = [m for m in harminv(tail, sim.grid.dt, 0.55, 0.8) if m.amp > 1e-6]

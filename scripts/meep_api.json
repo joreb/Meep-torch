@@ -1,0 +1,4019 @@
+{
+ "classes": {
+  "Absorber": {
+   "init_params": [
+    "thickness",
+    "direction",
+    "side",
+    "R_asymptotic",
+    "mean_stretch",
+    "pml_profile"
+   ],
+   "methods": [],
+   "bases": [
+    "PML"
+   ],
+   "module": "meep.simulation"
+  },
+  "Animate2D": {
+   "init_params": [
+    "sim",
+    "fields",
+    "f",
+    "realtime",
+    "normalize",
+    "plot_modifiers",
+    "update_epsilon",
+    "nb",
+    "customization_args"
+   ],
+   "methods": [
+    "grab_frame",
+    "reset",
+    "set_figure",
+    "to_gif",
+    "to_jshtml",
+    "to_mp4"
+   ],
+   "bases": [],
+   "module": "meep.visualization"
+  },
+  "BinaryPartition": {
+   "init_params": [
+    "data",
+    "split_dir",
+    "split_pos",
+    "left",
+    "right",
+    "proc_id"
+   ],
+   "methods": [
+    "numchunks",
+    "print"
+   ],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "Block": {
+   "init_params": [
+    "size",
+    "e1",
+    "e2",
+    "e3",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "GeometricObject"
+   ],
+   "module": "meep.geom"
+  },
+  "ComplexVector": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "resize",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "Cone": {
+   "init_params": [
+    "radius",
+    "radius2",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "Cylinder"
+   ],
+   "module": "meep.geom"
+  },
+  "ContinuousSource": {
+   "init_params": [
+    "frequency",
+    "start_time",
+    "end_time",
+    "width",
+    "fwidth",
+    "cutoff",
+    "slowness",
+    "wavelength",
+    "is_integrated",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "SourceTime"
+   ],
+   "module": "meep.source"
+  },
+  "CustomSource": {
+   "init_params": [
+    "src_func",
+    "start_time",
+    "end_time",
+    "is_integrated",
+    "center_frequency",
+    "fwidth",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "SourceTime"
+   ],
+   "module": "meep.source"
+  },
+  "Cylinder": {
+   "init_params": [
+    "radius",
+    "axis",
+    "height",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "GeometricObject"
+   ],
+   "module": "meep.geom"
+  },
+  "DftDataVector": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "DftEnergy": {
+   "init_params": [
+    "func",
+    "args"
+   ],
+   "methods": [],
+   "bases": [
+    "DftObj"
+   ],
+   "module": "meep.simulation"
+  },
+  "DftFields": {
+   "init_params": [
+    "func",
+    "args"
+   ],
+   "methods": [],
+   "bases": [
+    "DftObj"
+   ],
+   "module": "meep.simulation"
+  },
+  "DftFlux": {
+   "init_params": [
+    "func",
+    "args"
+   ],
+   "methods": [],
+   "bases": [
+    "DftObj"
+   ],
+   "module": "meep.simulation"
+  },
+  "DftForce": {
+   "init_params": [
+    "func",
+    "args"
+   ],
+   "methods": [],
+   "bases": [
+    "DftObj"
+   ],
+   "module": "meep.simulation"
+  },
+  "DftNear2Far": {
+   "init_params": [
+    "func",
+    "args"
+   ],
+   "methods": [
+    "flux"
+   ],
+   "bases": [
+    "DftObj"
+   ],
+   "module": "meep.simulation"
+  },
+  "DftObj": {
+   "init_params": [
+    "func",
+    "args"
+   ],
+   "methods": [
+    "swigobj_attr"
+   ],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "DiffractedPlanewave": {
+   "init_params": [
+    "g",
+    "axis",
+    "s",
+    "p"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "DoubleVector": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "resize",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "DrudeSusceptibility": {
+   "init_params": [
+    "frequency",
+    "gamma",
+    "kwargs"
+   ],
+   "methods": [
+    "eval_susceptibility"
+   ],
+   "bases": [
+    "Susceptibility"
+   ],
+   "module": "meep.geom"
+  },
+  "EigenModeSource": {
+   "init_params": [
+    "src",
+    "center",
+    "volume",
+    "eig_lattice_size",
+    "eig_lattice_center",
+    "eig_vol",
+    "component",
+    "direction",
+    "eig_band",
+    "eig_kpoint",
+    "eig_match_freq",
+    "eig_parity",
+    "eig_resolution",
+    "eig_tolerance",
+    "kwargs"
+   ],
+   "methods": [
+    "add_source",
+    "eig_power"
+   ],
+   "bases": [
+    "Source"
+   ],
+   "module": "meep.source"
+  },
+  "Ellipsoid": {
+   "init_params": [
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "Block"
+   ],
+   "module": "meep.geom"
+  },
+  "EnergyRegion": {
+   "init_params": [
+    "center",
+    "size",
+    "direction",
+    "weight",
+    "volume"
+   ],
+   "methods": [],
+   "bases": [
+    "FluxRegion"
+   ],
+   "module": "meep.simulation"
+  },
+  "FluxRegion": {
+   "init_params": [
+    "center",
+    "size",
+    "direction",
+    "weight",
+    "volume"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "ForceRegion": {
+   "init_params": [
+    "center",
+    "size",
+    "direction",
+    "weight",
+    "volume"
+   ],
+   "methods": [],
+   "bases": [
+    "FluxRegion"
+   ],
+   "module": "meep.simulation"
+  },
+  "FragmentStatsVector": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "resize",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "FreqRange": {
+   "init_params": [
+    "args",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "tuple"
+   ],
+   "module": "meep.geom"
+  },
+  "GaussianBeam2DSource": {
+   "init_params": [
+    "src",
+    "center",
+    "volume",
+    "component",
+    "beam_x0",
+    "beam_kdir",
+    "beam_w0",
+    "beam_E0",
+    "kwargs"
+   ],
+   "methods": [
+    "add_source",
+    "get_fields",
+    "get_r_rhat",
+    "green2d",
+    "incoming_mask"
+   ],
+   "bases": [
+    "GaussianBeam3DSource"
+   ],
+   "module": "meep.source"
+  },
+  "GaussianBeam3DSource": {
+   "init_params": [
+    "src",
+    "center",
+    "volume",
+    "component",
+    "beam_x0",
+    "beam_kdir",
+    "beam_w0",
+    "beam_E0",
+    "kwargs"
+   ],
+   "methods": [
+    "add_source"
+   ],
+   "bases": [
+    "Source"
+   ],
+   "module": "meep.source"
+  },
+  "GaussianBeamSource": {
+   "init_params": [
+    "src",
+    "center",
+    "volume",
+    "component",
+    "beam_x0",
+    "beam_kdir",
+    "beam_w0",
+    "beam_E0",
+    "kwargs"
+   ],
+   "methods": [
+    "add_source"
+   ],
+   "bases": [
+    "GaussianBeam3DSource"
+   ],
+   "module": "meep.source"
+  },
+  "GaussianSource": {
+   "init_params": [
+    "frequency",
+    "width",
+    "fwidth",
+    "start_time",
+    "cutoff",
+    "is_integrated",
+    "wavelength",
+    "kwargs"
+   ],
+   "methods": [
+    "fourier_transform"
+   ],
+   "bases": [
+    "SourceTime"
+   ],
+   "module": "meep.source"
+  },
+  "GeometricObject": {
+   "init_params": [
+    "material",
+    "center",
+    "epsilon_func",
+    "label"
+   ],
+   "methods": [
+    "info",
+    "shift"
+   ],
+   "bases": [],
+   "module": "meep.geom"
+  },
+  "GridVolumeVector": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "resize",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "GyrotropicDrudeSusceptibility": {
+   "init_params": [
+    "bias",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "DrudeSusceptibility"
+   ],
+   "module": "meep.geom"
+  },
+  "GyrotropicLorentzianSusceptibility": {
+   "init_params": [
+    "bias",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "LorentzianSusceptibility"
+   ],
+   "module": "meep.geom"
+  },
+  "GyrotropicSaturatedSusceptibility": {
+   "init_params": [
+    "bias",
+    "frequency",
+    "gamma",
+    "alpha",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "Susceptibility"
+   ],
+   "module": "meep.geom"
+  },
+  "Harminv": {
+   "init_params": [
+    "c",
+    "pt",
+    "fcen",
+    "df",
+    "mxbands"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "Identity": {
+   "init_params": [
+    "direction",
+    "phase"
+   ],
+   "methods": [],
+   "bases": [
+    "Symmetry"
+   ],
+   "module": "meep.simulation"
+  },
+  "IndexedSource": {
+   "init_params": [
+    "src",
+    "srcdata",
+    "amp_arr",
+    "needs_boundary_fix"
+   ],
+   "methods": [
+    "add_source"
+   ],
+   "bases": [
+    "Source"
+   ],
+   "module": "meep.source"
+  },
+  "IntVector": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "resize",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "Lattice": {
+   "init_params": [
+    "size",
+    "basis_size",
+    "basis1",
+    "basis2",
+    "basis3"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.geom"
+  },
+  "LorentzianSusceptibility": {
+   "init_params": [
+    "frequency",
+    "gamma",
+    "kwargs"
+   ],
+   "methods": [
+    "eval_susceptibility"
+   ],
+   "bases": [
+    "Susceptibility"
+   ],
+   "module": "meep.geom"
+  },
+  "MaterialGrid": {
+   "init_params": [
+    "grid_size",
+    "medium1",
+    "medium2",
+    "weights",
+    "grid_type",
+    "do_averaging",
+    "beta",
+    "eta",
+    "damping"
+   ],
+   "methods": [
+    "check_weights",
+    "update_weights"
+   ],
+   "bases": [],
+   "module": "meep.geom"
+  },
+  "Matrix": {
+   "init_params": [
+    "c1",
+    "c2",
+    "c3",
+    "diag",
+    "offdiag"
+   ],
+   "methods": [
+    "conj",
+    "determinant",
+    "getH",
+    "inverse",
+    "mm_mult",
+    "mv_mult",
+    "row",
+    "scale",
+    "transpose"
+   ],
+   "bases": [],
+   "module": "meep.geom"
+  },
+  "Medium": {
+   "init_params": [
+    "epsilon_diag",
+    "epsilon_offdiag",
+    "mu_diag",
+    "mu_offdiag",
+    "E_susceptibilities",
+    "H_susceptibilities",
+    "E_chi2_diag",
+    "E_chi3_diag",
+    "H_chi2_diag",
+    "H_chi3_diag",
+    "D_conductivity_diag",
+    "D_conductivity_offdiag",
+    "B_conductivity_diag",
+    "B_conductivity_offdiag",
+    "epsilon",
+    "index",
+    "mu",
+    "chi2",
+    "chi3",
+    "D_conductivity",
+    "B_conductivity",
+    "E_chi2",
+    "E_chi3",
+    "H_chi2",
+    "H_chi3",
+    "valid_freq_range"
+   ],
+   "methods": [
+    "epsilon",
+    "mu",
+    "rotate",
+    "transform"
+   ],
+   "bases": [],
+   "module": "meep.geom"
+  },
+  "Mesh": {
+   "init_params": [
+    "vertices",
+    "triangles",
+    "center",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "GeometricObject"
+   ],
+   "module": "meep.geom"
+  },
+  "Mirror": {
+   "init_params": [
+    "direction",
+    "phase"
+   ],
+   "methods": [],
+   "bases": [
+    "Symmetry"
+   ],
+   "module": "meep.simulation"
+  },
+  "ModeRegion": {
+   "init_params": [
+    "center",
+    "size",
+    "direction",
+    "weight",
+    "volume"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "MultilevelAtom": {
+   "init_params": [
+    "initial_populations",
+    "transitions",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "Susceptibility"
+   ],
+   "module": "meep.geom"
+  },
+  "Near2FarRegion": {
+   "init_params": [
+    "center",
+    "size",
+    "direction",
+    "weight",
+    "volume"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "NoisyDrudeSusceptibility": {
+   "init_params": [
+    "noise_amp",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "DrudeSusceptibility"
+   ],
+   "module": "meep.geom"
+  },
+  "NoisyLorentzianSusceptibility": {
+   "init_params": [
+    "noise_amp",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "LorentzianSusceptibility"
+   ],
+   "module": "meep.geom"
+  },
+  "PML": {
+   "init_params": [
+    "thickness",
+    "direction",
+    "side",
+    "R_asymptotic",
+    "mean_stretch",
+    "pml_profile"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "PadeDFT": {
+   "init_params": [
+    "c",
+    "vol",
+    "center",
+    "size",
+    "m",
+    "n",
+    "m_frac",
+    "n_frac",
+    "sampling_interval",
+    "start_time",
+    "stop_time"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "Prism": {
+   "init_params": [
+    "vertices",
+    "height",
+    "axis",
+    "center",
+    "sidewall_angle",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "GeometricObject"
+   ],
+   "module": "meep.geom"
+  },
+  "Rotate2": {
+   "init_params": [
+    "direction",
+    "phase"
+   ],
+   "methods": [],
+   "bases": [
+    "Symmetry"
+   ],
+   "module": "meep.simulation"
+  },
+  "Rotate4": {
+   "init_params": [
+    "direction",
+    "phase"
+   ],
+   "methods": [],
+   "bases": [
+    "Symmetry"
+   ],
+   "module": "meep.simulation"
+  },
+  "Simulation": {
+   "init_params": [
+    "cell_size",
+    "resolution",
+    "geometry",
+    "sources",
+    "eps_averaging",
+    "dimensions",
+    "boundary_layers",
+    "symmetries",
+    "force_complex_fields",
+    "default_material",
+    "m",
+    "bfast_scaled_k",
+    "k_point",
+    "kz_2d",
+    "extra_materials",
+    "material_function",
+    "epsilon_func",
+    "epsilon_input_file",
+    "progress_interval",
+    "subpixel_tol",
+    "subpixel_maxeval",
+    "loop_tile_base_db",
+    "loop_tile_base_eh",
+    "ensure_periodicity",
+    "num_chunks",
+    "Courant",
+    "accurate_fields_near_cylorigin",
+    "filename_prefix",
+    "output_volume",
+    "output_single_precision",
+    "geometry_center",
+    "force_all_components",
+    "split_chunks_evenly",
+    "chunk_layout",
+    "collect_stats"
+   ],
+   "methods": [
+    "add_dft_fields",
+    "add_energy",
+    "add_flux",
+    "add_force",
+    "add_mode_monitor",
+    "add_near2far",
+    "add_sources",
+    "change_k_point",
+    "change_m",
+    "change_sources",
+    "clear_dft_monitors",
+    "display_electric_energy",
+    "display_fluxes",
+    "display_forces",
+    "display_magnetic_energy",
+    "display_total_energy",
+    "dump",
+    "dump_chunk_layout",
+    "dump_fields",
+    "dump_structure",
+    "electric_energy_in_box",
+    "field_energy_in_box",
+    "flux_in_box",
+    "get_array",
+    "get_array_metadata",
+    "get_array_slice_dimensions",
+    "get_avg_chunk_communication_area",
+    "get_bfield",
+    "get_bfield_p",
+    "get_bfield_r",
+    "get_bfield_x",
+    "get_bfield_y",
+    "get_bfield_z",
+    "get_dfield",
+    "get_dfield_p",
+    "get_dfield_r",
+    "get_dfield_x",
+    "get_dfield_y",
+    "get_dfield_z",
+    "get_dft_array",
+    "get_dft_data",
+    "get_dpwr",
+    "get_efield",
+    "get_efield_p",
+    "get_efield_r",
+    "get_efield_x",
+    "get_efield_y",
+    "get_efield_z",
+    "get_eigenmode",
+    "get_eigenmode_coefficients",
+    "get_epsilon",
+    "get_epsilon_grid",
+    "get_epsilon_point",
+    "get_estimated_costs",
+    "get_estimated_memory_usage",
+    "get_farfield",
+    "get_farfields",
+    "get_field_point",
+    "get_filename_prefix",
+    "get_flux_data",
+    "get_force_data",
+    "get_hfield",
+    "get_hfield_p",
+    "get_hfield_r",
+    "get_hfield_x",
+    "get_hfield_y",
+    "get_hfield_z",
+    "get_hpwr",
+    "get_load_dump_dirname",
+    "get_max_chunk_communication_area",
+    "get_mode_data",
+    "get_mu",
+    "get_mu_point",
+    "get_near2far_data",
+    "get_sfield",
+    "get_sfield_p",
+    "get_sfield_r",
+    "get_sfield_x",
+    "get_sfield_y",
+    "get_sfield_z",
+    "get_source",
+    "get_timing_data",
+    "get_tot_pwr",
+    "h5topng",
+    "has_mu",
+    "init_sim",
+    "initialize_field",
+    "integrate2_field_function",
+    "integrate_field_function",
+    "load",
+    "load_chunk_layout",
+    "load_energy",
+    "load_fields",
+    "load_flux",
+    "load_flux_data",
+    "load_force",
+    "load_force_data",
+    "load_minus_energy",
+    "load_minus_flux",
+    "load_minus_flux_data",
+    "load_minus_force",
+    "load_minus_force_data",
+    "load_minus_mode",
+    "load_minus_mode_data",
+    "load_minus_near2far",
+    "load_minus_near2far_data",
+    "load_mode",
+    "load_mode_data",
+    "load_near2far",
+    "load_near2far_data",
+    "load_structure",
+    "magnetic_energy_in_box",
+    "max_abs_field_function",
+    "mean_time_spent_on",
+    "meep_time",
+    "modal_volume_in_box",
+    "output_component",
+    "output_components",
+    "output_dft",
+    "output_farfields",
+    "output_field_function",
+    "output_times",
+    "phase_in_material",
+    "plot2D",
+    "plot3D",
+    "plot_fields",
+    "print_times",
+    "require_dimensions",
+    "reset_meep",
+    "restart_fields",
+    "round_time",
+    "run",
+    "run_k_point",
+    "run_k_points",
+    "save_energy",
+    "save_flux",
+    "save_force",
+    "save_mode",
+    "save_near2far",
+    "set_boundary",
+    "set_epsilon",
+    "set_materials",
+    "solve_cw",
+    "solve_eigfreq",
+    "time_spent_on",
+    "timestep",
+    "use_output_directory",
+    "using_real_fields",
+    "visualize_chunks"
+   ],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "Size_t_Vector": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "resize",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "Source": {
+   "init_params": [
+    "src",
+    "component",
+    "center",
+    "volume",
+    "size",
+    "amplitude",
+    "amp_func",
+    "amp_func_file",
+    "amp_data"
+   ],
+   "methods": [
+    "add_source"
+   ],
+   "bases": [],
+   "module": "meep.source"
+  },
+  "SourceTime": {
+   "init_params": [
+    "is_integrated"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.source"
+  },
+  "Sphere": {
+   "init_params": [
+    "radius",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "GeometricObject"
+   ],
+   "module": "meep.geom"
+  },
+  "Susceptibility": {
+   "init_params": [
+    "sigma_diag",
+    "sigma_offdiag",
+    "sigma"
+   ],
+   "methods": [
+    "transform"
+   ],
+   "bases": [],
+   "module": "meep.geom"
+  },
+  "SwigPyIterator": {
+   "init_params": [
+    "args",
+    "kwargs"
+   ],
+   "methods": [
+    "advance",
+    "copy",
+    "decr",
+    "distance",
+    "equal",
+    "incr",
+    "next",
+    "previous",
+    "value"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "Symmetry": {
+   "init_params": [
+    "direction",
+    "phase"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "Transition": {
+   "init_params": [
+    "from_level",
+    "to_level",
+    "transition_rate",
+    "frequency",
+    "sigma_diag",
+    "gamma",
+    "pumping_rate"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep.geom"
+  },
+  "Vector3": {
+   "init_params": [
+    "x",
+    "y",
+    "z"
+   ],
+   "methods": [
+    "cdot",
+    "close",
+    "conj",
+    "cross",
+    "dot",
+    "norm",
+    "rotate",
+    "rotate_lattice",
+    "rotate_reciprocal",
+    "scale",
+    "unit"
+   ],
+   "bases": [],
+   "module": "meep.geom"
+  },
+  "Verbosity": {
+   "init_params": [
+    "cvar",
+    "name",
+    "initial_level"
+   ],
+   "methods": [
+    "add_verbosity_var",
+    "get",
+    "get_all",
+    "make_property",
+    "set"
+   ],
+   "bases": [],
+   "module": "meep.verbosity_mgr"
+  },
+  "Volume": {
+   "init_params": [
+    "center",
+    "size",
+    "dims",
+    "is_cylindrical",
+    "vertices"
+   ],
+   "methods": [
+    "get_edges",
+    "get_vertices",
+    "pt_in_volume"
+   ],
+   "bases": [],
+   "module": "meep.simulation"
+  },
+  "VolumeVector": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "Wedge": {
+   "init_params": [
+    "radius",
+    "wedge_angle",
+    "wedge_start",
+    "kwargs"
+   ],
+   "methods": [],
+   "bases": [
+    "Cylinder"
+   ],
+   "module": "meep.geom"
+  },
+  "absorber": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "binary_partition": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "get_plane",
+    "get_proc_id",
+    "is_leaf",
+    "left_tree",
+    "right_tree"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "boundary_region": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "boundary_region_assign",
+    "br_apply",
+    "check_ok"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "chunkloop_field_components": {
+   "init_params": [
+    "fc",
+    "cgrid",
+    "shift_phase",
+    "S",
+    "sn",
+    "num_fields",
+    "components"
+   ],
+   "methods": [
+    "update_values"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "cond_profile": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "continuous_src_time": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "clone",
+    "dipole",
+    "frequency",
+    "get_fwidth",
+    "is_equal",
+    "last_time",
+    "set_frequency"
+   ],
+   "bases": [
+    "src_time"
+   ],
+   "module": "meep"
+  },
+  "custom_py_src_time": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "clone",
+    "current",
+    "dipole",
+    "frequency",
+    "get_fwidth",
+    "is_equal",
+    "last_time",
+    "set_frequency",
+    "set_fwidth"
+   ],
+   "bases": [
+    "src_time"
+   ],
+   "module": "meep"
+  },
+  "custom_src_time": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "clone",
+    "current",
+    "dipole",
+    "frequency",
+    "get_fwidth",
+    "is_equal",
+    "last_time",
+    "set_frequency",
+    "set_fwidth"
+   ],
+   "bases": [
+    "src_time"
+   ],
+   "module": "meep"
+  },
+  "dft_chunk": {
+   "init_params": [
+    "fc_",
+    "is_",
+    "ie_",
+    "s0_",
+    "s1_",
+    "e0_",
+    "e1_",
+    "dV0_",
+    "dV1_",
+    "c_",
+    "use_centered_grid",
+    "phase_factor",
+    "shift_",
+    "S_",
+    "sn_",
+    "data_"
+   ],
+   "methods": [
+    "get_decimation_factor",
+    "maxomega",
+    "norm2",
+    "process_dft_component",
+    "scale_dft",
+    "update_dft"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "dft_data": {
+   "init_params": [
+    "freqs",
+    "components",
+    "volumes"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "dft_energy": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "electric",
+    "load_hdf5",
+    "magnetic",
+    "remove",
+    "save_hdf5",
+    "scale_dfts",
+    "total"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "dft_fields": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "fourier_sourcedata",
+    "remove",
+    "scale_dfts"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "dft_flux": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "complexflux",
+    "flux",
+    "invalidate_eigenmode_cache",
+    "load_hdf5",
+    "remove",
+    "save_hdf5",
+    "scale_dfts"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "dft_force": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "force",
+    "load_hdf5",
+    "remove",
+    "save_hdf5",
+    "scale_dfts"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "dft_near2far": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "farfield",
+    "farfield_lowlevel",
+    "flux",
+    "get_farfields_array",
+    "load_hdf5",
+    "near_sourcedata",
+    "remove",
+    "save_farfields",
+    "save_hdf5",
+    "scale_dfts"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "diffractedplanewave": {
+   "init_params": [
+    "g",
+    "axis",
+    "s",
+    "p"
+   ],
+   "methods": [
+    "get_axis",
+    "get_g",
+    "get_p",
+    "get_s"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "eigenmode_data": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "fields": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "add_dft",
+    "add_dft_energy",
+    "add_dft_fields",
+    "add_dft_flux",
+    "add_dft_flux_box",
+    "add_dft_flux_plane",
+    "add_dft_force",
+    "add_dft_near2far",
+    "add_dft_pt",
+    "add_eigenmode_source",
+    "add_flux_plane",
+    "add_flux_vol",
+    "add_mode_monitor",
+    "add_point_source",
+    "add_srcdata",
+    "add_volume_source",
+    "am_now_working_on",
+    "casimir_stress_dct_integral",
+    "change_m",
+    "clear_dft_monitors",
+    "count_volume",
+    "dft_maxfreq",
+    "dft_monitor_size",
+    "dft_norm",
+    "do_get_array_slice",
+    "dump",
+    "electric_energy_in_box",
+    "electric_energy_max_in_box",
+    "electric_energy_weighted_integral",
+    "electric_sqr_weighted_integral",
+    "energy_in_box",
+    "equal_layout",
+    "field_energy",
+    "field_energy_in_box",
+    "finished_working",
+    "flux_in_box",
+    "flux_in_box_wrongH",
+    "get_array_metadata",
+    "get_array_slice",
+    "get_array_slice_dimensions",
+    "get_chi1inv",
+    "get_complex_array_slice",
+    "get_dft_array",
+    "get_dft_component_dims",
+    "get_eigenmode",
+    "get_eigenmode_coefficients",
+    "get_eps",
+    "get_field",
+    "get_field_from_comp",
+    "get_inveps",
+    "get_mode_flux_overlap",
+    "get_mode_mode_overlap",
+    "get_mu",
+    "get_overlap",
+    "get_source_slice",
+    "get_timing_data",
+    "h5file_name",
+    "has_nonlinearities",
+    "have_component",
+    "initialize_field",
+    "initialize_with_n_te",
+    "initialize_with_n_tm",
+    "initialize_with_nth_te",
+    "initialize_with_nth_tm",
+    "integrate",
+    "integrate2",
+    "is_aniso2d",
+    "is_periodic",
+    "is_phasing",
+    "last_source_time",
+    "lattice_vector",
+    "load",
+    "locate_component_point",
+    "log",
+    "lookup_src_time",
+    "loop_in_chunks",
+    "magnetic_energy_in_box",
+    "max_abs",
+    "max_decimation",
+    "max_eps",
+    "mean_time_spent_on",
+    "modal_volume_in_box",
+    "normal_direction",
+    "nosize_direction",
+    "open_h5file",
+    "output_dft",
+    "output_dft_components",
+    "output_hdf5",
+    "output_times",
+    "phase_in_material",
+    "populate_maxwell_dielectric",
+    "print_times",
+    "process_dft_component",
+    "process_incoming_chunk_data",
+    "register_src_time",
+    "remove_fluxes",
+    "remove_sources",
+    "remove_susceptibilities",
+    "require_component",
+    "require_source_components",
+    "reset",
+    "reset_timers",
+    "restore_magnetic_fields",
+    "round_time",
+    "set_boundary",
+    "set_output_directory",
+    "set_solve_cw_omega",
+    "solve_cw",
+    "step",
+    "step_boundaries",
+    "synchronize_magnetic_fields",
+    "thermo_energy_in_box",
+    "time",
+    "time_spent_on",
+    "total_energy",
+    "total_volume",
+    "unset_solve_cw_omega",
+    "update_dfts",
+    "update_eh",
+    "use_bloch",
+    "use_real_fields",
+    "vec2diel_ceil",
+    "vec2diel_floor",
+    "zero_fields"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "flux_vol": {
+   "init_params": [
+    "f_",
+    "d_",
+    "where_"
+   ],
+   "methods": [
+    "flux",
+    "update",
+    "update_half"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "fragment_stats": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "compute",
+    "cost",
+    "has_non_medium_material",
+    "print_stats"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "gaussian_src_time": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "clone",
+    "dipole",
+    "fourier_transform",
+    "frequency",
+    "get_fwidth",
+    "is_equal",
+    "last_time",
+    "set_frequency",
+    "set_fwidth"
+   ],
+   "bases": [
+    "src_time"
+   ],
+   "module": "meep"
+  },
+  "gaussianbeam": {
+   "init_params": [
+    "x0",
+    "kdir",
+    "w0",
+    "freq",
+    "eps",
+    "mu",
+    "E0"
+   ],
+   "methods": [
+    "get_E0",
+    "get_fields"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "geom_box": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "geom_epsilon": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "add_susceptibilities",
+    "chi",
+    "chi1p1",
+    "chi2",
+    "chi3",
+    "conductivity",
+    "eff_chi1inv_matrix",
+    "eff_chi1inv_row",
+    "fallback_chi1inv_row",
+    "get_material_pt",
+    "has_chi",
+    "has_chi2",
+    "has_chi3",
+    "has_conductivity",
+    "has_mu",
+    "is_thread_safe",
+    "set_cond_profile",
+    "set_volume",
+    "sigma_row",
+    "unset_volume"
+   ],
+   "bases": [
+    "material_function"
+   ],
+   "module": "meep"
+  },
+  "grid_volume": {
+   "init_params": [],
+   "methods": [
+    "big_corner",
+    "big_owned_corner",
+    "boundary_location",
+    "cent2yee_offsets",
+    "center",
+    "center_origin",
+    "contains",
+    "corner",
+    "dV",
+    "dr",
+    "dx",
+    "dy",
+    "dz",
+    "eps_component",
+    "find_best_split",
+    "get_boundary_icorners",
+    "get_cost",
+    "get_origin",
+    "get_split_costs",
+    "halve",
+    "has_boundary",
+    "has_field",
+    "icenter",
+    "iloc",
+    "index",
+    "init_subvolume",
+    "interior",
+    "interpolate",
+    "intersect_with",
+    "iorigin_in_direction",
+    "iyee_shift",
+    "little_corner",
+    "little_owned_corner",
+    "little_owned_corner0",
+    "loc",
+    "loc_at_resolution",
+    "nowned",
+    "nowned_min",
+    "nr",
+    "ntot",
+    "ntot_at_resolution",
+    "num_direction",
+    "nx",
+    "ny",
+    "nz",
+    "origin_in_direction",
+    "origin_r",
+    "origin_x",
+    "origin_y",
+    "origin_z",
+    "owns",
+    "pad",
+    "pad_self",
+    "print_grid_volume",
+    "rmax",
+    "rmin",
+    "round_vec",
+    "set_num_direction",
+    "set_origin",
+    "shift_origin",
+    "split_at_fraction",
+    "stride",
+    "subvolume",
+    "surface_area",
+    "surroundings",
+    "tile_split",
+    "xmax",
+    "xmin",
+    "yee2cent_offsets",
+    "yee_index",
+    "yee_shift",
+    "ymax",
+    "ymin",
+    "yucky_direction",
+    "yucky_num",
+    "zmax",
+    "zmin"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "gyrotropic_susceptibility": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "cinternal_notowned_ptr",
+    "clone",
+    "copy_internal_data",
+    "dump_params",
+    "get_num_params",
+    "init_internal_data",
+    "needs_P",
+    "needs_W_notowned",
+    "new_internal_data",
+    "num_cinternal_notowned_needed",
+    "subtract_P",
+    "update_P"
+   ],
+   "bases": [
+    "susceptibility"
+   ],
+   "module": "meep"
+  },
+  "h5file": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "create_data",
+    "create_or_extend_data",
+    "dataset_exists",
+    "done_writing_chunks",
+    "extend_data",
+    "file_name",
+    "get_extending",
+    "ok",
+    "prevent_deadlock",
+    "read",
+    "read_chunk",
+    "read_size",
+    "remove",
+    "remove_data",
+    "write",
+    "write_chunk"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "initialize": {
+   "init_params": [
+    "argc",
+    "argv"
+   ],
+   "methods": [
+    "elapsed_time"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "ivec": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "in_direction",
+    "r",
+    "round_down_to_even",
+    "set_direction",
+    "x",
+    "y",
+    "yucky_val",
+    "z"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "lorentzian_susceptibility": {
+   "init_params": [
+    "omega_0",
+    "gamma",
+    "no_omega_0_denominator"
+   ],
+   "methods": [
+    "chi1",
+    "cinternal_notowned_ptr",
+    "clone",
+    "copy_internal_data",
+    "dump_params",
+    "get_num_params",
+    "init_internal_data",
+    "new_internal_data",
+    "num_cinternal_notowned_needed",
+    "subtract_P",
+    "update_P"
+   ],
+   "bases": [
+    "susceptibility"
+   ],
+   "module": "meep"
+  },
+  "material_function": {
+   "init_params": [],
+   "methods": [
+    "chi1p1",
+    "chi2",
+    "chi3",
+    "conductivity",
+    "eff_chi1inv_row",
+    "eps",
+    "has_chi2",
+    "has_chi3",
+    "has_conductivity",
+    "has_mu",
+    "is_thread_safe",
+    "mu",
+    "normal_vector",
+    "set_volume",
+    "sigma_row",
+    "unset_volume"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "multilevel_susceptibility": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "cinternal_notowned_ptr",
+    "clone",
+    "copy_internal_data",
+    "delete_internal_data",
+    "has_nonlinearities",
+    "init_internal_data",
+    "needs_W_notowned",
+    "needs_W_prev",
+    "new_internal_data",
+    "num_cinternal_notowned_needed",
+    "subtract_P",
+    "update_P"
+   ],
+   "bases": [
+    "susceptibility"
+   ],
+   "module": "meep"
+  },
+  "near_src_data": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "append",
+    "assign",
+    "back",
+    "begin",
+    "capacity",
+    "clear",
+    "empty",
+    "end",
+    "erase",
+    "front",
+    "get_allocator",
+    "insert",
+    "iterator",
+    "pop",
+    "pop_back",
+    "push_back",
+    "rbegin",
+    "rend",
+    "reserve",
+    "resize",
+    "size",
+    "swap"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "noisy_lorentzian_susceptibility": {
+   "init_params": [
+    "noise_amp",
+    "omega_0",
+    "gamma",
+    "no_omega_0_denominator"
+   ],
+   "methods": [
+    "clone",
+    "dump_params",
+    "get_num_params",
+    "update_P"
+   ],
+   "bases": [
+    "lorentzian_susceptibility"
+   ],
+   "module": "meep"
+  },
+  "pol": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "polarization_state": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "signed_direction": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "simple_material_function": {
+   "init_params": [
+    "func"
+   ],
+   "methods": [
+    "chi1p1",
+    "chi2",
+    "chi3",
+    "conductivity",
+    "eps",
+    "mu",
+    "sigma_row"
+   ],
+   "bases": [
+    "material_function"
+   ],
+   "module": "meep"
+  },
+  "sourcedata": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "split_plane": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "src_time": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "add_to",
+    "clone",
+    "current",
+    "dipole",
+    "frequency",
+    "get_fwidth",
+    "is_equal",
+    "last_time",
+    "last_time_max",
+    "set_frequency",
+    "set_fwidth",
+    "update"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "structure": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "add_susceptibility",
+    "dump",
+    "dump_chunk_layout",
+    "equal_layout",
+    "estimated_cost",
+    "get_binary_partition",
+    "get_chi1inv",
+    "get_chunk_owners",
+    "get_chunk_volumes",
+    "get_eps",
+    "get_inveps",
+    "get_mu",
+    "has_chi",
+    "load",
+    "load_chunk_layout",
+    "max_eps",
+    "mix_with",
+    "print_layout",
+    "remove_susceptibilities",
+    "set_chi1inv",
+    "set_chi2",
+    "set_chi3",
+    "set_conductivity",
+    "set_epsilon",
+    "set_materials",
+    "set_mu",
+    "set_output_directory"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "structure_chunk": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "add_susceptibility",
+    "get_chi1inv",
+    "get_chi1inv_at_pt",
+    "get_inveps",
+    "has_chi",
+    "has_chi1inv",
+    "has_chisigma",
+    "has_nonlinearities",
+    "is_mine",
+    "max_eps",
+    "mix_with",
+    "n_proc",
+    "remove_susceptibilities",
+    "set_chi1inv",
+    "set_chi2",
+    "set_chi3",
+    "set_conductivity",
+    "update_condinv",
+    "use_pml"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "susceptibility": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "chi1",
+    "cinternal_notowned_ptr",
+    "clone",
+    "copy_internal_data",
+    "delete_internal_data",
+    "dump_params",
+    "get_id",
+    "get_num_params",
+    "has_nonlinearities",
+    "init_internal_data",
+    "internal_notowned_ptr",
+    "needs_P",
+    "needs_W_notowned",
+    "needs_W_prev",
+    "new_internal_data",
+    "num_cinternal_notowned_needed",
+    "num_internal_notowned_needed",
+    "set_id",
+    "subtract_P",
+    "update_P"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "symm_matrix": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "symmetry": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "is_primitive",
+    "multiplicity",
+    "phase_shift",
+    "symmetry_assign",
+    "symmetry_reduce",
+    "transform",
+    "transform_unshifted"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "vector3": {
+   "init_params": [],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  },
+  "volume": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [
+    "center",
+    "computational_volume",
+    "contains",
+    "diameter",
+    "full_volume",
+    "get_max_corner",
+    "get_min_corner",
+    "in_direction",
+    "in_direction_max",
+    "in_direction_min",
+    "integral_volume",
+    "intersect_with",
+    "intersects",
+    "normal_direction",
+    "round_float",
+    "set_direction_max",
+    "set_direction_min"
+   ],
+   "bases": [],
+   "module": "meep"
+  },
+  "volume_list": {
+   "init_params": [
+    "args"
+   ],
+   "methods": [],
+   "bases": [],
+   "module": "meep"
+  }
+ },
+ "functions": {
+  "BesselJ": {
+   "params": [
+    "m",
+    "kr"
+   ]
+  },
+  "GDSII_layers": {
+   "params": [
+    "fname"
+   ]
+  },
+  "GDSII_prisms": {
+   "params": [
+    "material",
+    "fname",
+    "layer",
+    "zmin",
+    "zmax"
+   ]
+  },
+  "GDSII_vol": {
+   "params": [
+    "fname",
+    "layer",
+    "zmin",
+    "zmax"
+   ]
+  },
+  "Ldos": {
+   "params": [
+    "args"
+   ]
+  },
+  "abort": {
+   "params": [
+    "args"
+   ]
+  },
+  "add_absorbing_layer": {
+   "params": [
+    "args"
+   ]
+  },
+  "after_sources": {
+   "params": [
+    "step_funcs"
+   ]
+  },
+  "after_sources_and_time": {
+   "params": [
+    "t",
+    "step_funcs"
+   ]
+  },
+  "after_time": {
+   "params": [
+    "t",
+    "step_funcs"
+   ]
+  },
+  "all_wait": {
+   "params": []
+  },
+  "am_master": {
+   "params": []
+  },
+  "am_really_master": {
+   "params": []
+  },
+  "and_to_all": {
+   "params": [
+    "args"
+   ]
+  },
+  "at_beginning": {
+   "params": [
+    "step_funcs"
+   ]
+  },
+  "at_end": {
+   "params": [
+    "step_funcs"
+   ]
+  },
+  "at_every": {
+   "params": [
+    "dt",
+    "step_funcs"
+   ]
+  },
+  "at_time": {
+   "params": [
+    "t",
+    "step_funcs"
+   ]
+  },
+  "before_time": {
+   "params": [
+    "t",
+    "step_funcs"
+   ]
+  },
+  "begin_critical_section": {
+   "params": [
+    "tag"
+   ]
+  },
+  "begin_global_communications": {
+   "params": []
+  },
+  "broadcast": {
+   "params": [
+    "args"
+   ]
+  },
+  "bw_or_to_all": {
+   "params": [
+    "_in",
+    "out",
+    "size"
+   ]
+  },
+  "calculate_tree": {
+   "params": [
+    "v",
+    "g"
+   ]
+  },
+  "cartesian_to_lattice": {
+   "params": [
+    "x",
+    "lat"
+   ]
+  },
+  "cartesian_to_reciprocal": {
+   "params": [
+    "x",
+    "lat"
+   ]
+  },
+  "cdouble": {
+   "params": [
+    "args"
+   ]
+  },
+  "check_nonnegative": {
+   "params": [
+    "prop",
+    "val"
+   ]
+  },
+  "check_positive": {
+   "params": [
+    "prop",
+    "val"
+   ]
+  },
+  "check_tiles": {
+   "params": [
+    "gv",
+    "gvs"
+   ]
+  },
+  "clean_vec": {
+   "params": [
+    "pt",
+    "val_unused"
+   ]
+  },
+  "combine_step_funcs": {
+   "params": [
+    "step_funcs"
+   ]
+  },
+  "complexarray": {
+   "params": [
+    "re",
+    "im"
+   ]
+  },
+  "component_direction": {
+   "params": [
+    "args"
+   ]
+  },
+  "component_index": {
+   "params": [
+    "c"
+   ]
+  },
+  "component_name": {
+   "params": [
+    "args"
+   ]
+  },
+  "compute_fragment_stats": {
+   "params": [
+    "geom",
+    "gv",
+    "cell_size",
+    "cell_center",
+    "default_mat",
+    "dft_data_list",
+    "pml_1d_vols",
+    "pml_2d_vols",
+    "pml_3d_vols",
+    "absorber_vols",
+    "extra_materials",
+    "tol",
+    "maxeval",
+    "ensure_per",
+    "eps_averaging"
+   ]
+  },
+  "coordinate_mismatch": {
+   "params": [
+    "args"
+   ]
+  },
+  "count_processors": {
+   "params": []
+  },
+  "create_absorber_list": {
+   "params": []
+  },
+  "create_output_file": {
+   "params": [
+    "dirname",
+    "fname"
+   ]
+  },
+  "create_structure": {
+   "params": [
+    "cell_size",
+    "dft_data_list_",
+    "pml_1d_vols_",
+    "pml_2d_vols_",
+    "pml_3d_vols_",
+    "absorber_vols_",
+    "gv",
+    "br",
+    "sym",
+    "num_chunks",
+    "Courant",
+    "use_anisotropic_averaging",
+    "tol",
+    "maxeval",
+    "gobj_list",
+    "center",
+    "_ensure_periodicity",
+    "_default_material",
+    "alist",
+    "extra_materials",
+    "split_chunks_evenly",
+    "set_materials",
+    "existing_s",
+    "output_chunk_costs",
+    "my_bp"
+   ]
+  },
+  "cycle_component": {
+   "params": [
+    "dim",
+    "c",
+    "shift"
+   ]
+  },
+  "cycle_direction": {
+   "params": [
+    "dim",
+    "d",
+    "shift"
+   ]
+  },
+  "debug_printf": {
+   "params": [
+    "args"
+   ]
+  },
+  "delete_directory": {
+   "params": [
+    "path"
+   ]
+  },
+  "derived_component_func": {
+   "params": [
+    "c",
+    "gv",
+    "nfields",
+    "cs"
+   ]
+  },
+  "destroy_absorber_list": {
+   "params": [
+    "alist"
+   ]
+  },
+  "destroy_eigenmode_data": {
+   "params": [
+    "vedata",
+    "destroy_mdata"
+   ]
+  },
+  "dft_ldos": {
+   "params": [
+    "args",
+    "kwargs"
+   ]
+  },
+  "dimension_name": {
+   "params": [
+    "arg1"
+   ]
+  },
+  "direction_component": {
+   "params": [
+    "args"
+   ]
+  },
+  "direction_name": {
+   "params": [
+    "arg1"
+   ]
+  },
+  "display_geometric_object_info": {
+   "params": [
+    "indentby",
+    "o"
+   ]
+  },
+  "display_progress": {
+   "params": [
+    "t0",
+    "t",
+    "dt"
+   ]
+  },
+  "divide_parallel_processes": {
+   "params": [
+    "numgroups"
+   ]
+  },
+  "do_harminv": {
+   "params": [
+    "data",
+    "n",
+    "dt",
+    "fmin",
+    "fmax",
+    "maxbands",
+    "amps",
+    "freq_re",
+    "freq_im",
+    "errors",
+    "spectral_density",
+    "Q_thresh",
+    "rel_err_thresh",
+    "err_thresh",
+    "rel_amp_thresh",
+    "amp_thresh"
+   ]
+  },
+  "during_sources": {
+   "params": [
+    "step_funcs"
+   ]
+  },
+  "eigenmode_amplitude": {
+   "params": [
+    "vedata",
+    "p",
+    "c"
+   ]
+  },
+  "end_critical_section": {
+   "params": [
+    "tag"
+   ]
+  },
+  "end_divide_parallel": {
+   "params": []
+  },
+  "end_global_communications": {
+   "params": []
+  },
+  "epsilon_file_material": {
+   "params": [
+    "md",
+    "p"
+   ]
+  },
+  "epsilon_material_grid": {
+   "params": [
+    "md",
+    "u"
+   ]
+  },
+  "field_type_component": {
+   "params": [
+    "ft",
+    "c"
+   ]
+  },
+  "find_root_deriv": {
+   "params": [
+    "f",
+    "tol",
+    "x_min",
+    "x_max",
+    "x_guess"
+   ]
+  },
+  "first_field_component": {
+   "params": [
+    "ft"
+   ]
+  },
+  "flip": {
+   "params": [
+    "d"
+   ]
+  },
+  "gaussian_random": {
+   "params": [
+    "mean",
+    "stddev"
+   ]
+  },
+  "geometric_object_duplicates": {
+   "params": [
+    "shift_vector",
+    "min_multiple",
+    "max_multiple",
+    "go"
+   ]
+  },
+  "geometric_objects_duplicates": {
+   "params": [
+    "shift_vector",
+    "min_multiple",
+    "max_multiple",
+    "go_list"
+   ]
+  },
+  "geometric_objects_lattice_duplicates": {
+   "params": [
+    "lat",
+    "go_list",
+    "usize"
+   ]
+  },
+  "get_GDSII_layers": {
+   "params": [
+    "GDSIIFile"
+   ]
+  },
+  "get_GDSII_prism": {
+   "params": [
+    "args"
+   ]
+  },
+  "get_GDSII_prisms": {
+   "params": [
+    "material",
+    "GDSIIFile",
+    "Layer",
+    "zmin",
+    "zmax"
+   ]
+  },
+  "get_GDSII_volume": {
+   "params": [
+    "args"
+   ]
+  },
+  "get_center_and_size": {
+   "params": [
+    "vol"
+   ]
+  },
+  "get_dft_fields_array": {
+   "params": [
+    "f",
+    "dft",
+    "c",
+    "num_freq"
+   ]
+  },
+  "get_dft_flux_array": {
+   "params": [
+    "f",
+    "dft",
+    "c",
+    "num_freq"
+   ]
+  },
+  "get_dft_force_array": {
+   "params": [
+    "f",
+    "dft",
+    "c",
+    "num_freq"
+   ]
+  },
+  "get_dft_near2far_array": {
+   "params": [
+    "f",
+    "dft",
+    "c",
+    "num_freq"
+   ]
+  },
+  "get_eigenmode_coefficients_and_kpoints": {
+   "params": [
+    "args"
+   ]
+  },
+  "get_eigenmode_freqs": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_electric_energy": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_energy_freqs": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_epsilon_grid": {
+   "params": [
+    "gobj_list",
+    "mlist",
+    "_default_material",
+    "_ensure_periodicity",
+    "gv",
+    "cell_size",
+    "cell_center",
+    "nx",
+    "x",
+    "ny",
+    "y",
+    "nz",
+    "z",
+    "grid_vals",
+    "frequency"
+   ]
+  },
+  "get_equiv_sources": {
+   "params": [
+    "field",
+    "normal_vec",
+    "time_src",
+    "center",
+    "size"
+   ]
+  },
+  "get_flux_freqs": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_fluxes": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_force_freqs": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_forces": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_group_masters": {
+   "params": []
+  },
+  "get_group_velocity": {
+   "params": [
+    "vedata"
+   ]
+  },
+  "get_k": {
+   "params": [
+    "vedata"
+   ]
+  },
+  "get_ldos_freqs": {
+   "params": [
+    "l"
+   ]
+  },
+  "get_magnetic_energy": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_near2far_freqs": {
+   "params": [
+    "f"
+   ]
+  },
+  "get_num_groups": {
+   "params": []
+  },
+  "get_realnum_size": {
+   "params": []
+  },
+  "get_rotation_matrix": {
+   "params": [
+    "axis",
+    "theta"
+   ]
+  },
+  "get_total_energy": {
+   "params": [
+    "f"
+   ]
+  },
+  "green2d": {
+   "params": [
+    "EH",
+    "x",
+    "freq",
+    "eps",
+    "mu",
+    "x0",
+    "c0",
+    "f0"
+   ]
+  },
+  "green3d": {
+   "params": [
+    "EH",
+    "x",
+    "freq",
+    "eps",
+    "mu",
+    "x0",
+    "c0",
+    "f0"
+   ]
+  },
+  "gv2box": {
+   "params": [
+    "v"
+   ]
+  },
+  "has_direction": {
+   "params": [
+    "dim",
+    "d"
+   ]
+  },
+  "has_field_direction": {
+   "params": [
+    "dim",
+    "d"
+   ]
+  },
+  "identity": {
+   "params": []
+  },
+  "in_point": {
+   "params": [
+    "pt",
+    "step_funcs"
+   ]
+  },
+  "in_volume": {
+   "params": [
+    "v",
+    "step_funcs"
+   ]
+  },
+  "init_libctl": {
+   "params": [
+    "default_mat",
+    "ensure_per",
+    "gv",
+    "cell_size",
+    "cell_center",
+    "geom_list"
+   ]
+  },
+  "interpolate": {
+   "params": [
+    "n",
+    "nums"
+   ]
+  },
+  "is_B": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_D": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_E_or_D": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_H_or_B": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_derived": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_electric": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_energydensity": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_magnetic": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_material_grid": {
+   "params": [
+    "args"
+   ]
+  },
+  "is_point_in_object": {
+   "params": [
+    "p",
+    "o"
+   ]
+  },
+  "is_point_in_periodic_object": {
+   "params": [
+    "p",
+    "o"
+   ]
+  },
+  "is_poynting": {
+   "params": [
+    "c"
+   ]
+  },
+  "is_single_precision": {
+   "params": []
+  },
+  "is_tm": {
+   "params": [
+    "c"
+   ]
+  },
+  "iveccyl": {
+   "params": [
+    "xx",
+    "yy"
+   ]
+  },
+  "lattice_to_cartesian": {
+   "params": [
+    "x",
+    "lat"
+   ]
+  },
+  "lattice_to_reciprocal": {
+   "params": [
+    "x",
+    "lat"
+   ]
+  },
+  "linear_interpolate": {
+   "params": [
+    "rx",
+    "ry",
+    "rz",
+    "data",
+    "nx",
+    "ny",
+    "nz",
+    "stride"
+   ]
+  },
+  "linspace": {
+   "params": [
+    "freq_min",
+    "freq_max",
+    "Nfreq"
+   ]
+  },
+  "load_dft_hdf5": {
+   "params": [
+    "args"
+   ]
+  },
+  "make_casimir_gfunc": {
+   "params": [
+    "T",
+    "dt",
+    "sigma",
+    "ft",
+    "eps_func",
+    "Tfft"
+   ]
+  },
+  "make_casimir_gfunc_kz": {
+   "params": [
+    "T",
+    "dt",
+    "sigma",
+    "ft"
+   ]
+  },
+  "make_dielectric": {
+   "params": [
+    "epsilon"
+   ]
+  },
+  "make_file_material": {
+   "params": [
+    "eps_input_file"
+   ]
+  },
+  "make_geom_epsilon": {
+   "params": [
+    "args"
+   ]
+  },
+  "make_material_grid": {
+   "params": [
+    "do_averaging",
+    "beta",
+    "eta",
+    "damping"
+   ]
+  },
+  "make_output_directory": {
+   "params": [
+    "args"
+   ]
+  },
+  "make_user_material": {
+   "params": [
+    "user_func",
+    "user_data",
+    "do_averaging"
+   ]
+  },
+  "make_vector3": {
+   "params": [
+    "x",
+    "y",
+    "z"
+   ]
+  },
+  "make_volume_list": {
+   "params": [
+    "v",
+    "c",
+    "weight",
+    "next"
+   ]
+  },
+  "master_fclose": {
+   "params": [
+    "f"
+   ]
+  },
+  "master_fopen": {
+   "params": [
+    "name",
+    "mode"
+   ]
+  },
+  "master_fprintf": {
+   "params": [
+    "args"
+   ]
+  },
+  "master_printf": {
+   "params": [
+    "args"
+   ]
+  },
+  "master_printf_stderr": {
+   "params": [
+    "args"
+   ]
+  },
+  "material_free": {
+   "params": [
+    "m"
+   ]
+  },
+  "material_grid_grad": {
+   "params": [
+    "p",
+    "md",
+    "o"
+   ]
+  },
+  "material_grid_val": {
+   "params": [
+    "p",
+    "md"
+   ]
+  },
+  "material_grids_addgradient": {
+   "params": [
+    "v",
+    "ng",
+    "nf",
+    "fields_a",
+    "fields_f",
+    "frequencies",
+    "scalegrad",
+    "gv",
+    "geps",
+    "du"
+   ]
+  },
+  "matgrid_grad": {
+   "params": [
+    "p",
+    "tp",
+    "oi",
+    "md"
+   ]
+  },
+  "matgrid_val": {
+   "params": [
+    "p",
+    "tp",
+    "oi",
+    "md"
+   ]
+  },
+  "matrix_invert": {
+   "params": [
+    "Vinv",
+    "V"
+   ]
+  },
+  "max_to_all": {
+   "params": [
+    "args"
+   ]
+  },
+  "max_to_master": {
+   "params": [
+    "arg1"
+   ]
+  },
+  "meep_type": {
+   "params": [
+    "c"
+   ]
+  },
+  "merge_subgroup_data": {
+   "params": [
+    "data"
+   ]
+  },
+  "min_to_all": {
+   "params": [
+    "arg1"
+   ]
+  },
+  "mirror": {
+   "params": [
+    "arg1",
+    "arg2"
+   ]
+  },
+  "my_global_rank": {
+   "params": []
+  },
+  "my_rank": {
+   "params": []
+  },
+  "number_of_directions": {
+   "params": [
+    "dim"
+   ]
+  },
+  "one_ivec": {
+   "params": [
+    "arg1"
+   ]
+  },
+  "one_vec": {
+   "params": [
+    "arg1"
+   ]
+  },
+  "or_to_all": {
+   "params": [
+    "args"
+   ]
+  },
+  "output_bfield": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_bfield_p": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_bfield_r": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_bfield_x": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_bfield_y": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_bfield_z": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_dfield": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_dfield_p": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_dfield_r": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_dfield_x": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_dfield_y": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_dfield_z": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_dpwr": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_efield": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_efield_p": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_efield_r": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_efield_x": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_efield_y": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_efield_z": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_epsilon": {
+   "params": [
+    "sim",
+    "step_func_args",
+    "kwargs"
+   ]
+  },
+  "output_hfield": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_hfield_p": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_hfield_r": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_hfield_x": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_hfield_y": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_hfield_z": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_hpwr": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_mu": {
+   "params": [
+    "sim",
+    "step_func_args",
+    "kwargs"
+   ]
+  },
+  "output_png": {
+   "params": [
+    "compnt",
+    "options",
+    "rm_h5"
+   ]
+  },
+  "output_poynting": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_poynting_p": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_poynting_r": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_poynting_x": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_poynting_y": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_poynting_z": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_sfield": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_sfield_p": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_sfield_r": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_sfield_x": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_sfield_y": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_sfield_z": {
+   "params": [
+    "sim"
+   ]
+  },
+  "output_tot_pwr": {
+   "params": [
+    "sim"
+   ]
+  },
+  "partial_sum_to_all": {
+   "params": [
+    "args"
+   ]
+  },
+  "plot2D": {
+   "params": [
+    "sim",
+    "ax",
+    "output_plane",
+    "fields",
+    "labels",
+    "label_geometry",
+    "eps_parameters",
+    "boundary_parameters",
+    "source_parameters",
+    "monitor_parameters",
+    "field_parameters",
+    "colorbar_parameters",
+    "frequency",
+    "show_epsilon",
+    "show_sources",
+    "show_monitors",
+    "show_boundary_layers",
+    "nb",
+    "kwargs"
+   ]
+  },
+  "plot3D": {
+   "params": [
+    "sim",
+    "save_to_image",
+    "image_name",
+    "kwargs"
+   ]
+  },
+  "plot_fields": {
+   "params": [
+    "sim",
+    "ax",
+    "fields",
+    "output_plane",
+    "field_parameters",
+    "colorbar_parameters"
+   ]
+  },
+  "pml": {
+   "params": [
+    "args"
+   ]
+  },
+  "pml_quadratic_profile": {
+   "params": [
+    "arg1",
+    "arg2"
+   ]
+  },
+  "py_do_harminv": {
+   "params": [
+    "vals",
+    "dt",
+    "f_min",
+    "f_max",
+    "maxbands",
+    "spectral_density",
+    "Q_thresh",
+    "rel_err_thresh",
+    "err_thresh",
+    "rel_amp_thresh",
+    "amp_thresh"
+   ]
+  },
+  "py_v3_to_vec": {
+   "params": [
+    "dims",
+    "iterable",
+    "is_cylindrical"
+   ]
+  },
+  "quiet": {
+   "params": [
+    "quietval"
+   ]
+  },
+  "r_to_minus_r_symmetry": {
+   "params": [
+    "m"
+   ]
+  },
+  "random_int": {
+   "params": [
+    "a",
+    "b"
+   ]
+  },
+  "reciprocal_to_cartesian": {
+   "params": [
+    "x",
+    "lat"
+   ]
+  },
+  "reciprocal_to_lattice": {
+   "params": [
+    "x",
+    "lat"
+   ]
+  },
+  "report_elapsed_time": {
+   "params": []
+  },
+  "restore_random_seed": {
+   "params": []
+  },
+  "rotate2": {
+   "params": [
+    "arg1",
+    "arg2"
+   ]
+  },
+  "rotate4": {
+   "params": [
+    "arg1",
+    "arg2"
+   ]
+  },
+  "save_dft_hdf5": {
+   "params": [
+    "args"
+   ]
+  },
+  "scale_energy_fields": {
+   "params": [
+    "s",
+    "ef"
+   ]
+  },
+  "scale_flux_fields": {
+   "params": [
+    "s",
+    "flux"
+   ]
+  },
+  "scale_force_fields": {
+   "params": [
+    "s",
+    "force"
+   ]
+  },
+  "scale_near2far_fields": {
+   "params": [
+    "s",
+    "near2far"
+   ]
+  },
+  "send": {
+   "params": [
+    "_from",
+    "to",
+    "data",
+    "size"
+   ]
+  },
+  "set_ctl_printf_callback": {
+   "params": [
+    "callback"
+   ]
+  },
+  "set_default_material": {
+   "params": [
+    "_default_material"
+   ]
+  },
+  "set_dimensions": {
+   "params": [
+    "dims"
+   ]
+  },
+  "set_geometry_from_GDSII": {
+   "params": [
+    "args"
+   ]
+  },
+  "set_materials_from_geometry": {
+   "params": [
+    "args"
+   ]
+  },
+  "set_meep_printf_callback": {
+   "params": [
+    "func"
+   ]
+  },
+  "set_meep_printf_stderr_callback": {
+   "params": [
+    "func"
+   ]
+  },
+  "set_mpb_printf_callback": {
+   "params": [
+    "callback"
+   ]
+  },
+  "set_random_seed": {
+   "params": [
+    "seed"
+   ]
+  },
+  "set_zero_subnormals": {
+   "params": [
+    "iszero"
+   ]
+  },
+  "setup": {
+   "params": []
+  },
+  "split_by_binarytree": {
+   "params": [
+    "gvol",
+    "result_gvs",
+    "result_ids",
+    "bp"
+   ]
+  },
+  "split_into_tiles": {
+   "params": [
+    "gvol",
+    "result",
+    "loop_tile_base"
+   ]
+  },
+  "src_times_equal": {
+   "params": [
+    "t1",
+    "t2"
+   ]
+  },
+  "start_at_direction": {
+   "params": [
+    "dim"
+   ]
+  },
+  "stop_after_walltime": {
+   "params": [
+    "t"
+   ]
+  },
+  "stop_at_direction": {
+   "params": [
+    "dim"
+   ]
+  },
+  "stop_on_interrupt": {
+   "params": []
+  },
+  "stop_when_dft_decayed": {
+   "params": [
+    "tol",
+    "minimum_run_time",
+    "maximum_run_time"
+   ]
+  },
+  "stop_when_energy_decayed": {
+   "params": [
+    "dt",
+    "decay_by"
+   ]
+  },
+  "stop_when_fields_decayed": {
+   "params": [
+    "dt",
+    "c",
+    "pt",
+    "decay_by",
+    "sampling_interval"
+   ]
+  },
+  "stop_when_flux_decayed": {
+   "params": [
+    "flux",
+    "tol",
+    "minimum_run_time",
+    "maximum_run_time"
+   ]
+  },
+  "sum_to_all": {
+   "params": [
+    "args"
+   ]
+  },
+  "sum_to_master": {
+   "params": [
+    "args"
+   ]
+  },
+  "synchronized_magnetic": {
+   "params": [
+    "step_funcs"
+   ]
+  },
+  "to_appended": {
+   "params": [
+    "fname",
+    "step_funcs"
+   ]
+  },
+  "trash_output_directory": {
+   "params": [
+    "dirname"
+   ]
+  },
+  "uniform_random": {
+   "params": [
+    "a",
+    "b"
+   ]
+  },
+  "unit_ivec": {
+   "params": [
+    "di",
+    "d"
+   ]
+  },
+  "unit_vec": {
+   "params": [
+    "di",
+    "d"
+   ]
+  },
+  "unset_default_material": {
+   "params": []
+  },
+  "update_weights": {
+   "params": [
+    "matgrid",
+    "weights"
+   ]
+  },
+  "vec": {
+   "params": [
+    "args"
+   ]
+  },
+  "vec_abs": {
+   "params": [
+    "pt"
+   ]
+  },
+  "vec_dim": {
+   "params": [
+    "di"
+   ]
+  },
+  "vec_dim_val": {
+   "params": [
+    "di",
+    "val"
+   ]
+  },
+  "vec_max": {
+   "params": [
+    "args"
+   ]
+  },
+  "vec_min": {
+   "params": [
+    "args"
+   ]
+  },
+  "vec_to_vector3": {
+   "params": [
+    "pt"
+   ]
+  },
+  "veccyl": {
+   "params": [
+    "rr",
+    "zz"
+   ]
+  },
+  "vector3_to_vec": {
+   "params": [
+    "v3"
+   ]
+  },
+  "vol1d": {
+   "params": [
+    "zsize",
+    "a"
+   ]
+  },
+  "vol2d": {
+   "params": [
+    "xsize",
+    "ysize",
+    "a"
+   ]
+  },
+  "vol3d": {
+   "params": [
+    "xsize",
+    "ysize",
+    "zsize",
+    "a"
+   ]
+  },
+  "volcyl": {
+   "params": [
+    "rsize",
+    "zsize",
+    "a"
+   ]
+  },
+  "volone": {
+   "params": [
+    "zsize",
+    "a"
+   ]
+  },
+  "voltwo": {
+   "params": [
+    "xsize",
+    "ysize",
+    "a"
+   ]
+  },
+  "wall_time": {
+   "params": []
+  },
+  "when_false": {
+   "params": [
+    "cond",
+    "step_funcs"
+   ]
+  },
+  "when_true": {
+   "params": [
+    "cond",
+    "step_funcs"
+   ]
+  },
+  "with_libGDSII": {
+   "params": []
+  },
+  "with_mpi": {
+   "params": []
+  },
+  "with_prefix": {
+   "params": [
+    "pre",
+    "step_funcs"
+   ]
+  },
+  "zero_ivec": {
+   "params": [
+    "arg1"
+   ]
+  },
+  "zero_vec": {
+   "params": [
+    "arg1"
+   ]
+  }
+ }
+}

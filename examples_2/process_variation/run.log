@@ -1,0 +1,124 @@
+setups built in 10s (grid 825x324)
+STATE baseline@n1: n_SiN=2.0347 neff=1.6321 Tu=39.68% Td=41.99% total=81.67% IL=0.88dB imbalance=2.82%
+STATE frozen@n2: n_SiN=1.9947 neff=1.6145 Tu=41.57% Td=43.23% total=84.80% IL=0.72dB imbalance=1.97%
+STATE frozen@n1+0.04: n_SiN=2.0747 neff=1.6504 Tu=38.50% Td=41.38% total=79.88% IL=0.98dB imbalance=3.61%
+STATE frozen@n3: n_SiN=1.9347 neff=1.5896 Tu=41.07% Td=41.31% total=82.38% IL=0.84dB imbalance=0.30%
+reopt[n2] it=0 beta=32: J=84.9% post64=85.4%
+reopt[n2] it=1 beta=32: J=85.7% post64=86.0%
+reopt[n2] it=2 beta=32: J=86.2% post64=86.6%
+reopt[n2] it=3 beta=32: J=86.8% post64=87.0%
+reopt[n2] it=4 beta=32: J=87.1% post64=87.1%
+reopt[n2] it=5 beta=32: J=87.2% post64=87.4%
+reopt[n2] it=6 beta=32: J=87.5% post64=87.6%
+reopt[n2] it=7 beta=32: J=87.7% post64=87.7%
+reopt[n2] it=8 beta=64: J=87.7% post64=87.9%
+reopt[n2] it=9 beta=64: J=87.9% post64=88.0%
+reopt[n2] it=10 beta=64: J=88.0% post64=88.0%
+reopt[n2] it=11 beta=64: J=88.0% post64=88.1%
+reopt[n2] it=12 beta=64: J=88.1% post64=88.2%
+reopt[n2] it=13 beta=64: J=88.2% post64=88.3%
+reopt[n2] it=14 beta=64: J=88.3% post64=88.3%
+reopt[n2] it=15 beta=64: J=88.3% post64=88.3%
+reopt[n2] it=16 beta=64: J=88.3% post64=88.4%
+reopt[n2] it=17 beta=64: J=88.4% post64=88.4%
+reopt[n2] it=18 beta=64: J=88.4% post64=88.5%
+reopt[n2] it=19 beta=64: J=88.5% post64=88.5%
+reopt[n2] it=20 beta=64: J=88.5% post64=88.5%
+reopt[n2] it=21 beta=64: J=88.5% post64=88.6%
+reopt[n2] it=22 beta=64: J=88.6% post64=88.6%
+reopt[n2] it=23 beta=64: J=88.6% post64=88.6%
+reopt[n2] it=24 beta=64: J=88.6% post64=88.6%
+reopt[n2] it=25 beta=64: J=88.6% post64=88.6%
+reopt[n2] it=26 beta=64: J=88.6% post64=88.7%
+reopt[n2] it=27 beta=64: J=88.7% post64=88.7%
+reopt[n2] it=28 beta=64: J=88.7% post64=88.7%
+reopt[n2] it=29 beta=64: J=88.7% post64=88.7%
+reopt[n2] it=30 beta=64: J=88.7% post64=88.8%
+reopt[n2] it=31 beta=64: J=88.8% post64=88.8%
+reopt[n2] it=32 beta=64: J=88.8% post64=88.8%
+reopt[n2] it=33 beta=64: J=88.8% post64=88.8%
+reopt[n2] it=34 beta=64: J=88.8% post64=88.8%
+reopt[n2] it=35 beta=64: J=88.8% post64=88.8%
+reopt[n2] it=36 beta=64: J=88.8% post64=88.8%
+reopt[n2] it=37 beta=64: J=88.8% post64=88.9%
+reopt[n2] it=38 beta=64: J=88.9% post64=88.9%
+reopt[n2] it=39 beta=64: J=88.9% post64=88.9%
+reopt[n2] it=40 beta=64: J=88.9% post64=88.9%
+reopt[n2] it=41 beta=64: J=88.9% post64=88.9%
+reopt[n2] it=42 beta=64: J=88.9% post64=88.9%
+reopt[n2] it=43 beta=64: J=88.9% post64=88.9%
+reopt[n2] it=44 beta=64: J=88.9% post64=89.0%
+reopt[n2] it=45 beta=64: J=89.0% post64=89.0%
+reopt[n2] it=46 beta=64: J=89.0% post64=89.0%
+reopt[n2] it=47 beta=64: J=89.0% post64=89.0%
+reopt[n2] plateau at it=47
+STATE reopt@n2: n_SiN=1.9947 neff=1.6145 Tu=44.61% Td=44.39% total=89.00% IL=0.51dB imbalance=0.24%
+STATE reopt-design@n1(xcheck): n_SiN=2.0347 neff=1.6321 Tu=40.51% Td=40.51% total=81.02% IL=0.91dB imbalance=0.00%
+re-opt@n2 wall-clock 1.1 min, 48 iterations, best it47
+reopt[n3] it=0 beta=32: J=82.5% post64=87.0%
+reopt[n3] it=1 beta=32: J=87.1% post64=88.9%
+reopt[n3] it=2 beta=32: J=89.0% post64=89.8%
+reopt[n3] it=3 beta=32: J=89.8% post64=90.5%
+reopt[n3] it=4 beta=32: J=90.6% post64=91.4%
+reopt[n3] it=5 beta=32: J=91.5% post64=92.4%
+reopt[n3] it=6 beta=32: J=92.5% post64=93.3%
+reopt[n3] it=7 beta=32: J=93.3% post64=94.0%
+reopt[n3] it=8 beta=64: J=94.0% post64=94.5%
+reopt[n3] it=9 beta=64: J=94.5% post64=94.9%
+reopt[n3] it=10 beta=64: J=94.9% post64=95.3%
+reopt[n3] it=11 beta=64: J=95.3% post64=95.7%
+reopt[n3] it=12 beta=64: J=95.7% post64=96.1%
+reopt[n3] it=13 beta=64: J=96.1% post64=96.4%
+reopt[n3] it=14 beta=64: J=96.4% post64=96.7%
+reopt[n3] it=15 beta=64: J=96.7% post64=96.9%
+reopt[n3] it=16 beta=64: J=96.9% post64=97.1%
+reopt[n3] it=17 beta=64: J=97.1% post64=97.4%
+reopt[n3] it=18 beta=64: J=97.4% post64=97.5%
+reopt[n3] it=19 beta=64: J=97.5% post64=97.6%
+reopt[n3] it=20 beta=64: J=97.6% post64=97.8%
+reopt[n3] it=21 beta=64: J=97.8% post64=97.9%
+reopt[n3] it=22 beta=64: J=97.9% post64=98.0%
+reopt[n3] it=23 beta=64: J=98.0% post64=98.1%
+reopt[n3] it=24 beta=64: J=98.1% post64=98.2%
+reopt[n3] it=25 beta=64: J=98.2% post64=98.3%
+reopt[n3] it=26 beta=64: J=98.3% post64=98.4%
+reopt[n3] it=27 beta=64: J=98.4% post64=98.5%
+reopt[n3] it=28 beta=64: J=98.5% post64=98.5%
+reopt[n3] it=29 beta=64: J=98.5% post64=98.6%
+reopt[n3] it=30 beta=64: J=98.6% post64=98.6%
+reopt[n3] it=31 beta=64: J=98.6% post64=98.7%
+reopt[n3] it=32 beta=64: J=98.7% post64=98.8%
+reopt[n3] it=33 beta=64: J=98.8% post64=98.8%
+reopt[n3] it=34 beta=64: J=98.8% post64=98.8%
+reopt[n3] it=35 beta=64: J=98.8% post64=98.9%
+reopt[n3] it=36 beta=64: J=98.9% post64=98.9%
+reopt[n3] it=37 beta=64: J=98.9% post64=99.0%
+reopt[n3] it=38 beta=64: J=99.0% post64=99.0%
+reopt[n3] it=39 beta=64: J=99.0% post64=99.0%
+reopt[n3] it=40 beta=64: J=99.0% post64=99.1%
+reopt[n3] it=41 beta=64: J=99.1% post64=99.1%
+reopt[n3] it=42 beta=64: J=99.1% post64=99.1%
+reopt[n3] it=43 beta=64: J=99.1% post64=99.2%
+reopt[n3] it=44 beta=64: J=99.2% post64=99.2%
+reopt[n3] it=45 beta=64: J=99.2% post64=99.2%
+reopt[n3] it=46 beta=64: J=99.2% post64=99.3%
+reopt[n3] it=47 beta=64: J=99.3% post64=99.3%
+reopt[n3] it=48 beta=64: J=99.3% post64=99.3%
+reopt[n3] it=49 beta=64: J=99.3% post64=99.3%
+reopt[n3] it=50 beta=64: J=99.3% post64=99.3%
+reopt[n3] it=51 beta=64: J=99.3% post64=99.4%
+reopt[n3] it=52 beta=64: J=99.4% post64=99.4%
+reopt[n3] it=53 beta=64: J=99.4% post64=99.4%
+reopt[n3] it=54 beta=64: J=99.4% post64=99.4%
+reopt[n3] it=55 beta=64: J=99.4% post64=99.4%
+reopt[n3] it=56 beta=64: J=99.4% post64=99.4%
+reopt[n3] it=57 beta=64: J=99.4% post64=99.5%
+reopt[n3] it=58 beta=64: J=99.5% post64=99.5%
+reopt[n3] it=59 beta=64: J=99.5% post64=99.5%
+reopt[n3] it=60 beta=64: J=99.5% post64=99.5%
+reopt[n3] it=61 beta=64: J=99.5% post64=99.5%
+reopt[n3] it=62 beta=64: J=99.5% post64=99.5%
+reopt[n3] it=63 beta=64: J=99.5% post64=99.6%
+STATE reopt@n3: n_SiN=1.9347 neff=1.5896 Tu=49.71% Td=49.85% total=99.56% IL=0.02dB imbalance=0.14%
+re-opt@n3 wall-clock 1.6 min, 64 iterations, best it63
+process_variation_study.png / .md written
