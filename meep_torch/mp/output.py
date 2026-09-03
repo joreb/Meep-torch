@@ -15,7 +15,7 @@ import shutil
 
 import numpy as np
 
-from .run_control import Volume
+from .run_control import Volume, _eval_step_func
 from .functions import component_name, verbosity
 
 _E = ("Ex", "Ey", "Er", "Ep", "Ez")
@@ -106,20 +106,32 @@ def _output_family(sim, comps, tag):
     return _write(sim, tag, data)
 
 
+def _mk_component_fn(c, name):
+    # a real 1-arg def, not a defaulted-arg lambda: the meep step-function
+    # protocol dispatches on positional-arg count (run_control._eval_step_func)
+    def _out(sim):
+        return _output_component(sim, c)
+    _out.__name__ = name
+    return _out
+
+
+def _mk_family_fn(comps, tag, name):
+    def _out(sim):
+        return _output_family(sim, comps, tag)
+    _out.__name__ = name
+    return _out
+
+
 def _mk_single(comps, letter):
     """output_<f>field_<d> functions for one family (x, y, z, r, p)."""
-    fns = {}
-    for c in comps:
-        d = c[1].lower()
-        fns[f"output_{letter}field_{d}"] = (
-            lambda sim, _c=c: _output_component(sim, _c))
-    return fns
+    return {name: _mk_component_fn(c, name) for c in comps
+            for name in (f"output_{letter}field_{c[1].lower()}",)}
 
 
 for _comps, _letter in ((_E, "e"), (_D, "d"), (_H, "h"), (_B, "b")):
     globals().update(_mk_single(_comps, _letter))
-    globals()[f"output_{_letter}field"] = (
-        lambda sim, _cs=_comps, _l=_letter: _output_family(sim, _cs, _l))
+    globals()[f"output_{_letter}field"] = _mk_family_fn(
+        _comps, _letter, f"output_{_letter}field")
 del _comps, _letter
 
 
@@ -216,14 +228,17 @@ output_sfield = output_poynting
 
 
 # ------------------------------------------------------ output combinators
+# Each wrapper is a meep 2-arg step function f(sim, todo) whose inner funcs go
+# through _eval_step_func, so wrappers and run_control combinators nest freely
+# in either order (meep's protocol).
 def in_volume(v, *step_funcs):
     """Restrict output functions among step_funcs to the Volume v."""
-    def _in_volume(sim):
+    def _in_volume(sim, todo="step"):
         save = getattr(sim, "_output_volume", None)
         sim._output_volume = v
         try:
             for f in step_funcs:
-                f(sim)
+                _eval_step_func(sim, f, todo)
         finally:
             sim._output_volume = save
     return _in_volume
@@ -239,15 +254,29 @@ def to_appended(fname, *step_funcs):
     axis into one file named <prefix>-<fname> instead of per-time files."""
     store = {}
 
-    def _to_appended(sim):
+    def _to_appended(sim, todo="step"):
         save = getattr(sim, "_append_target", None)
         sim._append_target = (fname, store)
         try:
             for f in step_funcs:
-                f(sim)
+                _eval_step_func(sim, f, todo)
         finally:
             sim._append_target = save
     return _to_appended
+
+
+def with_prefix(prefix, *step_funcs):
+    """Prepend ``prefix`` to the file names output functions among step_funcs
+    write (meep with_prefix)."""
+    def _with_prefix(sim, todo="step"):
+        save = getattr(sim, "filename_prefix", None)
+        sim.filename_prefix = prefix + _prefix(sim)
+        try:
+            for f in step_funcs:
+                _eval_step_func(sim, f, todo)
+        finally:
+            sim.filename_prefix = save
+    return _with_prefix
 
 
 def output_png(compnt, options, rm_h5=True):

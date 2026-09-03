@@ -38,8 +38,12 @@ GOOD_CONDUCTOR_CUT_OFF = 1e70
 
 class Modes2D(NamedTuple):
     neff: torch.Tensor  # (k,) complex128
-    Ex: torch.Tensor  # (k, Nx, Ny) complex128
-    Ey: torch.Tensor  # (k, Nx, Ny) complex128
+    Ex: torch.Tensor  # (Nx, Ny, k) complex128
+    Ey: torch.Tensor  # (Nx, Ny, k) complex128
+    # Tangential H, (Nx, Ny, k) complex128, SI scale (E/ETA_0); filled by
+    # solve_2d, None from solvers that don't need them (fd2d_tensor).
+    Hx: torch.Tensor | None = None
+    Hy: torch.Tensor | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -483,7 +487,9 @@ def solve_2d(
     neff_t = torch.from_numpy((neff + 1j * keff).astype(np.complex128))
     Ex_t = torch.from_numpy(np.ascontiguousarray(E[0]).astype(np.complex128))
     Ey_t = torch.from_numpy(np.ascontiguousarray(E[1]).astype(np.complex128))
-    return Modes2D(neff=neff_t, Ex=Ex_t, Ey=Ey_t)
+    Hx_t = torch.from_numpy(np.ascontiguousarray(H[0]).astype(np.complex128))
+    Hy_t = torch.from_numpy(np.ascontiguousarray(H[1]).astype(np.complex128))
+    return Modes2D(neff=neff_t, Ex=Ex_t, Ey=Ey_t, Hx=Hx_t, Hy=Hy_t)
 
 
 def solve_2d_diff(

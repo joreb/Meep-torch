@@ -12,7 +12,7 @@ Genuine adapters only; whole-domain tensors -- chunked domain decomposition,
 MPI comms, eigenmode/CW solves and HDF5 field output raise NotImplementedError.
 structure/fields are the canonical engine owners behind mp.Simulation
 (init_sim builds structure then fields(structure); run() steps the fields).
-The stepper follows structure.pol (step_tm, or step_te for TE structures
+The stepper follows the fields' allocated component set (step_tm, or step_te
 built from a Simulation); the direct meep-style constructor surface
 (set_epsilon, add_point_source, ...) remains TM."""
 import math
@@ -154,7 +154,7 @@ class structure:
         self._outdir = ""
         self._chi2 = None
         self._nabs = 0
-        self.pol = "tm"
+        self._eps_te = None
         if isinstance(gv, Simulation):
             self._adopt(gv)
             return
@@ -171,7 +171,8 @@ class structure:
         self.npml = 0
         self._y_pmc = False
         self._y_mirror = 0
-        self._coeffs = None
+        self._x_mirror = 0
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
         for region in (br if isinstance(br, (list, tuple)) else [br] if br else []):
             self._apply_boundary(region)
 
@@ -180,8 +181,8 @@ class structure:
             raise NotImplementedError("structure(sim): 2D Simulations only")
         if sim.structure is None:
             sim._init_structure()
-        self.__dict__.update(sim.structure.__dict__)
-        self._coeffs = sim.structure.coeffs  # same tensors -> bit-for-bit with sim runs
+        sim._coeffs                       # compile into sim.structure's slot first
+        self.__dict__.update(sim.structure.__dict__)  # shared slots -> bit-for-bit with sim runs
 
     @classmethod
     def _from_sim(cls, sim: Simulation):
@@ -192,17 +193,20 @@ class structure:
         st._outdir = ""
         st._chi2 = None
         st._nabs = 0
-        st.pol = sim._pol
         st.grid, st.gs = sim.grid, sim.gs
-        st._eps = sim._rm.eps_tm if sim._pol == "tm" else sim._rm.eps_te_xx
+        # both orientations stored; fields' component set picks at compile
+        # time (meep: structure holds the full eps, components choose)
+        st._eps = sim._rm.eps_tm
+        st._eps_te = sim._rm.eps_te_xx
         st._chi3 = sim._rm.chi3
         st._poles = list(sim._rm.poles)
         st._pole_masks = list(sim._rm.pole_masks)
         st._sd, st._sb, st._mu = sim._cond if sim._cond is not None else (None,) * 3
         st.npml = sim._npml
         st._y_pmc = sim._y_pmc
-        st._y_mirror = +1 if sim._sym_cy else 0
-        st._coeffs = None
+        st._y_mirror = sim._sym_py if sim._sym_cy else 0
+        st._x_mirror = sim._sym_px if sim._sym_cx else 0
+        st._coeffs = st._coeffs_tm = st._coeffs_te = None
         return st
 
     def _field(self, v) -> torch.Tensor:
@@ -232,42 +236,58 @@ class structure:
             self._nabs = max(self._nabs, n)
         else:
             self.npml = max(self.npml, n)
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     @property
     def coeffs(self):
-        if self._coeffs is None:
-            extra = {}
-            sd, sb, mu = self._sd, self._sb, self._mu
-            if self._nabs:
-                g = self.grid
-                kw = dict(dtype=g.dtype, device=g.device)
-                ramp = absorber_sigma(g.nx, self._nabs, g.dx, **kw)[:, None].expand(g.nx, g.ny).clone()
-                if not self._y_pmc:
-                    ramp = torch.maximum(
-                        ramp, absorber_sigma(g.ny, self._nabs, g.dx, **kw)[None, :].expand(g.nx, g.ny))
-                sd = ramp if sd is None else sd + ramp
-                sb = ramp if sb is None else sb + ramp
-            if sd is not None or sb is not None or mu is not None:
-                extra = dict(sigma_d=sd, sigma_b=sb, mu=mu)
-            if self.pol == "te":
-                self._coeffs = build_te_coeffs(
-                    self.grid, eps_inf=self._eps, poles=self._poles,
-                    pole_masks=self._pole_masks or None, chi3=self._chi3,
-                    npml=self.npml, **extra)
-            else:
-                self._coeffs = build_tm_coeffs(
-                    self.grid, eps_inf=self._eps, poles=self._poles,
-                    pole_masks=self._pole_masks or None, chi2=self._chi2,
-                    chi3=self._chi3, npml=self.npml, y_pmc=self._y_pmc,
-                    y_mirror=self._y_mirror, **extra)
-        return self._coeffs
+        """Default (TM component set) view; fields asks coeffs_for() with its
+        allocated set -- meep style: the structure holds the materials, the
+        required components choose the compiled form."""
+        return self.coeffs_for(_TM_COMPONENTS)
+
+    def coeffs_for(self, components):
+        te = "Hz" in components
+        slot = "_coeffs_te" if te else "_coeffs_tm"
+        cached = getattr(self, slot, None)
+        if cached is not None:
+            return cached
+        # legacy single-slot cache (adopted structures): honor it for TM
+        if not te and getattr(self, "_coeffs", None) is not None:
+            setattr(self, slot, self._coeffs)
+            return self._coeffs
+        extra = {}
+        sd, sb, mu = self._sd, self._sb, self._mu
+        if self._nabs:
+            g = self.grid
+            kw = dict(dtype=g.dtype, device=g.device)
+            ramp = absorber_sigma(g.nx, self._nabs, g.dx, **kw)[:, None].expand(g.nx, g.ny).clone()
+            if not self._y_pmc:
+                ramp = torch.maximum(
+                    ramp, absorber_sigma(g.ny, self._nabs, g.dx, **kw)[None, :].expand(g.nx, g.ny))
+            sd = ramp if sd is None else sd + ramp
+            sb = ramp if sb is None else sb + ramp
+        if sd is not None or sb is not None or mu is not None:
+            extra = dict(sigma_d=sd, sigma_b=sb, mu=mu)
+        if te:
+            eps = self._eps_te if self._eps_te is not None else self._eps
+            built = build_te_coeffs(
+                self.grid, eps_inf=eps, poles=self._poles,
+                pole_masks=self._pole_masks or None, chi3=self._chi3,
+                npml=self.npml, **extra)
+        else:
+            built = build_tm_coeffs(
+                self.grid, eps_inf=self._eps, poles=self._poles,
+                pole_masks=self._pole_masks or None, chi2=self._chi2,
+                chi3=self._chi3, npml=self.npml, y_pmc=self._y_pmc,
+                y_mirror=self._y_mirror, x_mirror=self._x_mirror, **extra)
+        setattr(self, slot, built)
+        return built
 
     # --- material mutation (each invalidates the compiled coefficients) ---
     def set_epsilon(self, eps, use_anisotropic_averaging=False, tol=1e-4,
                     maxeval=0):
         self._eps = self._field(eps)
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     def set_materials(self, mat_func=None, *a, **k):
         if mat_func is None or not (callable(mat_func) or isinstance(mat_func, (int, float))):
@@ -280,11 +300,11 @@ class structure:
         if fn is None:
             c, fn = None, c
         self._eps = 1.0 / self._field(fn)
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     def set_mu(self, mu):
         self._mu = self._field(mu)
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     def set_conductivity(self, c, cond):
         name = c if isinstance(c, str) else ""
@@ -294,7 +314,7 @@ class structure:
             self._sb = self._field(cond)
         else:
             raise ValueError(f"set_conductivity component {c!r}: expected an E/D or H/B component")
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     def _chi_field(self, args):
         # SWIG overloads: set_chiN(value) or set_chiN(component, value)
@@ -302,11 +322,11 @@ class structure:
 
     def set_chi2(self, *args):
         self._chi2 = self._chi_field(args)
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     def set_chi3(self, *args):
         self._chi3 = self._chi_field(args)
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     def add_susceptibility(self, sus, field_type=None, mask=None):
         """Append one dispersive pole. `sus` is an mp Susceptibility (via its
@@ -320,11 +340,11 @@ class structure:
             # build_tm_coeffs wants all-or-no masks; None -> uniform
             self._pole_masks = [torch.ones_like(self._eps) if m is None else m
                                 for m in self._pole_masks]
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     def remove_susceptibilities(self):
         self._poles, self._pole_masks = [], []
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     # --- queries ---
     def _at(self, pt: Vector3, t: torch.Tensor) -> float:
@@ -359,7 +379,7 @@ class structure:
             raise ValueError("mix_with needs an equal grid layout")
         f = float(frac)
         self._eps = 1.0 / ((1.0 - f) / self._eps + f / other._eps)
-        self._coeffs = None
+        self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     def equal_layout(self, other):
         return (self.grid.nx, self.grid.ny, self.grid.dx) == \
@@ -437,18 +457,19 @@ class fields:
     coefficients; DFT monitors registered via add_dft* accumulate inside
     step() exactly as core.run.run_tm folds them."""
 
-    def __init__(self, s, m=0, beta=0, zero_fields_near_cylorigin=True):
+    def __init__(self, s, m=0, beta=0, zero_fields_near_cylorigin=True,
+                 components=None):
         if m or beta:
             raise NotImplementedError("cylindrical m / bloch beta: 2D cartesian only")
         self.s = s
-        c = s.coeffs
+        # meep require_component flow: the SOURCES (spec) define the required
+        # component set; the structure holds the materials for either set.
+        self._components = tuple(components) if components else _TM_COMPONENTS
+        c = self._mcoeffs
         self._n_mpoles = (0 if getattr(c, "mc1x", None) is None
                           else c.mc1x.shape[0])
         self._state = None
-        # meep require_component/alloc_f flow: allocate the component set the
-        # structure's coefficients define (TE coefficients carry c1x)
-        for comp in (_TE_COMPONENTS if getattr(c, "c1x", None) is not None
-                     else _TM_COMPONENTS):
+        for comp in self._components:
             self.alloc_f(comp)
         self._t = 0
         self._sources = []
@@ -464,11 +485,10 @@ class fields:
         whole set and the rest report False. A component outside the set the
         structure's coefficients define raises (the 2D TM/TE sets are fixed;
         force_all_components is not supported)."""
-        te = getattr(self.s.coeffs, "c1x", None) is not None
-        if c not in (_TE_COMPONENTS if te else _TM_COMPONENTS):
+        if c not in self._components:
             raise NotImplementedError(
-                f"component {c!r} is not in this structure's "
-                f"{'TE' if te else 'TM'} component set (fixed 2D sets)")
+                f"component {c!r} is not in this fields' required component "
+                f"set {self._components} (fixed 2D sets)")
         if self._state is not None:
             return False
         self._state = self._fresh_state()
@@ -479,13 +499,17 @@ class fields:
         test on f[c]; an absent namedtuple field or a None slot is null)."""
         return getattr(self._state, comp, None) is not None
 
+    @property
+    def _mcoeffs(self):
+        return self.s.coeffs_for(self._components)
+
     def _fresh_state(self):
-        c = self.s.coeffs
-        if getattr(c, "c1x", None) is not None:      # TE coefficient set
+        c = self._mcoeffs
+        if "Hz" in self._components:                 # TE component set
             return init_te_state(self.s.grid, n_poles=c.c1x.shape[0])
         return init_tm_state(self.s.grid, n_poles=c.c1.shape[0], y_pmc=c.y_pmc,
                              n_mpoles=self._n_mpoles,
-                             y_mirror=+1 if c.y_mirror_lo else 0)
+                             y_mirror=c.y_mirror_lo, x_mirror=c.x_mirror_lo)
 
     # --- stepping (the physics core) ---
     def _phase_mod(self):
@@ -509,14 +533,14 @@ class fields:
         from curl H). The CPML recursive-convolution psi updates and sigma
         damping live here, where meep applies its sigma (core.stepper /
         core.stepper_te phase kernels)."""
-        self._state = self._phase_mod().step_db(self._state, self.s.coeffs, ft)
+        self._state = self._phase_mod().step_db(self._state, self._mcoeffs, ft)
 
     def step_source(self, ft="D"):
         """meep step_source(ft): inject the registered soft current sources at
         the current step -- electric currents into D (ft="D"), magnetic TFSF
         currents (source.h_masks) into B (ft="B")."""
         mod = self._phase_mod()
-        m = self.s.coeffs
+        m = self._mcoeffs
         t = self._t
         if ft == "B":
             for src in self._sources:
@@ -543,13 +567,13 @@ class fields:
     def update_pols(self, ft="E"):
         """meep update_pols: advance the ADE Lorentz polarizations from the
         pre-update E."""
-        self._state = self._phase_mod().update_pols(self._state, self.s.coeffs)
+        self._state = self._phase_mod().update_pols(self._state, self._mcoeffs)
 
     def update_eh(self, ft):
         """meep update_eh(ft): form H from B and the magnetic polarizations
         (ft="H"), or solve E from D - P including the instantaneous chi2/chi3
         fixed point (ft="E")."""
-        self._state = self._phase_mod().update_eh(self._state, self.s.coeffs, ft)
+        self._state = self._phase_mod().update_eh(self._state, self._mcoeffs, ft)
 
     def step_boundaries(self, ft=None):
         """meep step_boundaries: chunk-boundary / periodic field exchange --
@@ -623,16 +647,16 @@ class fields:
         mons = [self._monitors[n][0] for n in names]
         src = self._sources[0] if self._sources else None
         self._state, outs = _run_chunk(self._step_kernel(), self._state,
-                                       self.s.coeffs, self._t, k, src, mons)
+                                       self._mcoeffs, self._t, k, src, mons)
         for name, mon, out in zip(names, mons, outs):
             self._fold(name, mon, out)
         self._t += k
 
     def time(self):
-        return self._t * self.s.coeffs.dt
+        return self._t * self._mcoeffs.dt
 
     def round_time(self):
-        return self._t * self.s.coeffs.dt
+        return self._t * self._mcoeffs.dt
 
     def reset(self):
         """Zero the fields, rewind time and drop DFT accumulations."""

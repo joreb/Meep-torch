@@ -5,6 +5,7 @@ combinators, stop conditions, Harminv. Adapter only (no physics) -- everything
 here is bookkeeping around ``f(sim)`` callbacks; Simulation._run_until drives
 the engine in chunks sized by these hooks (see plan_hooks / chunk_size).
 """
+import inspect
 import math
 import time
 from collections import namedtuple
@@ -185,54 +186,135 @@ def dft_name(f):
     return f.name if isinstance(f, DftObj) else f
 
 
-# --- step-function combinators (meep names; each wraps fns called as f(sim)) ---
-class at_beginning:
+# meep FluxData: opaque snapshot of a flux monitor's accumulated DFT fields
+# (Simulation.get_flux_data / load_flux_data / load_minus_flux_data).
+FluxData = namedtuple("FluxData", ["E", "H"])
+
+
+# --- step-function calling convention (meep _eval_step_func) ---
+def _num_args(func):
+    """meep get_num_args: positional-arg count of a step function (bound
+    methods and callable class instances drop self)."""
+    if inspect.ismethod(func):
+        return func.__code__.co_argcount - 1
+    if inspect.isfunction(func):
+        return func.__code__.co_argcount
+    return func.__call__.__func__.__code__.co_argcount - 1
+
+
+def _eval_step_func(sim, func, todo):
+    """meep's step-function protocol: a 1-arg f(sim) fires only on
+    todo == "step"; a 2-arg f(sim, todo) (combinators, output wrappers) is
+    always called and gates itself."""
+    n = _num_args(func)
+    if n not in (1, 2):
+        raise ValueError(f"step function {getattr(func, '__name__', func)!r} "
+                         "requires 1 or 2 arguments")
+    if n == 1:
+        if todo == "step":
+            func(sim)
+    else:
+        func(sim, todo)
+
+
+# --- step-function combinators (meep names) ---
+class _Combinator:
+    """A meep f(sim, todo) step function (so it nests inside to_appended /
+    in_volume / other combinators); plan_hooks also recognizes the concrete
+    classes at top level for chunk-sized scheduling."""
+
+    def _fire(self, sim, todo):
+        for f in self.fns:
+            _eval_step_func(sim, f, todo)
+
+
+class at_beginning(_Combinator):
+    def __init__(self, *fns):
+        self.fns = fns
+        self._done = False
+
+    def __call__(self, sim, todo="step"):
+        if not self._done:
+            self._fire(sim, todo)
+            self._done = True
+
+
+class at_end(_Combinator):
     def __init__(self, *fns):
         self.fns = fns
 
+    def __call__(self, sim, todo="step"):
+        if todo == "finish":
+            self._fire(sim, "step")
+            self._fire(sim, "finish")
 
-class at_end:
-    def __init__(self, *fns):
-        self.fns = fns
 
-
-class at_time:
+class at_time(_Combinator):
     def __init__(self, t, *fns):
         self.t = float(t)
         self.fns = fns
+        self._done = False
+
+    def __call__(self, sim, todo="step"):
+        if todo == "finish" or sim.round_time() >= self.t:
+            if not self._done or todo == "finish":
+                self._fire(sim, todo)
+            self._done = self._done or todo == "step"
 
 
-class at_every:
+class at_every(_Combinator):
     def __init__(self, dt, *fns):
         self.every = float(dt)
         self.fns = fns
+        self._tlast = 0.0
+
+    def __call__(self, sim, todo="step"):
+        t = sim.round_time()
+        if todo == "finish" or t >= self._tlast + self.every - 0.5 * sim.grid.dt:
+            self._fire(sim, todo)
+            self._tlast = t
 
 
-class after_time:
+class after_time(_Combinator):
     def __init__(self, t, *fns):
         self.t = float(t)
         self.fns = fns
 
+    def __call__(self, sim, todo="step"):
+        if todo == "finish" or sim.round_time() >= self.t:
+            self._fire(sim, todo)
 
-class before_time:
+
+class before_time(_Combinator):
     def __init__(self, t, *fns):
         self.t = float(t)
         self.fns = fns
 
+    def __call__(self, sim, todo="step"):
+        if todo == "finish" or sim.round_time() < self.t:
+            self._fire(sim, todo)
 
-class after_sources:
+
+class after_sources(_Combinator):
     def __init__(self, *fns):
         self.fns = fns
 
+    def __call__(self, sim, todo="step"):
+        if sim.round_time() >= sim._source_cutoff():
+            self._fire(sim, todo)
 
-class during_sources:
+
+class during_sources(_Combinator):
     def __init__(self, *fns):
         self.fns = fns
+        self._finished = False
 
-
-def with_prefix(prefix, *step_funcs):
-    """meep with_prefix renames output files; no file output here -> passthrough."""
-    return step_funcs[0] if len(step_funcs) == 1 else list(step_funcs)
+    def __call__(self, sim, todo="step"):
+        if sim.round_time() < sim._source_cutoff():
+            self._fire(sim, "step")
+        elif not self._finished:
+            self._fire(sim, "finish")
+            self._finished = True
 
 
 # --- stop conditions (usable as until= / until_after_sources= values) ---
@@ -370,17 +452,19 @@ class PadeDFT:
 def plan_hooks(step_funcs, cutoff):
     """Normalize meep step functions.
 
-    Returns (begin, end, per_step, scheduled): ``begin``/``end`` fire once
-    around the run; ``per_step`` is (fn, t_start, t_stop) fired after every
-    step whose post-step time t satisfies t >= t_start and t - dt < t_stop;
-    ``scheduled`` is [next_t, period_or_None, fns] fired when t crosses next_t.
+    Returns (begin, per_step, scheduled): ``begin`` fires once before the
+    loop; ``per_step`` is (fn, t_start, t_stop) fired after every step whose
+    post-step time t satisfies t >= t_start and t - dt < t_stop; ``scheduled``
+    is [next_t, period_or_None, fns] fired when t crosses next_t. at_end
+    contributes nothing here: the run loop's final "finish" pass over the
+    original step_funcs fires it (meep's run-end protocol).
     """
-    begin, end, per_step, scheduled = [], [], [], []
+    begin, per_step, scheduled = [], [], []
     for f in step_funcs:
         if isinstance(f, at_beginning):
-            begin.extend(f.fns)
+            begin.append(f)
         elif isinstance(f, at_end):
-            end.extend(f.fns)
+            pass                      # fired by the run-end "finish" pass
         elif isinstance(f, at_time):
             scheduled.append([f.t, None, f.fns])
         elif isinstance(f, at_every):
@@ -397,7 +481,7 @@ def plan_hooks(step_funcs, cutoff):
             per_step.append((f, 0.0, math.inf))
         else:
             raise TypeError(f"unsupported step function {f!r}")
-    return begin, end, per_step, scheduled
+    return begin, per_step, scheduled
 
 
 def chunk_size(t, dt, steps_left, per_step, scheduled, has_conds):
@@ -418,13 +502,13 @@ def chunk_size(t, dt, steps_left, per_step, scheduled, has_conds):
 def fire_per_step(sim, per_step, t, dt):
     for (g, a, b) in per_step:
         if t >= a - 1e-9 and t - dt < b - 1e-9:
-            g(sim)
+            _eval_step_func(sim, g, "step")
 
 
 def fire_scheduled(sim, scheduled, t):
     for sch in scheduled:
         while sch[0] is not None and t >= sch[0] - 1e-9:
             for g in sch[2]:
-                g(sim)
+                _eval_step_func(sim, g, "step")
             sch[0] = sch[0] + sch[1] if sch[1] else None
     scheduled[:] = [s for s in scheduled if s[0] is not None]

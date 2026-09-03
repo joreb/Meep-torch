@@ -186,7 +186,9 @@ def test_phase_path_matches_fused_te_kernel_500_steps():
                            center=mp.Vector3())],
         boundary_layers=[mp.PML(0.5)])
     st = core_structure(sim)
-    f = core_fields(st)
+    # spec-driven component set (meep require_component flow): the TE set
+    # comes from the sim's Hz source, not from a structure polarization flag
+    f = core_fields(st, components=sim._component_set())
     src = LineSource(sim.grid, 20, 15, 16,
                      profile=mp.GaussianSource(1.0, fwidth=0.3).profile())
     src.mask = src.mask[:, :-1]                     # Ey-grid injection (TE)
@@ -194,7 +196,7 @@ def test_phase_path_matches_fused_te_kernel_500_steps():
     for _ in range(500):
         f.step()
 
-    ref, _ = run_te(init_te_state(sim.grid), st.coeffs, 500, source=src)
+    ref, _ = run_te(init_te_state(sim.grid), st.coeffs_for(sim._component_set()), 500, source=src)
     assert float(f._state.Hz.abs().max()) > 0
     for name in ("Hz", "Ex", "Ey", "Dx", "Dy",
                  "psi_Eyx", "psi_Exy", "psi_Hzy", "psi_Hzx"):

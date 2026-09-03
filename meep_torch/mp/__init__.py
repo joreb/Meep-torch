@@ -20,10 +20,11 @@ from .material import (ALL, Absorber, DrudeSusceptibility, FreqRange,
                        NoisyDrudeSusceptibility, NoisyLorentzianSusceptibility,
                        PML, Susceptibility, Transition, get_rotation_matrix)
 from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
-                          DftNear2Far, DftObj, Harminv, PadeDFT, Volume,
-                          after_sources, after_time, at_beginning, at_end,
-                          at_every, at_time, before_time, during_sources,
-                          stop_after_walltime, stop_when_fields_decayed, with_prefix)
+                          DftNear2Far, DftObj, FluxData, Harminv, PadeDFT,
+                          Volume, after_sources, after_time, at_beginning,
+                          at_end, at_every, at_time, before_time,
+                          during_sources, stop_after_walltime,
+                          stop_when_fields_decayed)
 from .simulation import (EnergyRegion, FluxRegion, ForceRegion, Identity, Mirror,
                          ModeRegion, Near2FarRegion, P, R, Rotate2, Rotate4,
                          Simulation, Symmetry, X, Y, Z)

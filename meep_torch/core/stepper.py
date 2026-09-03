@@ -18,8 +18,8 @@ class TMState(NamedTuple):
     P_prev: torch.Tensor   # (n_poles, nx, ny)
     psi_Ezy: torch.Tensor  # (nx, ny-1)      CPML memory, dEz/dy in Hx update
     psi_Ezx: torch.Tensor  # (nx-1, ny)      dEz/dx in Hy update
-    psi_Hyx: torch.Tensor  # (nx-2, ny-2) or (nx-2, ny) if y_pmc
-    psi_Hxy: torch.Tensor  # same shape as psi_Hyx
+    psi_Hyx: torch.Tensor  # (nx_e, ny_e): live Ez region -- interior, or up
+    psi_Hxy: torch.Tensor  # to the wall under y_pmc / a mirror (init_tm_state)
     # W5.5 magnetic Lorentz poles (allocated only when n_mpoles > 0)
     Bx: torch.Tensor | None = None       # (nx, ny-1)
     By: torch.Tensor | None = None       # (nx-1, ny)
@@ -27,13 +27,20 @@ class TMState(NamedTuple):
     Mx_prev: torch.Tensor | None = None
     My_cur: torch.Tensor | None = None   # (nm, nx-1, ny)
     My_prev: torch.Tensor | None = None
+    # odd-mirror on-plane H rows (y_mirror/x_mirror == -1): the H node ON the
+    # cut plane is live (driven by 2 Ez[0]/dx via the odd ghost), kept apart
+    # so Hx/Hy keep their standard shapes for every consumer
+    Hx0: torch.Tensor | None = None      # (nx,)  Hx at the low-y cut
+    Hy0: torch.Tensor | None = None      # (ny,)  Hy at the low-x cut
 
 
 def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
-                  n_mpoles: int = 0, y_mirror: int = 0) -> TMState:
+                  n_mpoles: int = 0, y_mirror: int = 0,
+                  x_mirror: int = 0) -> TMState:
     nx, ny = grid.nx, grid.ny
-    # psi_Hxy rows: PEC interior ny-2; both-wall PMC ny; even-mirror lo ny-1
-    ny_e = ny if y_pmc else (ny - 1 if y_mirror == +1 else ny - 2)
+    # psi_Hxy rows: PEC interior ny-2; both-wall PMC ny; mirror lo ny-1
+    ny_e = ny if y_pmc else (ny - 1 if y_mirror else ny - 2)
+    nx_e = nx - 1 if x_mirror else nx - 2
     mag = {}
     if n_mpoles:
         mag = dict(
@@ -52,8 +59,10 @@ def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
         P_prev=grid.zeros(n_poles, nx, ny),
         psi_Ezy=grid.zeros(nx, ny - 1),
         psi_Ezx=grid.zeros(nx - 1, ny),
-        psi_Hyx=grid.zeros(nx - 2, ny_e),
-        psi_Hxy=grid.zeros(nx - 2, ny_e),
+        psi_Hyx=grid.zeros(nx_e, ny_e),
+        psi_Hxy=grid.zeros(nx_e, ny_e),
+        Hx0=grid.zeros(nx) if y_mirror == -1 else None,
+        Hy0=grid.zeros(ny) if x_mirror == -1 else None,
         **mag,
     )
 
@@ -77,37 +86,54 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         dEz_dx = (state.Ez[1:, :] - state.Ez[:-1, :]) / dx        # (nx-1, ny)
         psi_Ezx = m.b_hx * state.psi_Ezx + m.a_hx * dEz_dx
         curl_hy = dEz_dx / m.k_hx + psi_Ezx
+        # odd-mirror on-plane H nodes: odd ghost Ez[-1] = -Ez[0] across the
+        # cut -> dEz/dn = 2 Ez[0]/dx there (no PML at the cut, no psi)
+        mir = {}
+        if state.Hx0 is not None:
+            mir["Hx0"] = state.Hx0 - dt * 2.0 * state.Ez[:, 0] / dx
+        if state.Hy0 is not None:
+            mir["Hy0"] = state.Hy0 + dt * 2.0 * state.Ez[0, :] / dx
         if m.mc1x is not None:
             # W5.5 mu-Lorentz: B integrates the curl; update_eh(H) forms H = B - sum M
             return state._replace(psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
                                   Bx=state.Bx - dt * curl_hx,
-                                  By=state.By + dt * curl_hy)
+                                  By=state.By + dt * curl_hy, **mir)
         if m.h1x is not None:
             # W5: dB/dt = -curl E - sigma_b B, B = mu H (fused: mu inside h2*)
             return state._replace(psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
                                   Hx=m.h1x * state.Hx - m.h2x * curl_hx,
-                                  Hy=m.h1y * state.Hy + m.h2y * curl_hy)
+                                  Hy=m.h1y * state.Hy + m.h2y * curl_hy, **mir)
         return state._replace(psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
                               Hx=state.Hx - dt * curl_hx,
-                              Hy=state.Hy + dt * curl_hy)
+                              Hy=state.Hy + dt * curl_hy, **mir)
 
     # --- D update (from H at n+1/2) ---
+    # Ghost/plane H beyond each wall, then difference over the live Ez
+    # region: interior (PEC walls), all rows (y-PMC), or rows/cols from the
+    # cut plane up (mirror: even = H=0 ghost, odd = the Hx0/Hy0 plane node).
     Hx, Hy = state.Hx, state.Hy
     if m.y_pmc:
-        Hx_pad = F.pad(Hx, (1, 1))                                # PMC: H=0 beyond wall
-        dHx_dy = (Hx_pad[1:-1, 1:] - Hx_pad[1:-1, :-1]) / dx      # (nx-2, ny)
-        dHy_dx = (Hy[1:, :] - Hy[:-1, :]) / dx                    # (nx-2, ny)
-        pad_spec = (0, 0, 1, 1)                                   # pad x only
-    elif m.y_mirror_lo:
-        # even-mirror cut at j=0: PMC wall low (H=0 ghost), PEC top
-        Hx_pad = F.pad(Hx, (1, 0))                                # low ghost only
-        dHx_dy = (Hx_pad[1:-1, 1:] - Hx_pad[1:-1, :-1]) / dx      # (nx-2, ny-1)
-        dHy_dx = (Hy[1:, :-1] - Hy[:-1, :-1]) / dx                # (nx-2, ny-1)
-        pad_spec = (0, 1, 1, 1)                                   # pad top y + x
+        Hx = F.pad(Hx, (1, 1))                                    # PMC: H=0 beyond wall
+        pad_y, ys = (0, 0), slice(None)
+    elif m.y_mirror_lo == +1:
+        Hx = F.pad(Hx, (1, 0))                                    # even: H=0 ghost at cut
+        pad_y, ys = (0, 1), slice(None, -1)
+    elif m.y_mirror_lo == -1:
+        Hx = torch.cat([state.Hx0[:, None], Hx], dim=1)           # odd: plane node live
+        pad_y, ys = (0, 1), slice(None, -1)
     else:
-        dHx_dy = (Hx[1:-1, 1:] - Hx[1:-1, :-1]) / dx              # (nx-2, ny-2)
-        dHy_dx = (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / dx              # (nx-2, ny-2)
-        pad_spec = (1, 1, 1, 1)
+        pad_y, ys = (1, 1), slice(1, -1)
+    if m.x_mirror_lo == +1:
+        Hy = F.pad(Hy, (0, 0, 1, 0))
+        pad_x, xs = (0, 1), slice(None, -1)
+    elif m.x_mirror_lo == -1:
+        Hy = torch.cat([state.Hy0[None, :], Hy], dim=0)
+        pad_x, xs = (0, 1), slice(None, -1)
+    else:
+        pad_x, xs = (1, 1), slice(1, -1)
+    dHx_dy = (Hx[xs, 1:] - Hx[xs, :-1]) / dx
+    dHy_dx = (Hy[1:, ys] - Hy[:-1, ys]) / dx
+    pad_spec = pad_y + pad_x
 
     psi_Hyx = m.b_ex * state.psi_Hyx + m.a_ex * dHy_dx
     psi_Hxy = m.b_ey * state.psi_Hxy + m.a_ey * dHx_dy

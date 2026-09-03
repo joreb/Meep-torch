@@ -12,6 +12,7 @@ sign, a +axis forward wave maps to a_plus.
 """
 from typing import Sequence
 
+import numpy as np
 import torch
 
 from ..modes.fd1d import solve_1d
@@ -55,6 +56,77 @@ def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,
             # and |S21|=|S12| for reciprocal devices with different port modes
             # (e.g. a taper). The sqrt(|N|) factor is real, so S-matrix phase
             # (group index) is unaffected.
+            pn = float(abs(N)) ** 0.5
+            a_p[i, m] = (ovl_EH + ovl_HE) / (2.0 * N) * pn
+            a_m[i, m] = (ovl_EH - ovl_HE) / (2.0 * N) * pn
+    return a_p, a_m
+
+
+def decompose_3d(mon, acc, eps_cs, dx, n_modes: int = 1,
+                 target_neff: float | None = None):
+    """3D analogue of :func:`decompose` for an x-normal DFT plane.
+
+    ``mon`` is the ``FluxMonitor3D(normal="x")`` whose accumulator ``acc``
+    (``(nfreq, 8, h0-l0, h1-l1)``) already holds the DFT'd tangential pairs
+    (Ey, Hz) / (Ez, Hy) on the windowed plane; ``eps_cs`` is the FULL
+    ``(ny, nz)`` cell-center cross-section at the monitor plane (the window
+    is re-derived from ``mon`` and the sub-cross-section mode-solved with the
+    full-vector ``solve_2d``; solver x = lab y, solver y = lab z, and the
+    solver's Yee layout coincides with the FDTD in-plane staggering).
+
+    Bi-orthogonal <E1 x H2> overlap, no conjugate, power-normalized per the
+    2D convention: for a lossless cross-section ``0.5 * |a|**2`` is the modal
+    power in the same units as ``mon.flux(acc, dx)``. Returns ``(a_p, a_m)``
+    of shape ``(nfreq, n_modes)``; ``a_p`` is the +x-propagating wave.
+    Forward-only (mode profiles detached, matching :func:`decompose`).
+    """
+    from ..modes.derivatives import ETA_0
+    from ..modes.fd2d import solve_2d
+
+    if mon.normal != "x":
+        # ponytail: x-normal only -- every 3D port validation in the repo is
+        # x-normal; add y/z by permuting the FluxMonitor3D._plane pair layout.
+        raise NotImplementedError("decompose_3d supports x-normal monitors only")
+    freqs = [float(f) for f in mon.freqs]
+    acc = acc.detach().to(device="cpu", dtype=torch.float64)
+    ReaE, ImaE, ReaH, ImaH, RebE, ImbE, RebH, ImbH = acc.unbind(1)
+    Ea = torch.complex(ReaE, ImaE)   # Ey at (j+1/2, k)
+    Ha = torch.complex(ReaH, ImaH)   # Hz at (j+1/2, k)
+    Eb = torch.complex(RebE, ImbE)   # Ez at (j, k+1/2)
+    Hb = torch.complex(RebH, ImbH)   # Hy at (j, k+1/2)
+    eps_np = (eps_cs.detach().cpu().numpy() if isinstance(eps_cs, torch.Tensor)
+              else np.asarray(eps_cs))
+    ny, nz = eps_np.shape
+    # Same window clipping as FluxMonitor3D._plane (m0, m1 = common min shape).
+    m0, m1 = ny - 1, nz - 1
+    if mon.win is not None:
+        l0, h0, l1, h1 = mon.win
+    else:
+        l0, h0, l1, h1 = mon.ap, m0 - mon.ap, mon.ap, m1 - mon.ap
+    l0, l1 = max(0, l0), max(0, l1)
+    h0, h1 = min(m0, h0), min(m1, h1)
+    if Ea.shape[-2:] != (h0 - l0, h1 - l1):
+        raise ValueError(
+            f"acc window {tuple(Ea.shape[-2:])} does not match the "
+            f"({h0 - l0}, {h1 - l1}) window derived from mon and eps_cs")
+    sub = np.real(eps_np[l0:h0 + 1, l1:h1 + 1]).astype(np.float64)
+    nf = len(freqs)
+    a_p = torch.zeros(nf, n_modes, dtype=torch.complex128)
+    a_m = torch.zeros(nf, n_modes, dtype=torch.complex128)
+    dS = dx * dx
+    for i, f in enumerate(freqs):
+        modes = solve_2d(sub, dx, f, k=n_modes, target_neff=target_neff)
+        for m in range(n_modes):
+            sl = (slice(0, h0 - l0), slice(0, h1 - l1), m)
+            Em_a = modes.Ex[sl]           # lab Ey on the (j+1/2, k) sublattice
+            Em_b = modes.Ey[sl]           # lab Ez on the (j, k+1/2) sublattice
+            Hm_b = modes.Hx[sl] * ETA_0   # lab Hy, rescaled to FDTD units
+            Hm_a = modes.Hy[sl] * ETA_0   # lab Hz
+            N = complex((Em_a * Hm_a - Em_b * Hm_b).sum()) * dS
+            if abs(N) < _NORM_FLOOR:
+                raise ValueError(f"degenerate/leaky mode {m} at f={f}: norm {abs(N):.3e}")
+            ovl_EH = (Ea[i] * Hm_a - Eb[i] * Hm_b).sum() * dS
+            ovl_HE = (Em_a * Ha[i] - Em_b * Hb[i]).sum() * dS
             pn = float(abs(N)) ** 0.5
             a_p[i, m] = (ovl_EH + ovl_HE) / (2.0 * N) * pn
             a_m[i, m] = (ovl_EH - ovl_HE) / (2.0 * N) * pn

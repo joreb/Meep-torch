@@ -31,8 +31,9 @@ from .coords import (GridSpec, box3d, cell_index, cell_index_y, cell_index_z, gr
 from .geometry import Block, build_scene_items
 from .material import Absorber, Medium, PML
 from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
-                          DftNear2Far, DftObj, chunk_size, dft_name,
-                          fire_per_step, fire_scheduled, plan_hooks)
+                          DftNear2Far, DftObj, FluxData, _eval_step_func,
+                          chunk_size, dft_name, fire_per_step, fire_scheduled,
+                          plan_hooks)
 from .sources import (AUTOMATIC, Dielectric, DiffractedPlanewave,
                       EigenModeSource, Ez, GaussianBeam3DSource, Hz,
                       IndexedSource, Source, _point_or_span, build_line_source,
@@ -70,9 +71,12 @@ class Rotate4(Symmetry):
 class Mirror(Symmetry):
     """A mirror symmetry plane; `direction` is the normal to the plane.
 
-    Engine support: even (phase=+1) y-mirror on a TM 2D run (half-domain,
-    core y_mirror=+1). Anything else raises NotImplementedError when handed
-    to Simulation (%s).""" % _SYM_TODO
+    Engine support: Mirror(X) and Mirror(Y), phase +1 (even) or -1 (odd), on
+    a TM 2D run -- each halves the domain (core x_mirror/y_mirror; both at
+    once run the quarter cell). Off-plane sources imply their mirror image
+    (place each physical source once, on the kept side or on the plane).
+    TE runs accept mirrors as a consistency hint but keep the full cell.
+    Rotations raise NotImplementedError (%s).""" % _SYM_TODO
 
 
 class Identity(Symmetry):
@@ -244,20 +248,24 @@ class Simulation:
             # the cell (geometry_center names the coordinate of the cell
             # center); sources/monitors are NOT shifted, matching meep
             geometry = [obj.shift(-gc) for obj in geometry]
-        self._sym_cy = 0     # y-mirror: full-cell rows below the cut plane (0 = off)
-        sym_y = False
+        # mirror halving: _sym_cx/_sym_cy = full-cell cols/rows below the cut
+        # plane (0 = off); _sym_px/_sym_py = mirror phase (+1 even / -1 odd)
+        self._sym_cx = self._sym_cy = 0
+        self._sym_px = self._sym_py = 1
+        mirrors = {}
         for s in symmetries or []:
             if isinstance(s, Identity):
                 continue
-            if isinstance(s, Mirror) and s.direction == Y and s.phase == 1:
-                sym_y = True
+            if (isinstance(s, Mirror) and not isinstance(s, (Rotate2, Rotate4))
+                    and s.direction in (X, Y) and s.phase in (1 + 0j, -1 + 0j)):
+                mirrors[s.direction] = int(s.phase.real)
                 continue
             raise NotImplementedError(
                 f"{type(s).__name__}(direction={getattr(s, 'direction', None)}, "
-                f"phase={getattr(s, 'phase', None)}) not supported: even "
-                f"Mirror(Y) on a TM 2D run only ({_SYM_TODO})")
-        if sym_y and dimensions != 2:
-            raise NotImplementedError(f"Mirror(Y) is 2D-only ({_SYM_TODO})")
+                f"phase={getattr(s, 'phase', None)}) not supported: "
+                f"Mirror(X/Y, phase=+-1) only ({_SYM_TODO})")
+        if mirrors and dimensions != 2:
+            raise NotImplementedError(f"Mirror(X/Y) is 2D-only ({_SYM_TODO})")
         # meep flow: __init__ stores the spec only; init_sim (or the lazy
         # accessors) builds self.structure and self.fields.
         self._sources = list(sources or [])
@@ -297,13 +305,24 @@ class Simulation:
             elif isinstance(bl, Absorber):
                 self._nabs = max(self._nabs, pml_npml(bl.thickness, self.gs))
         self._default = default_material if isinstance(default_material, Medium) else Medium(epsilon=float(default_material))
-        if sym_y:
-            if self._pol != "tm":
-                raise NotImplementedError(f"Mirror(Y) is TM-only ({_SYM_TODO})")
+        if mirrors and self._pol != "tm":
+            # meep treats symmetries as an optimization hint; the TE engine
+            # has no half-domain path, so keep the full cell (same physics)
+            warnings.warn("Mirror symmetries on a TE run do not reduce the "
+                          f"domain (full-cell run; {_SYM_TODO})")
+            mirrors = {}
+        if Y in mirrors:
             if self.gs.ny % 2:
                 raise NotImplementedError(
                     f"Mirror(Y) needs an even cell row count ({_SYM_TODO})")
             self._sym_cy = self.gs.ny // 2
+            self._sym_py = mirrors[Y]
+        if X in mirrors:
+            if self.gs.nx % 2:
+                raise NotImplementedError(
+                    f"Mirror(X) needs an even cell column count ({_SYM_TODO})")
+            self._sym_cx = self.gs.nx // 2
+            self._sym_px = mirrors[X]
 
     def __getattr__(self, name):
         # deferred-raster attributes: meep builds the structure in init_sim,
@@ -313,6 +332,12 @@ class Simulation:
             if name in self.__dict__:
                 return self.__dict__[name]
         raise AttributeError(name)
+
+    def _component_set(self):
+        """Required field components, inferred from the source spec (meep
+        require_component flow); the structure holds materials for any set."""
+        from .cpp_bindings_core import _TE_COMPONENTS, _TM_COMPONENTS
+        return _TE_COMPONENTS if self._pol == "te" else _TM_COMPONENTS
 
     def _init_structure(self):
         """meep Simulation._init_structure: rasterize the geometry and build
@@ -325,7 +350,7 @@ class Simulation:
             return
         if self.structure is not None:
             return
-        if self._sym_cy:
+        if self._sym_cy or self._sym_cx:
             # rebuild the full-cell grid for rasterization (halved again below)
             self.grid = Grid(nx=self.gs.nx, ny=self.gs.ny, dx=self.gs.dx,
                              dtype=self.dtype, courant=self.Courant)
@@ -354,16 +379,18 @@ class Simulation:
                 sd = sd + ramp
                 sb = sb + ramp
             self._cond = (sd, sb, mu)
-        if self._sym_cy:
-            # Even y-mirror: rasterize the full cell (above), then run the
-            # engine on the upper half with a PMC wall at the cut plane
-            # (build_tm_coeffs y_mirror=+1; tests/examples/test_y_mirror.py).
-            # self.gs stays full-cell for all coordinate conversion; y spans
-            # are folded via _ymap/_ypoint and outputs de-mirrored.
-            cy = self._sym_cy
-            self.grid = Grid(nx=self.gs.nx, ny=self.gs.ny - cy, dx=self.gs.dx,
-                             dtype=self.dtype, courant=self.Courant)
-            half = lambda t: None if t is None else t[:, cy:].contiguous()
+        if self._sym_cy or self._sym_cx:
+            # Mirror halving: rasterize the full cell (above), then run the
+            # engine on the kept half/quarter with a mirror wall at each cut
+            # plane (build_tm_coeffs x_mirror/y_mirror; the parity picks the
+            # even/odd wall). self.gs stays full-cell for all coordinate
+            # conversion; spans are folded via _fold/_foldpt and outputs
+            # de-mirrored (mirrored half = phase * flip).
+            cy, cx = self._sym_cy, self._sym_cx
+            self.grid = Grid(nx=self.gs.nx - cx, ny=self.gs.ny - cy,
+                             dx=self.gs.dx, dtype=self.dtype,
+                             courant=self.Courant)
+            half = lambda t: None if t is None else t[cx:, cy:].contiguous()
             self._rm = self._rm._replace(
                 eps_tm=half(self._rm.eps_tm), eps_te_xx=half(self._rm.eps_te_xx),
                 eps_te_yy=half(self._rm.eps_te_yy),
@@ -384,7 +411,7 @@ class Simulation:
             return self._coeffs3d            # lazy via __getattr__
         if self.structure is None:
             self._init_structure()
-        return self.structure.coeffs
+        return self.structure.coeffs_for(self._component_set())
 
     @property
     def _state(self):
@@ -541,9 +568,9 @@ class Simulation:
 
     def _build_indexed(self, spec):
         """IndexedSource -> LineSource with the per-point amp array as mask."""
-        if self._sym_cy:
+        if self._sym_cy or self._sym_cx:
             raise NotImplementedError(
-                f"IndexedSource with Mirror(Y) not supported ({_SYM_TODO})")
+                f"IndexedSource with Mirror symmetry not supported ({_SYM_TODO})")
         ix, j0, j1 = _point_or_span(spec.center, spec.size, self.gs)
         if j1 - j0 != len(spec.amp_arr):
             raise ValueError(
@@ -587,11 +614,20 @@ class Simulation:
                              center=Vector3(spec.center.z, 0, 0), size=sz,
                              amplitude=spec.amplitude, amp_func=spec.amp_func)
             _, _, ix, j0, j1, prof, amp, amp_func, center, gs = build_line_source(spec, self.gs, self._pol)
-            if self._sym_cy:
+            if self._sym_cy or self._sym_cx:
                 if amp_func is not None:
                     raise NotImplementedError(
-                        f"amp_func with Mirror(Y) not supported ({_SYM_TODO})")
-                j0, j1, _ = self._ymap(j0, j1)
+                        f"amp_func with Mirror symmetry not supported ({_SYM_TODO})")
+                # a source below a cut plane folds onto its image with the
+                # mirror phase (Ez transforms with the user phase); a span
+                # crossing the plane keeps its upper part -- the wall implies
+                # the mirrored image, so each physical source is listed once
+                ix, mirx = self._foldpt(ix, "x")
+                if mirx:
+                    amp = amp * self._sym_px
+                j0, j1, _, miry = self._fold(j0, j1, "y")
+                if miry:
+                    amp = amp * self._sym_py
             from ..core.sources import LineSource
             src = LineSource(self.grid, ix, j0, j1, profile=prof)
             if amp_func is not None:
@@ -609,25 +645,46 @@ class Simulation:
             out.append(src)
         return out
 
-    # --- y-mirror folding helpers (all no-ops when _sym_cy == 0) ---
-    def _ymap(self, lo, hi):
-        """Full-cell y span -> half-grid span; crossed=True when the span
-        reached below the mirror plane (its flux then doubles back)."""
-        cy = self._sym_cy
-        if not cy:
-            return lo, hi, False
-        return max(0, lo - cy), max(1, hi - cy), lo < cy
+    # --- mirror folding helpers (all no-ops with no Mirror symmetry) ---
+    def _fold(self, lo, hi, axis="y"):
+        """Full-cell index span -> half-grid span along ``axis``. Returns
+        (lo, hi, crossed, mirrored): crossed = the span reached below the cut
+        plane (assumed symmetric about it; its flux doubles back), mirrored =
+        the span lies entirely below the plane (mapped onto its image)."""
+        c = self._sym_cy if axis == "y" else self._sym_cx
+        if not c:
+            return lo, hi, False, False
+        if hi <= c:
+            return c - hi, c - lo, False, True
+        return max(0, lo - c), max(1, hi - c), lo < c, False
+
+    def _foldpt(self, j, axis="y"):
+        """Full-cell index -> (half-grid index, mirrored) along ``axis``."""
+        c = self._sym_cy if axis == "y" else self._sym_cx
+        if not c:
+            return j, False
+        return (j - c, False) if j >= c else (c - 1 - j, True)
 
     def _ypoint(self, j):
         """Full-cell y index -> half-grid row (mirrored below the plane)."""
-        cy = self._sym_cy
-        if not cy:
-            return j
-        return j - cy if j >= cy else cy - 1 - j
+        return self._foldpt(j, "y")[0]
 
-    def _demirror(self, a):
-        """Half-grid (nx, ny/2) array -> full-cell even-mirrored (nx, ny)."""
-        return np.concatenate([a[:, ::-1], a], axis=1) if self._sym_cy else a
+    def _demirror(self, a, parity=(1.0, 1.0)):
+        """Half-grid array -> full-cell (nx, ny): mirrored half = phase *
+        flip. ``parity`` = (px, py) of the stored component under the X/Y
+        mirror (Dielectric/mu are even; Ez carries the mirror phases)."""
+        if self._sym_cy:
+            a = np.concatenate([parity[1] * a[:, ::-1], a], axis=1)
+        if self._sym_cx:
+            a = np.concatenate([parity[0] * a[::-1, :], a], axis=0)
+        return a
+
+    def _comp_parity(self, comp):
+        """(px, py) mirror parity of a TM component (E vector / H pseudo-
+        vector transform times the user phase)."""
+        px, py = float(self._sym_px), float(self._sym_py)
+        return {"Ez": (px, py), "Dz": (px, py),
+                "Hx": (px, -py), "Hy": (-px, py)}.get(comp, (1.0, 1.0))
 
     def _source_cutoff(self):
         """Latest source turn-off time (GaussianPulse.t_end; CW never ends -> 0)."""
@@ -645,17 +702,20 @@ class Simulation:
         gs = self.gs
         if self.dimensions == 1:
             ix, iy = cell_index(pt.z, gs), gs.ny // 2
+            sgn = 1.0
         else:
-            ix = max(0, min(gs.nx - 1, cell_index(pt.x, gs)))
-            iy = self._ypoint(max(0, min(gs.ny - 1, cell_index_y(pt.y, gs))))
+            ix, mirx = self._foldpt(max(0, min(gs.nx - 1, cell_index(pt.x, gs))), "x")
+            iy, miry = self._foldpt(max(0, min(gs.ny - 1, cell_index_y(pt.y, gs))), "y")
+            px, py = self._comp_parity("Ez")
+            sgn = (px if mirx else 1.0) * (py if miry else 1.0)
         f = self._state.Hz if self._pol == "te" else self._state.Ez
-        return float(f[ix, iy])
+        return sgn * float(f[ix, iy])
 
     def run(self, *step_funcs, until=None, until_after_sources=None, n_steps=None):
-        if self._sym_cy and self._eig_source is not None:
+        if (self._sym_cy or self._sym_cx) and self._eig_source is not None:
             raise NotImplementedError(
-                f"EigenModeSource with Mirror(Y) not supported: compute_smatrix "
-                f"has no y_mirror path yet ({_SYM_TODO})")
+                f"EigenModeSource with Mirror symmetry not supported: "
+                f"compute_smatrix has no mirror path yet ({_SYM_TODO})")
         stepped = bool(step_funcs) or callable(until) or callable(until_after_sources) \
             or isinstance(until, (list, tuple)) or isinstance(until_after_sources, (list, tuple))
         if stepped:
@@ -696,9 +756,14 @@ class Simulation:
         f = self.fields
         f.reset()                # each run() starts at t=0 with zero fields
         self._register_sources()
+        # loaded DFT data (load_flux_data / load_minus_flux_data): seed the
+        # monitor accumulators so this run accumulates on top (meep semantics)
+        for name, seed in getattr(self, "_acc_seed", {}).items():
+            if name in f._monitors:
+                f._monitors[name][1] = seed.clone()
         dt = self.grid.dt
         cutoff = self._source_cutoff()
-        begin, end, per_step, scheduled = plan_hooks(step_funcs, cutoff)
+        begin, per_step, scheduled = plan_hooks(step_funcs, cutoff)
         conds, gate, n_total = None, 0.0, n_steps
         stop = until if until is not None else until_after_sources
         if callable(stop) or isinstance(stop, (list, tuple)):
@@ -712,7 +777,7 @@ class Simulation:
                 n_total = max(1, int(round((cutoff + (until_after_sources or 0)) / dt)))
         self._t_step = 0
         for g in begin:
-            g(self)
+            _eval_step_func(self, g, "step")
         fire_scheduled(self, scheduled, 0.0)
         while n_total is None or self._t_step < n_total:
             t = self._t_step * dt
@@ -732,8 +797,8 @@ class Simulation:
                     break
         for (name, kind, mon, meta) in self._monitors:
             self._last_acc[name] = (f._monitors[name][1], mon, meta)
-        for g in end:
-            g(self)
+        for func in step_funcs:      # meep run-end protocol: todo="finish"
+            _eval_step_func(self, func, "finish")
 
     def _run_modes(self, n_steps):
         """S-param path: EigenModeSource + mode monitors -> compute_smatrix.
@@ -817,59 +882,162 @@ class Simulation:
 
     def _add_near2far(self, freqs, regions, name):
         if self.dimensions == 3:
-            raise NotImplementedError("3D add_near2far not supported (W9 wave 3; 2D only)")
-        if self._sym_cy:
-            raise NotImplementedError(
-                f"add_near2far with Mirror(Y) not supported ({_SYM_TODO})")
+            return self._add_near2far_3d(freqs, regions, name)
         from ..core.monitors import FluxMonitorTEY
         name = name or f"n2f{len(self._monitors)}"
-        dx = self.grid.dx
+        dx = self.gs.dx
         specs = []
         for r, region in enumerate(regions):
             axis, idx, lo, hi = self._port_spec(FluxRegion(region.center, region.size))
-            hi_cap = (self.grid.ny if axis == "x" else self.grid.nx)
+            hi_cap = (self.gs.ny if axis == "x" else self.gs.nx)
             if self._pol == "te":
                 hi_cap -= 1                     # Ey/Ex grids are one shorter
             hi = min(hi + 1, hi_cap)
             normal = (int(region.weight), 0) if axis == "x" else (0, int(region.weight))
-            idxs = np.arange(lo, hi)
+            idxs = np.arange(lo, hi)            # full-cell span (meta pts)
+            # mirror halving (TM only): register on the folded half grid,
+            # keep full-cell pts; get_farfield rebuilds the full-span fields
+            meta = {"normal": normal}
+            idx2, lo2, hi2 = idx, lo, hi
+            if self._sym_cy or self._sym_cx:
+                span = "y" if axis == "x" else "x"
+                idx2, pos_mir = self._foldpt(idx, "x" if axis == "x" else "y")
+                lo2, hi2, _, _ = self._fold(lo, hi, span)
+                meta.update(span=(span, lo, hi), lo_half=lo2, pos_mir=pos_mir)
             if self._pol == "tm":
                 mon = FluxMonitorTM(self.grid, freqs, x_normal=(axis == "x"),
-                                    idx=idx, lo=lo, hi=hi)
+                                    idx=idx2, lo=lo2, hi=hi2)
                 off = 0.0
             elif axis == "x":
-                mon = FluxMonitorTE(self.grid, freqs, ix=idx, lo=lo, hi=hi)
+                mon = FluxMonitorTE(self.grid, freqs, ix=idx2, lo=lo2, hi=hi2)
                 off = 0.5                       # Ey nodes at (idx, (j+1/2) dx)
             else:
-                mon = FluxMonitorTEY(self.grid, freqs, iy=idx, lo=lo, hi=hi)
+                mon = FluxMonitorTEY(self.grid, freqs, iy=idx2, lo=lo2, hi=hi2)
                 off = 0.5                       # Ex nodes at ((i+1/2) dx, idx)
             if axis == "x":
                 pts = np.stack([np.full(len(idxs), idx * dx), (idxs + off) * dx], axis=1)
             else:
                 pts = np.stack([(idxs + off) * dx, np.full(len(idxs), idx * dx)], axis=1)
-            self._register_monitor(f"{name}:f{r}", "n2f", mon,
-                                   {"normal": normal, "pts": pts})
+            meta["pts"] = pts
+            self._register_monitor(f"{name}:f{r}", "n2f", mon, meta)
             specs.append(f"{name}:f{r}")
         self._n2f_specs = getattr(self, "_n2f_specs", {})
         self._n2f_specs[name] = (specs, freqs)
         return self, name, freqs
 
-    def get_farfield(self, name, point):
+    def _add_near2far_3d(self, freqs, regions, name):
+        """3D near2far: the regions' bounding box becomes the six DFT faces
+        of one core.near2far_3d.Near2FarBox3D monitor (closed-box surface
+        equivalence -- meep users pass the box faces as regions)."""
+        from ..core.near2far_3d import Near2FarBox3D
+        self.init_sim()
+        name = name or f"n2f{len(self._monitors)}"
+        gs = self.gs
+        lo = [math.inf] * 3
+        hi = [-math.inf] * 3
+        for region in regions:
+            c = region.center or Vector3()
+            s = region.size or Vector3()
+            for a, (cv, sv) in enumerate(((c.x, s.x), (c.y, s.y), (c.z, s.z))):
+                lo[a] = min(lo[a], cv - abs(sv) / 2.0)
+                hi[a] = max(hi[a], cv + abs(sv) / 2.0)
+        box = (cell_index(lo[0], gs), cell_index(hi[0], gs),
+               cell_index_y(lo[1], gs), cell_index_y(hi[1], gs),
+               cell_index_z(lo[2], gs), cell_index_z(hi[2], gs))
+        if any(box[2 * a + 1] - box[2 * a] < 2 for a in range(3)):
+            raise NotImplementedError(
+                "3D add_near2far: regions must span a closed box with "
+                "positive extent on all three axes")
+        mon = Near2FarBox3D(self._coeffs.dt, list(freqs), box, gs.dx,
+                            dtype=self.dtype)
+        self._register_monitor(name, "n2f3d", mon, {"freqs": list(freqs)})
+        self._n2f_specs = getattr(self, "_n2f_specs", {})
+        self._n2f_specs[name] = ([name], list(freqs))
+        return self, name, freqs
+
+    def _farfields_3d(self, name, obs_pts):
+        """Far (E, H), each (nfreq, nobs, 3), at meep-coordinate points."""
+        from ..core.near2far_3d import farfield_3d
+        specs, freqs = self._n2f_specs[dft_name(name)]
+        acc, mon, _meta = self._last_acc[specs[0]]
+        faces = mon.faces(acc)
+        gs = self.gs
+        obs = (np.asarray(obs_pts, dtype=float)
+               + np.array([gs.sx / 2.0, gs.sy / 2.0, gs.sz / 2.0]))
+        ks = [2 * math.pi * f for f in freqs]
+        E, H = farfield_3d(faces, ks, obs)
+        return E, H, freqs
+
+    def _defold_face(self, acc, meta):
+        """Rebuild a near2far face's full-span (nfreq, 4, N) accumulator from
+        its folded half-grid monitor: mirrored span rows carry the mirror
+        phase (both slots), a position-folded face gets (p, -p) on its (E, H)
+        slots -- the mirrored tangential H flips relative to E."""
+        if "span" not in meta:
+            return acc
+        a = acc.detach().cpu().numpy() if hasattr(acc, "detach") else np.asarray(acc)
+        span, lo, hi = meta["span"]
+        c = self._sym_cy if span == "y" else self._sym_cx
+        p = float(self._sym_py if span == "y" else self._sym_px)
+        if c:
+            j = np.arange(lo, hi)
+            fold = np.where(j >= c, j - c, c - 1 - j) - meta["lo_half"]
+            fold = np.clip(fold, 0, a.shape[-1] - 1)
+            a = a[..., fold] * np.where(j >= c, 1.0, p)
+        if meta.get("pos_mir"):
+            q = float(self._sym_px if span == "y" else self._sym_py)
+            a = a * np.array([q, q, -q, -q])[None, :, None]
+        return a
+
+    def get_farfield(self, name, point, tol=None):
         """Complex [Ex, Ey, Ez, Hx, Hy, Hz] at a far point (meep layout);
-        (nfreq, 6) when nfreq > 1."""
+        (nfreq, 6) when nfreq > 1. ``tol`` is accepted for meep signature
+        parity (the exact Hankel kernels have no iteration to tolerate)."""
+        if self.dimensions == 3:
+            E, H, freqs = self._farfields_3d(name, [[point.x, point.y, point.z]])
+            out = np.concatenate([E[:, 0, :], H[:, 0, :]], axis=1)
+            return out[0] if len(freqs) == 1 else out
         from ..core.near2far import faces_from_accs, farfield_te, farfield_tm
         specs, freqs = self._n2f_specs[dft_name(name)]
         mons, accs = [], []
         for key in specs:
             acc, mon, meta = self._last_acc[key]
             mons.append((mon, meta["normal"], meta["pts"]))
-            accs.append(acc)
+            accs.append(self._defold_face(acc, meta))
         faces = faces_from_accs(self.grid, mons, accs)
         obs = np.array([[point.x + self.gs.sx / 2.0, point.y + self.gs.sy / 2.0]])
         ks = [2 * math.pi * f for f in freqs]
         E, H = (farfield_tm if self._pol == "tm" else farfield_te)(faces, ks, obs)
         out = np.concatenate([E[:, 0, :], H[:, 0, :]], axis=1)   # (nfreq, 6)
         return out[0] if len(freqs) == 1 else out
+
+    def get_farfields(self, near2far, resolution=None, where=None,
+                      center=None, size=None, greencyl_tol=1e-3):
+        """meep get_farfields: far fields on a grid over the volume
+        (``resolution`` points per unit length). Returns {"Ex": ..., "Hz"}
+        arrays shaped (grid dims with size > 0 ..., nfreq)."""
+        if where is not None:
+            center, size = where.center, where.size
+        c = center or Vector3()
+        s = size or Vector3()
+        axes = []
+        for cv, sv in ((c.x, s.x), (c.y, s.y), (c.z, s.z)):
+            L = abs(sv or 0.0)
+            n = max(1, int(round(L * resolution)) + 1) if L else 1
+            axes.append(np.linspace(cv - L / 2.0, cv + L / 2.0, n))
+        X, Y, Z = np.meshgrid(*axes, indexing="ij")
+        pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+        if self.dimensions == 3:
+            E, H, freqs = self._farfields_3d(near2far, pts)
+            vals = np.concatenate([E, H], axis=2)             # (nfreq, npts, 6)
+        else:
+            freqs = self._n2f_specs[dft_name(near2far)][1]
+            rows = [np.atleast_2d(self.get_farfield(near2far, Vector3(*p)))
+                    for p in pts]                             # each (nfreq, 6)
+            vals = np.stack(rows, axis=1)
+        shape = tuple(len(a) for a in axes if len(a) > 1) + (len(freqs),)
+        return {comp: vals[:, :, i].T.reshape(shape)
+                for i, comp in enumerate(("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"))}
 
     def dft_ldos(self, fcen, df, nfreq, name=None):
         """meep dft_ldos-lite: record Ez at the (point) source and return
@@ -881,7 +1049,7 @@ class Simulation:
         if self.dimensions == 3:
             raise NotImplementedError("3D dft_ldos not supported (W9 wave 3; deferred)")
         c = (self._sources[0].center or Vector3())
-        ix = cell_index(c.x, self.gs)
+        ix, _ = self._foldpt(cell_index(c.x, self.gs), "x")
         iy = self._ypoint(cell_index_y(c.y, self.gs))
         mon = PointProbe(ix, iy)
         name = name or f"ldos{len(self._monitors)}"
@@ -906,6 +1074,10 @@ class Simulation:
     def _add_dft_fields(self, freqs, components, name):
         name = name or f"dft{len(self._monitors)}"
         for c in components:
+            if (self._sym_cy or self._sym_cx) and c not in ("Ez", "Dz"):
+                raise NotImplementedError(
+                    f"add_dft_fields({c}) with Mirror symmetry: staggered "
+                    f"components do not de-mirror onto the full cell ({_SYM_TODO})")
             if self.dimensions == 3:
                 mon = DFTFieldsMonitor3D(self._coeffs.dt, freqs, component=c, dtype=self.dtype)
                 self._monitors.append((f"{name}:{c}", "dft", mon, {"freqs": freqs}))
@@ -918,7 +1090,7 @@ class Simulation:
         """Complex (nx, ny) DFT plane of `component` at frequency index."""
         acc, mon, meta = self._last_acc[f"{dft_name(name)}:{component}"]
         a = acc[num_freq].detach().cpu().numpy()
-        return self._demirror(a[0] + 1j * a[1])
+        return self._demirror(a[0] + 1j * a[1], self._comp_parity(component))
 
     # --- MST force + field-energy monitors (2D TM; core.forces machinery) ---
     def _region_box(self, region):
@@ -937,9 +1109,9 @@ class Simulation:
         """Register full-cell Ez/Hx/Hy DFT monitors backing add_force/add_energy."""
         if self.dimensions != 2 or self._pol != "tm":
             raise NotImplementedError(f"add_{kind}: 2D TM runs only")
-        if self._sym_cy:
+        if self._sym_cy or self._sym_cx:
             raise NotImplementedError(
-                f"add_{kind} with Mirror(Y) not supported ({_SYM_TODO})")
+                f"add_{kind} with Mirror symmetry not supported ({_SYM_TODO})")
         for c in ("Ez", "Hx", "Hy"):
             self._register_monitor(f"{name}:{c}", kind,
                                    DFTFieldsMonitor(self.grid, freqs, c), {})
@@ -1099,16 +1271,25 @@ class Simulation:
             lo, hi = span_index_range(max(0.0, x0), min(gs.sx, x1), gs, "x")
         meta = {"idx": idx, "lo": lo, "hi": hi,
                 "wt": complex(getattr(region, "weight", 1.0) or 1.0).real}
-        if self._sym_cy:
-            if not (self.dimensions == 2 and abs(s.x) <= abs(s.y)):
-                raise NotImplementedError(
-                    f"only x-normal monitors with Mirror(Y) ({_SYM_TODO})")
-            lo, hi, meta["mir2"] = self._ymap(lo, hi)
+        x_normal = self.dimensions == 1 or abs(s.x) <= abs(s.y)
+        if self._sym_cy or self._sym_cx:
+            # fold the line into the half grid: a plane-crossing span keeps
+            # its (assumed symmetric) upper half and doubles back (mir2); a
+            # face below a cut plane maps onto its image, where the mirrored
+            # tangential H flips relative to E -> flux sign flips (msign)
+            idx, pos_mir = self._foldpt(idx, "x" if x_normal else "y")
+            lo, hi, meta["mir2"], _ = self._fold(lo, hi, "y" if x_normal else "x")
+            if pos_mir:
+                meta["msign"] = -1.0
             meta.update(lo=lo, hi=hi)
         if self._pol == "tm":
-            mon = FluxMonitorTM(self.grid, freqs, x_normal=True, idx=idx, lo=lo, hi=hi)
-        else:
+            mon = FluxMonitorTM(self.grid, freqs, x_normal=x_normal,
+                                idx=idx, lo=lo, hi=hi)
+        elif x_normal:
             mon = FluxMonitorTE(self.grid, freqs, ix=idx, lo=lo, hi=hi)
+        else:
+            from ..core.monitors import FluxMonitorTEY
+            mon = FluxMonitorTEY(self.grid, freqs, iy=idx, lo=lo, hi=hi)
         return mon, meta
 
     def get_fluxes(self, name):
@@ -1118,7 +1299,8 @@ class Simulation:
             return [sum(v) for v in zip(*(self.get_fluxes(p) for p in parts))]
         acc, mon, meta = self._last_acc[name]
         dx = self.gs.dx if self.dimensions == 3 else self.grid.dx
-        vals = mon.flux(acc, dx).detach().cpu().numpy() * meta.get("wt", 1.0)
+        vals = (mon.flux(acc, dx).detach().cpu().numpy()
+                * meta.get("wt", 1.0) * meta.get("msign", 1.0))
         if meta.get("mir2"):
             vals = 2.0 * vals    # span crossed the mirror plane: half-cell flux
         return vals.tolist()
@@ -1127,6 +1309,52 @@ class Simulation:
         name = dft_name(name)
         parts = getattr(self, "_flux_parts", {}).get(name)
         return mon_freqs(self, parts[0] if parts else name)
+
+    def get_flux_data(self, flux):
+        """Accumulated Fourier-transformed fields of a flux monitor as an
+        opaque FluxData(E, H) (meep get_flux_data): complex (nfreq, npts)
+        arrays, multi-region monitors concatenated along points. Only useful
+        for load_flux_data / load_minus_flux_data on a same-shaped monitor."""
+        name = dft_name(flux)
+        parts = getattr(self, "_flux_parts", {}).get(name) or [name]
+        Es, Hs = [], []
+        for p in parts:
+            if p not in self._last_acc:
+                raise RuntimeError(f"get_flux_data({name!r}): no accumulated "
+                                   "fields -- run() first")
+            acc = self._last_acc[p][0].detach().cpu().numpy()
+            Es.append(acc[:, 0] + 1j * acc[:, 1])
+            Hs.append(acc[:, 2] + 1j * acc[:, 3])
+        return FluxData(E=np.concatenate(Es, axis=-1),
+                        H=np.concatenate(Hs, axis=-1))
+
+    def load_flux_data(self, flux, fdata, _scale=1.0):
+        """Seed the monitor's DFT accumulator with ``fdata`` (a FluxData from
+        get_flux_data on a monitor of the same shape); the next run()
+        accumulates on top of it (meep load_flux_data)."""
+        if self.dimensions == 3:
+            raise NotImplementedError("load_flux_data: 2D runs only")
+        name = dft_name(flux)
+        parts = getattr(self, "_flux_parts", {}).get(name) or [name]
+        mons = {n: mon for (n, _, mon, _) in self._monitors}
+        E, H = np.asarray(fdata.E), np.asarray(fdata.H)
+        seeds, off = {}, 0
+        for p in parts:
+            npts = mons[p].hi - mons[p].lo
+            e, h = E[:, off:off + npts], H[:, off:off + npts]
+            off += npts
+            acc = _scale * np.stack([e.real, e.imag, h.real, h.imag], axis=1)
+            seeds[p] = torch.as_tensor(acc, dtype=self.grid.dtype,
+                                       device=self.grid.device)
+        if off != E.shape[-1]:
+            raise ValueError(f"load_flux_data({name!r}): data has "
+                             f"{E.shape[-1]} points, monitor has {off}")
+        self._acc_seed = {**getattr(self, "_acc_seed", {}), **seeds}
+
+    def load_minus_flux_data(self, flux, fdata):
+        """load_flux_data with negated fields, so subsequent accumulation
+        *subtracts* them (meep's reflection-normalization workflow)."""
+        self.load_flux_data(flux, fdata, _scale=-1.0)
 
     def get_eigenmode_coefficients(self, name, n_modes=1):
         """S[:, port_index(name), 0] -- the coefficient at monitor `name` when
@@ -1159,7 +1387,8 @@ class Simulation:
         if self._state is None:
             raise RuntimeError("run() before get_array(fields)")
         if component in ("Ez", "Ex"):
-            return self._demirror(self._state.Ez.detach().cpu().numpy())
+            return self._demirror(self._state.Ez.detach().cpu().numpy(),
+                                  self._comp_parity("Ez"))
         if component in ("Hz", "Hy"):
             return self._demirror(self._state.Hz.detach().cpu().numpy()) if self._pol == "te" \
                 else self._state.Hz if hasattr(self._state, "Hz") else None
@@ -1247,7 +1476,8 @@ class Simulation:
             return
         if self.fields is None:
             from .cpp_bindings_core import fields
-            self.fields = fields(self.structure)
+            self.fields = fields(self.structure,
+                                 components=self._component_set())
             if self._eig_source is None:
                 self._register_sources()
 
@@ -1284,7 +1514,7 @@ class Simulation:
         self._S = None
         self._port_index = {}
         for a in ("_flux_parts", "_n2f_specs", "_mode_freqs", "_energy_specs",
-                  "_force_specs"):
+                  "_force_specs", "_acc_seed"):
             if hasattr(self, a):
                 delattr(self, a)
 
@@ -1362,9 +1592,9 @@ class Simulation:
         if f is None:
             raise NotImplementedError(
                 f"component {name} does not exist on a {self._pol.upper()} run")
-        if self._sym_cy:
+        if self._sym_cy or self._sym_cx:
             raise NotImplementedError(
-                f"staggered {name} with Mirror(Y) not supported ({_SYM_TODO})")
+                f"staggered {name} with Mirror symmetry not supported ({_SYM_TODO})")
         return f.detach().cpu().numpy()
 
     def get_efield_x(self):

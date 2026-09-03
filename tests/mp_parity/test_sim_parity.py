@@ -93,9 +93,10 @@ def test_begin_end_at_time_before_time():
     early = []
     sim2.run(mp.before_time(1.0, lambda s: early.append(s.round_time())), until=5)
     assert early and max(early) <= 1.0 + 1e-9
-    # with_prefix is a no-op passthrough
+    # with_prefix wraps into a meep f(sim, todo) step function
     fn = lambda s: None
-    assert mp.with_prefix("out-", fn) is fn
+    wrapped = mp.with_prefix("out-", fn)
+    assert callable(wrapped) and wrapped is not fn
 
 
 def test_after_during_sources_timing():
