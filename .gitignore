@@ -37,3 +37,19 @@ examples_2/*_data.npz
 .*/
 !.git/
 .ua/
+# generated example outputs (purged from history 2026-09-03)
+examples/**/output/
+examples_2/**/output/
+examples/**/*.png
+examples/**/*.mp4
+examples/**/*.npy
+examples/**/*.npz
+examples/**/*.h5
+examples_2/**/*.png
+examples_2/**/*.mp4
+examples_2/**/*.npy
+examples_2/**/*.npz
+examples_2/**/*.gds
+examples_2/**/*.h5
+examples_2/**/*.yml
+examples_2/archive/
