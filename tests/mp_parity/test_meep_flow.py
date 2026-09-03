@@ -150,6 +150,32 @@ def test_phase_path_matches_fused_tm_kernel_500_steps():
         assert torch.equal(getattr(f._state, name), getattr(ref, name)), name
 
 
+def test_alloc_f_meep_semantics():
+    f = core_fields(core_structure(Grid(nx=20, ny=20, dx=0.1), 1.0))
+    assert f.alloc_f("Ez") is False              # constructor already allocated
+    assert f.alloc_f("Dz") is False
+    f._state = None
+    assert f.alloc_f("Hy") is True               # first alloc materializes the set
+    assert f.alloc_f("Hy") is False              # second call: no-op (meep)
+    with pytest.raises(NotImplementedError):
+        f.alloc_f("Hz")                          # outside the TM component set
+
+
+def test_component_allocation_is_emergent_polarization():
+    tm = _sim()
+    tm.init_sim()
+    st = tm.fields._state
+    assert getattr(st, "Hz", None) is None and st.Ez is not None
+    te = mp.Simulation(
+        cell_size=mp.Vector3(4, 3), resolution=10,
+        sources=[mp.Source(mp.GaussianSource(1.0, fwidth=0.3), component=mp.Hz,
+                           center=mp.Vector3())],
+        boundary_layers=[mp.PML(0.5)])
+    te.init_sim()
+    st = te.fields._state
+    assert getattr(st, "Ez", None) is None and st.Hz is not None
+
+
 def test_phase_path_matches_fused_te_kernel_500_steps():
     """Same parity gate for the TE component set (duality-framed phase cycle)."""
     sim = mp.Simulation(

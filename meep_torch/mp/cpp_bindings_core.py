@@ -37,6 +37,7 @@ from .simulation import Simulation, X, Y
 from .vec import Vector3
 
 _TM_COMPONENTS = ("Ez", "Hx", "Hy", "Dz")
+_TE_COMPONENTS = ("Hz", "Ex", "Ey", "Dx", "Dy")
 
 
 def _stub_raises(cls, why: str, names: str):
@@ -441,19 +442,46 @@ class fields:
             raise NotImplementedError("cylindrical m / bloch beta: 2D cartesian only")
         self.s = s
         c = s.coeffs
-        self._pol = getattr(s, "pol", "tm")
-        self._step_fn = step_te if self._pol == "te" else step_tm
         self._n_mpoles = (0 if getattr(c, "mc1x", None) is None
                           else c.mc1x.shape[0])
-        self._state = self._fresh_state()
+        self._state = None
+        # meep require_component/alloc_f flow: allocate the component set the
+        # structure's coefficients define (TE coefficients carry c1x)
+        for comp in (_TE_COMPONENTS if getattr(c, "c1x", None) is not None
+                     else _TM_COMPONENTS):
+            self.alloc_f(comp)
         self._t = 0
         self._sources = []
         self._monitors = {}          # name -> [monitor, accumulator]
         self._outdir = ""
 
+    def alloc_f(self, c):
+        """meep fields::alloc_f (fields.cpp:480): ensure component ``c``'s
+        tensor is allocated in the state; True when this call newly allocated
+        it, False when it already existed (meep's non-null pointer check,
+        tensorized). The fused state constructors allocate a full component
+        set at once, so the first alloc_f of any component materializes the
+        whole set and the rest report False. A component outside the set the
+        structure's coefficients define raises (the 2D TM/TE sets are fixed;
+        force_all_components is not supported)."""
+        te = getattr(self.s.coeffs, "c1x", None) is not None
+        if c not in (_TE_COMPONENTS if te else _TM_COMPONENTS):
+            raise NotImplementedError(
+                f"component {c!r} is not in this structure's "
+                f"{'TE' if te else 'TM'} component set (fixed 2D sets)")
+        if self._state is not None:
+            return False
+        self._state = self._fresh_state()
+        return True
+
+    def _has(self, comp):
+        """True when ``comp`` is allocated in the state (meep's null-pointer
+        test on f[c]; an absent namedtuple field or a None slot is null)."""
+        return getattr(self._state, comp, None) is not None
+
     def _fresh_state(self):
         c = self.s.coeffs
-        if self._pol == "te":
+        if getattr(c, "c1x", None) is not None:      # TE coefficient set
             return init_te_state(self.s.grid, n_poles=c.c1x.shape[0])
         return init_tm_state(self.s.grid, n_poles=c.c1.shape[0], y_pmc=c.y_pmc,
                              n_mpoles=self._n_mpoles,
@@ -463,7 +491,14 @@ class fields:
     def _phase_mod(self):
         # component-generic dispatch, meep step_generic style: the allocated
         # field set picks the kernel (Ez/Hx/Hy -> TM, Hz/Ex/Ey -> TE)
-        return _te_phases if hasattr(self._state, "Hz") else _tm_phases
+        return _te_phases if self._has("Hz") else _tm_phases
+
+    def _step_kernel(self):
+        """Fused kernel for the allocated component set -- the tensorized
+        analog of meep's component-generic step_generic instantiations: the
+        dispatch picks the TM or TE fused compute backend (they stay
+        separate; no merged generic kernel)."""
+        return step_te if self._has("Hz") else step_tm
 
     def phase_material(self):
         """meep phase_material: phased-material interpolation -- no-op
@@ -530,7 +565,7 @@ class fields:
         the same cycle at the D half. Identical evolution to core.run.run_tm.
         """
         self.phase_material()
-        if hasattr(self._state, "Hz"):
+        if self._has("Hz"):
             self.step_db("D")
             self.step_source("D")
             self.update_pols()
@@ -587,7 +622,7 @@ class fields:
         names = list(self._monitors)
         mons = [self._monitors[n][0] for n in names]
         src = self._sources[0] if self._sources else None
-        self._state, outs = _run_chunk(self._step_fn, self._state,
+        self._state, outs = _run_chunk(self._step_kernel(), self._state,
                                        self.s.coeffs, self._t, k, src, mons)
         for name, mon, out in zip(names, mons, outs):
             self._fold(name, mon, out)
