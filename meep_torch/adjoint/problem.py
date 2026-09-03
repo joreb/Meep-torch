@@ -66,14 +66,18 @@ class OptimizationProblem:
 
     def __init__(self, run_fn, base_eps: torch.Tensor, design_region: DesignRegion,
                  *, filter_radius: float = 0.0, dx: float = 1.0,
-                 beta: float = 1.0, eta: float = 0.5, rho0=None):
+                 beta: float = None, eta: float = None, rho0=None):
         self.run_fn = run_fn
         self.base_eps = base_eps
         self.region = design_region
         self.filter_radius = filter_radius
         self.dx = dx
-        self.beta = beta
-        self.eta = eta
+        # None: pick beta/eta up from the design grid (mp.MaterialGrid carries
+        # them); a grid without them (or beta=0, meep's "no projection") falls
+        # back to the engine defaults. An explicit argument always wins.
+        mg = design_region.mg
+        self.beta = beta if beta is not None else (getattr(mg, "beta", 0) or 1.0)
+        self.eta = eta if eta is not None else (getattr(mg, "eta", None) or 0.5)
         self.rho = (rho0.clone() if rho0 is not None
                     else torch.full(design_region.mg.shape, 0.5,
                                     dtype=base_eps.dtype))

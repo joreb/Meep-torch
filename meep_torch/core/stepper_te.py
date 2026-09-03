@@ -61,48 +61,94 @@ def _avg4_to_ey(Ex: torch.Tensor) -> torch.Tensor:
     return 0.25 * (Exp[:-1, :-1] + Exp[:-1, 1:] + Exp[1:, :-1] + Exp[1:, 1:])
 
 
-def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = None,
-            src_h_amp: float = 0.0, src_hz_mask: torch.Tensor | None = None) -> TEState:
-    # Update order mirrors step_tm under the duality Hz<->Ez, (Ex,Ey)<->(-Hx,-Hy):
-    # the E fields (dual of TM's H) advance first from Hz(n), then Hz (dual of
-    # TM's Ez) advances from E(n+1/2). This makes the discrete TE Hz update
-    # graph isomorphic to the TM Ez graph in vacuum.
+# --- meep fields::step phases (src/step.cpp) ---------------------------------
+# step_te is split at meep's phase boundaries; the math lines are the original
+# fused kernel's, only moved. The engine's TM-TE duality (Hz<->Ez,
+# (Ex,Ey)<->(-Hx,-Hy)) staggers Hz on integer steps, so a TE step enters
+# meep's phase cycle at the D half: step_db(D) -> step_source(D) ->
+# update_pols -> update_eh(E), then step_db(B) -> step_source(B) ->
+# update_eh(H). This keeps the discrete TE Hz update graph isomorphic to the
+# TM Ez graph (and every TE monitor/oracle convention) intact.
+
+def step_db(state: TEState, m, ft: str) -> TEState:
+    """meep step_db(ft): ft="D" advances Dx/Dy from curl Hz, ft="B" advances
+    Hz from curl E (B = mu H folded; sigma_b inside hz1/hz2). CPML psi
+    updates and sigma damping live here (meep applies its sigma in step_db)."""
     dt, dx = m.dt, m.dx
+    if ft == "D":
+        # --- D update (from Hz at time n) ---
+        dHz_dy = (state.Hz[:, 1:] - state.Hz[:, :-1]) / dx      # (nx-1, ny-2)
+        psi_Hzy = m.b_ey * state.psi_Hzy + m.a_ey * dHz_dy
+        curl_x = F.pad(dHz_dy / m.k_ey + psi_Hzy, (1, 1))
 
-    # --- D/E update (from Hz at time n) ---
-    dHz_dy = (state.Hz[:, 1:] - state.Hz[:, :-1]) / dx          # (nx-1, ny-2)
-    psi_Hzy = m.b_ey * state.psi_Hzy + m.a_ey * dHz_dy
-    curl_x = F.pad(dHz_dy / m.k_ey + psi_Hzy, (1, 1))
+        dHz_dx = (state.Hz[1:, :] - state.Hz[:-1, :]) / dx      # (nx-2, ny-1)
+        psi_Hzx = m.b_ex * state.psi_Hzx + m.a_ex * dHz_dx
+        curl_y = F.pad(dHz_dx / m.k_ex + psi_Hzx, (0, 0, 1, 1))
+        if m.d1x is not None:
+            # W5: dD/dt = curl H - sigma_d D
+            Dx = m.d1x * state.Dx + m.d2x * curl_x
+            Dy = m.d1y * state.Dy - m.d2y * curl_y
+        else:
+            Dx = state.Dx + dt * curl_x
+            Dy = state.Dy - dt * curl_y
+        return state._replace(Dx=Dx, Dy=Dy, psi_Hzy=psi_Hzy, psi_Hzx=psi_Hzx)
 
-    dHz_dx = (state.Hz[1:, :] - state.Hz[:-1, :]) / dx          # (nx-2, ny-1)
-    psi_Hzx = m.b_ex * state.psi_Hzx + m.a_ex * dHz_dx
-    curl_y = F.pad(dHz_dx / m.k_ex + psi_Hzx, (0, 0, 1, 1))
-    if m.d1x is not None:
-        # W5: dD/dt = curl H - sigma_d D
-        Dx = m.d1x * state.Dx + m.d2x * curl_x
-        Dy = m.d1y * state.Dy - m.d2y * curl_y
-        if src_mask_ey is not None:
-            Dy = Dy + m.d2y * src_amp * src_mask_ey
+    # --- Hz update (from E at n+1/2) ---
+    dEy_dx = (state.Ey[1:, :] - state.Ey[:-1, :]) / dx          # (nx-1, ny-1)
+    dEx_dy = (state.Ex[:, 1:] - state.Ex[:, :-1]) / dx          # (nx-1, ny-1)
+    psi_Eyx = m.b_hx * state.psi_Eyx + m.a_hx * dEy_dx
+    psi_Exy = m.b_hy * state.psi_Exy + m.a_hy * dEx_dy
+    curl_z = dEy_dx / m.k_hx + psi_Eyx - dEx_dy / m.k_hy - psi_Exy
+    if m.hz1 is not None:
+        # W5: dB/dt = -curl E - sigma_b B, B = mu H
+        Hz = m.hz1 * state.Hz - m.hz2 * curl_z
     else:
-        Dx = state.Dx + dt * curl_x
-        Dy = state.Dy - dt * curl_y
-        if src_mask_ey is not None:
-            Dy = Dy + dt * src_amp * src_mask_ey
+        Hz = state.Hz - dt * curl_z
+    return state._replace(Hz=Hz, psi_Eyx=psi_Eyx, psi_Exy=psi_Exy)
 
-    # --- ADE Lorentz poles: P(n+1/2) = c1 P(n-1/2) + c2 P(n-3/2) + c3 E(n-1/2) ---
+
+def step_source(state: TEState, m, ft: str, amp=0.0,
+                src_mask: torch.Tensor | None = None,
+                src_hz_mask: torch.Tensor | None = None) -> TEState:
+    """meep step_source(ft): soft current injection -- electric currents into
+    Dy (ft="D"; scaled by d2y under sigma_d, like the fused kernel), the
+    magnetic TFSF current into Hz (ft="B")."""
+    dt = m.dt
+    if ft == "B":
+        if src_hz_mask is None:
+            return state
+        return state._replace(Hz=state.Hz + dt * amp * src_hz_mask)
+    if src_mask is None:
+        return state
+    scale = m.d2y if m.d1x is not None else dt
+    return state._replace(Dy=state.Dy + scale * amp * src_mask)
+
+
+def update_pols(state: TEState, m) -> TEState:
+    """meep update_pols(E): per-axis ADE Lorentz recurrence
+    P(n+1/2) = c1 P(n-1/2) + c2 P(n-3/2) + c3 E(n-1/2)."""
     Px_new = m.c1x * state.Px_cur + m.c2x * state.Px_prev + m.c3x * state.Ex
     Py_new = m.c1y * state.Py_cur + m.c2y * state.Py_prev + m.c3y * state.Ey
     if m.c3xy is not None:
         # oriented poles: off-diagonal chi drives Px from Ey (and Py from Ex)
         Px_new = Px_new + m.c3xy * _avg4_to_ex(state.Ey)
         Py_new = Py_new + m.c3yx * _avg4_to_ey(state.Ex)
+    return state._replace(Px_cur=Px_new, Px_prev=state.Px_cur,
+                          Py_cur=Py_new, Py_prev=state.Py_cur)
 
-    # --- E from D (instantaneous chi2/chi3 via fixed point) ---
+
+def update_eh(state: TEState, m, ft: str) -> TEState:
+    """meep update_eh(ft): ft="E" solves Ex/Ey from D - P (tensor eps and the
+    instantaneous chi2/chi3 fixed point -- fusion load-bearing, the phase
+    boundary sits at meep's). ft="H" is the identity (B = mu H folded into
+    step_db)."""
+    if ft == "H":
+        return state
     # D = eps*E + chi2*E^2 + chi3*|E|^2*E  ->  E = rhs/(eps + chi2*E + chi3*|E|^2)
     # chi2 here is the per-component self-term (scalar d_iii reduction); the
     # full d-tensor cross-terms are dropped -- TM is the W5.75 SHG target.
-    rhs_x = Dx - Px_new.sum(0)
-    rhs_y = Dy - Py_new.sum(0)
+    rhs_x = state.Dx - state.Px_cur.sum(0)
+    rhs_y = state.Dy - state.Py_cur.sum(0)
     if m.inv_xx_x is not None:
         # W5: in-plane tensor eps -- E = eps^{-1} D, cross terms Yee-averaged
         Ex = m.inv_xx_x * rhs_x + m.inv_xy_x * _avg4_to_ex(rhs_y)
@@ -116,25 +162,19 @@ def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = N
             E2y = Ey * Ey + _avg4_to_ey(Ex) ** 2
             Ex = rhs_x / (m.eps_x + m.chi2_x * Ex + m.chi3_x * E2x)
             Ey = rhs_y / (m.eps_y + m.chi2_y * Ey + m.chi3_y * E2y)
+    return state._replace(Ex=Ex, Ey=Ey)
 
-    # --- Hz update (from E at n+1/2) ---
-    dEy_dx = (Ey[1:, :] - Ey[:-1, :]) / dx                      # (nx-1, ny-1)
-    dEx_dy = (Ex[:, 1:] - Ex[:, :-1]) / dx                      # (nx-1, ny-1)
-    psi_Eyx = m.b_hx * state.psi_Eyx + m.a_hx * dEy_dx
-    psi_Exy = m.b_hy * state.psi_Exy + m.a_hy * dEx_dy
-    curl_z = dEy_dx / m.k_hx + psi_Eyx - dEx_dy / m.k_hy - psi_Exy
-    if m.hz1 is not None:
-        # W5: dB/dt = -curl E - sigma_b B, B = mu H
-        Hz = m.hz1 * state.Hz - m.hz2 * curl_z
-    else:
-        Hz = state.Hz - dt * curl_z
 
-    # --- magnetic-current injection (TFSF): Hz at n+1 seen by next step's E/D ---
+def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = None,
+            src_h_amp: float = 0.0, src_hz_mask: torch.Tensor | None = None) -> TEState:
+    """One TE step, composed of meep's phases entered at the D half (see the
+    phase-block comment above): step_db(D) -> step_source(D) -> update_pols
+    -> update_eh(E) -> step_db(B) -> step_source(B) -> update_eh(H)."""
+    state = step_db(state, m, "D")
+    state = step_source(state, m, "D", src_amp, src_mask=src_mask_ey)
+    state = update_pols(state, m)
+    state = update_eh(state, m, "E")
+    state = step_db(state, m, "B")
     if src_hz_mask is not None:
-        Hz = Hz + dt * src_h_amp * src_hz_mask
-
-    return TEState(
-        Hz, Ex, Ey, Dx, Dy,
-        Px_new, state.Px_cur, Py_new, state.Py_cur,
-        psi_Eyx, psi_Exy, psi_Hzy, psi_Hzx,
-    )
+        state = step_source(state, m, "B", src_h_amp, src_hz_mask=src_hz_mask)
+    return update_eh(state, m, "H")

@@ -51,6 +51,42 @@ SWIG_ARTIFACTS = {
     "Size_t_Vector", "VolumeVector", "GridVolumeVector", "DftDataVector",
 }
 
+# Module FUNCTIONS excluded from parity, same MPI decision as MPI_EXCLUDED:
+# chunk-tree partitioning / tiling / raw-buffer comms have no single-process
+# meaning (the single-process parallel API itself -- am_master, sum_to_all,
+# divide_parallel_processes, ... -- IS implemented in mp/functions.py).
+MPI_EXCLUDED_FUNCS = {
+    "calculate_tree", "split_by_binarytree", "split_into_tiles",
+    "check_tiles",                  # binary-tree chunk decomposition
+    "compute_fragment_stats",       # chunk cost model for load balancing
+    "bw_or_to_all",                 # raw C buffer reduction (out-pointer)
+}
+# SWIG plumbing functions: operate on raw C++ pointers (structure*, fields*,
+# dft_chunk*, material_data*, out-parameter buffers) that never surface in
+# the python scripting layer; pymeep itself wraps every one of these behind
+# Simulation/class methods which meep-torch implements instead.
+SWIG_ARTIFACT_FUNCS = {
+    # structure/geometry setup plumbing (Simulation.__init__ does this here)
+    "create_structure", "init_libctl", "setup", "set_materials_from_geometry",
+    "make_geom_epsilon", "gv2box", "make_volume_list",
+    "create_absorber_list", "destroy_absorber_list", "add_absorbing_layer",
+    # material_data* / material-grid C accessors (adjoint tier wraps these)
+    "material_free", "make_file_material", "make_user_material",
+    "make_material_grid", "is_material_grid", "epsilon_file_material",
+    "epsilon_material_grid", "material_grid_grad", "material_grid_val",
+    "material_grids_addgradient", "matgrid_grad", "matgrid_val",
+    "update_weights",
+    # raw dft_chunk/fields accessors (use Simulation.get_dft_array etc.)
+    "get_dft_fields_array", "get_dft_flux_array", "get_dft_force_array",
+    "get_dft_near2far_array", "load_dft_hdf5", "save_dft_hdf5",
+    "get_eigenmode_coefficients_and_kpoints", "eigenmode_amplitude",
+    # C internals with out-parameter buffers / C callback factories
+    "do_harminv",                   # py_do_harminv is the API; implemented
+    "green2d", "green3d",           # near2far Green's-function internals
+    "make_casimir_gfunc", "make_casimir_gfunc_kz",
+    "matrix_invert", "get_epsilon_grid", "derived_component_func",
+}
+
 
 def tier_of(name, spec):
     # lowercase names in module "meep" are SWIG bindings of the C++ core
@@ -118,8 +154,12 @@ for tier, (ok, part, miss) in tier_counts.items():
         print(f"  {tier:13s}: {t:3d} classes — OK {ok}, PARTIAL {part}, MISSING {miss} "
               f"(structural parity {100 * ok / t:.0f}%, presence {100 * (ok + part) / t:.0f}%)")
 
-fn_missing = [n for n in API["functions"] if not hasattr(tmp, n)]
-print(f"module functions: {len(API['functions'])}  missing: {len(fn_missing)}")
+fn_excluded = [n for n in API["functions"]
+               if n in MPI_EXCLUDED_FUNCS or n in SWIG_ARTIFACT_FUNCS]
+fn_missing = [n for n in API["functions"]
+              if n not in fn_excluded and not hasattr(tmp, n)]
+print(f"module functions: {len(API['functions'])}  missing: {len(fn_missing)}"
+      f"  (excluded {len(fn_excluded)}: MPI/chunking + SWIG plumbing)")
 if FULL:
     print("missing functions:", sorted(fn_missing))
 sys.exit(0 if n_missing == 0 else 1)

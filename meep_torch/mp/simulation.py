@@ -2,34 +2,40 @@
 # Copyright (C) 2026 meep-torch contributors (original code)
 """mp.Simulation -- assembles and runs a meep-torch 2D FDTD from meep syntax.
 
-Adapter only (no physics). Wraps core/coeffs, core/run, geometry/scene,
-core/monitors, ports. dimensions=1 maps the meep z axis to the meep-torch x
-axis with y_pmc=True and a thin ny. dtype= kwarg passes through to Grid
-(float64 default; float32 opt-in, validated at scale in tests/autodiff/test_float32.py).
+Adapter only (no physics), following meep's object flow: __init__ stores the
+spec; init_sim (called lazily by run() and the monitor adders) builds
+``self.structure`` (mp.structure, single owner of the rasterized materials and
+stepping coefficients, via _init_structure) and ``self.fields``
+(mp.fields(structure), which owns the field state and steps the engine);
+run()/_run_until drive fields.step / fields.step_n. The 3D and S-param paths
+keep their engines (core/stepper_3d, ports/smatrix) behind the same facade.
+dimensions=1 maps the meep z axis to the meep-torch x axis with y_pmc=True and
+a thin ny. dtype= kwarg passes through to Grid (float64 default; float32
+opt-in, validated at scale in tests/autodiff/test_float32.py).
 """
 import math
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 
-from ..core.coeffs import build_te_coeffs, build_tm_coeffs
 from ..core.grid import Grid
 from ..core.materials import Material
 from ..core.monitors import DFTFieldsMonitor, FluxMonitorTE, FluxMonitorTM, PointProbe
 from ..core.monitors_3d import DFTFieldsMonitor3D, FluxMonitor3D, PlaneSource, PointSource3D, run_3d
-from ..core.run import run_te, run_tm
-from ..core.stepper import init_tm_state
 from ..core.stepper_3d import build_3d_coeffs, init_3d_state
-from ..core.stepper_te import init_te_state
 from ..geometry.scene import rasterize_scene
 from .coords import (GridSpec, box3d, cell_index, cell_index_y, cell_index_z, grid_spec,
                      pml_npml, rect_corners, span_index_range, to_corner)
 from .geometry import Block, build_scene_items
 from .material import Absorber, Medium, PML
-from .run_control import (DftFields, DftFlux, DftLdos, DftNear2Far, DftObj, chunk_size,
-                          dft_name, fire_per_step, fire_scheduled, plan_hooks)
-from .sources import (Dielectric, EigenModeSource, Source, build_line_source,
+from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
+                          DftNear2Far, DftObj, chunk_size, dft_name,
+                          fire_per_step, fire_scheduled, plan_hooks)
+from .sources import (AUTOMATIC, Dielectric, DiffractedPlanewave,
+                      EigenModeSource, Ez, GaussianBeam3DSource, Hz,
+                      IndexedSource, Source, _point_or_span, build_line_source,
                       build_mode_source, pol_for)
 from .vec import Vector3
 from ..ports.mode_monitor import decompose
@@ -73,17 +79,18 @@ class Identity(Symmetry):
     """The identity symmetry (a no-op)."""
 
 
-def _grid_for(cell: Vector3, resolution: float, dimensions: int, dtype) -> tuple[Grid, GridSpec, bool]:
+def _grid_for(cell: Vector3, resolution: float, dimensions: int, dtype,
+              courant: float = 0.5) -> tuple[Grid, GridSpec, bool]:
     if dimensions == 1:
         sx = float(cell.z)
         dx = 1.0 / float(resolution)
         nx = max(3, int(round(sx / dx)))
         ny = 3
-        g = Grid(nx=nx, ny=ny, dx=dx, dtype=dtype)
+        g = Grid(nx=nx, ny=ny, dx=dx, dtype=dtype, courant=courant)
         gs = GridSpec(nx, ny, dx, sx, ny * dx)
         return g, gs, True
     gs = grid_spec(cell, resolution)
-    g = Grid(nx=gs.nx, ny=gs.ny, dx=gs.dx, dtype=dtype)
+    g = Grid(nx=gs.nx, ny=gs.ny, dx=gs.dx, dtype=dtype, courant=courant)
     return g, gs, False
 
 
@@ -92,6 +99,7 @@ class FluxRegion:
     center: Vector3 = None
     size: Vector3 = None
     direction: int = 1
+    weight: complex = 1.0      # multiplies the retrieved flux (meep)
     volume: object = None      # mp.Volume; supplies center/size when given
 
     def __post_init__(self):
@@ -100,10 +108,27 @@ class FluxRegion:
             self.size = self.volume.size
 
 
+# meep: ModeRegion is an alias of FluxRegion for add_mode_monitor
+ModeRegion = FluxRegion
+
+
+class ForceRegion(FluxRegion):
+    """meep ForceRegion: a face of the closed contour handed to add_force;
+    ``direction`` is the force component to compute (mp.X / mp.Y), ``weight``
+    multiplies it. The union of the regions should enclose the object in
+    vacuum (2D TM here; see Simulation.add_force)."""
+
+
+class EnergyRegion(FluxRegion):
+    """meep EnergyRegion: region handed to add_energy over which the DFT
+    field-energy density is integrated (``weight`` multiplies it)."""
+
+
 @dataclass
 class Near2FarRegion:
     center: Vector3 = None
     size: Vector3 = None
+    direction: int = AUTOMATIC  # meep default: the region normal (weight signs it here)
     weight: int = 1
     volume: object = None      # mp.Volume; supplies center/size when given
 
@@ -126,11 +151,99 @@ class _Amp:
 
 
 class Simulation:
+    """meep mp.Simulation with the full meep 1.34 constructor surface.
+
+    Parameters with real engine backing beyond the W1 set: ``Courant``
+    (passes through to the engine Grid; dt = Courant * dx) and
+    ``geometry_center`` (an object at coordinate c lands at c -
+    geometry_center in the cell -- geometry only, like meep; verified
+    against pymeep 1.34). Accepted-and-stored (no single-process / no-file
+    meaning, or numerical knobs the engine fixes): eps_averaging (the
+    rasterizer always area-averages; False warns), kz_2d, extra_materials,
+    progress_interval, subpixel_tol/subpixel_maxeval, loop_tile_base_db/eh,
+    ensure_periodicity, num_chunks / split_chunks_evenly / chunk_layout /
+    collect_stats (whole-domain tensors, no chunking), filename_prefix,
+    output_single_precision, accurate_fields_near_cylorigin. Raise on
+    non-default: k_point (Bloch runs live in meep_torch/ports/orders.py),
+    m (no cylindrical engine), force_complex_fields (real-field engine),
+    force_all_components, bfast_scaled_k, material_function / epsilon_func /
+    epsilon_input_file (no pointwise material sampling), output_volume."""
+
     def __init__(self, *, cell_size, resolution, geometry=None, sources=None,
-                 default_material=Medium(epsilon=1.0), boundary_layers=None,
-                 dimensions=2, symmetries=None, dtype=torch.float64):
+                 eps_averaging=True, dimensions=2, boundary_layers=None,
+                 symmetries=None, force_complex_fields=False,
+                 default_material=Medium(epsilon=1.0), m=0, bfast_scaled_k=None,
+                 k_point=False, kz_2d="complex", extra_materials=None,
+                 material_function=None, epsilon_func=None,
+                 epsilon_input_file="", progress_interval=4, subpixel_tol=1e-4,
+                 subpixel_maxeval=100000, loop_tile_base_db=0,
+                 loop_tile_base_eh=0, ensure_periodicity=True, num_chunks=0,
+                 Courant=0.5, accurate_fields_near_cylorigin=False,
+                 filename_prefix=None, output_volume=None,
+                 output_single_precision=False, geometry_center=Vector3(),
+                 force_all_components=False, split_chunks_evenly=True,
+                 chunk_layout=None, collect_stats=False, dtype=torch.float64):
         self.dimensions = dimensions
         self.dtype = dtype
+        if force_complex_fields:
+            raise NotImplementedError(
+                "force_complex_fields: the engine steps real fields only "
+                "(using_real_fields() is always True)")
+        if k_point not in (False, None):
+            raise NotImplementedError(
+                "k_point (Bloch-periodic run) has no Simulation path; drive "
+                "the Bloch core machinery directly (meep_torch/ports/orders.py)")
+        if m:
+            raise NotImplementedError(
+                "m != 0 needs the cylindrical engine, which is not ported")
+        if bfast_scaled_k is not None:
+            raise NotImplementedError(
+                "bfast_scaled_k (BFAST oblique planewaves) is not supported")
+        if material_function is not None or epsilon_func is not None:
+            raise NotImplementedError(
+                "material_function/epsilon_func: no pointwise material "
+                "sampling; describe the structure with geometry + Medium")
+        if epsilon_input_file:
+            raise NotImplementedError(
+                "epsilon_input_file (HDF5 structure import) is not supported")
+        if output_volume is not None:
+            raise NotImplementedError(
+                "output_volume: the output functions write the full cell")
+        if force_all_components:
+            raise NotImplementedError(
+                "force_all_components: the 2D TM/TE component sets are fixed")
+        if not eps_averaging:
+            warnings.warn(
+                "eps_averaging=False has no staircase path: the engine "
+                "rasterizer always area-averages polygon coverage "
+                "(meep_torch/geometry/scene.py)")
+        self.eps_averaging = eps_averaging
+        self.m = m
+        self.k_point = k_point
+        self.kz_2d = kz_2d
+        self.extra_materials = list(extra_materials or [])
+        self.progress_interval = progress_interval
+        self.subpixel_tol = subpixel_tol
+        self.subpixel_maxeval = subpixel_maxeval
+        self.loop_tile_base_db = loop_tile_base_db
+        self.loop_tile_base_eh = loop_tile_base_eh
+        self.ensure_periodicity = ensure_periodicity
+        self.num_chunks = num_chunks
+        self.split_chunks_evenly = split_chunks_evenly
+        self.chunk_layout = chunk_layout
+        self.collect_stats = collect_stats
+        self.Courant = float(Courant)
+        self.accurate_fields_near_cylorigin = accurate_fields_near_cylorigin
+        self.filename_prefix = filename_prefix
+        self.output_single_precision = output_single_precision
+        gc = Vector3(*geometry_center)
+        self.geometry_center = gc
+        geometry = list(geometry or [])
+        if gc.x or gc.y or gc.z:
+            # meep: an object at coordinate c lands at c - geometry_center in
+            # the cell (geometry_center names the coordinate of the cell
+            # center); sources/monitors are NOT shifted, matching meep
+            geometry = [obj.shift(-gc) for obj in geometry]
         self._sym_cy = 0     # y-mirror: full-cell rows below the cut plane (0 = off)
         sym_y = False
         for s in symmetries or []:
@@ -145,11 +258,37 @@ class Simulation:
                 f"Mirror(Y) on a TM 2D run only ({_SYM_TODO})")
         if sym_y and dimensions != 2:
             raise NotImplementedError(f"Mirror(Y) is 2D-only ({_SYM_TODO})")
+        # meep flow: __init__ stores the spec only; init_sim (or the lazy
+        # accessors) builds self.structure and self.fields.
+        self._sources = list(sources or [])
+        self._geometry = list(geometry)        # already geometry_center-shifted
+        self._monitors = []          # list of (name, kind, mon, meta)
+        self._last_acc = {}
+        self._mode_ports = []        # list of (name, axis, idx, lo, hi, direction)
+        self._S = None
+        self._port_index = {}       # monitor name -> port index in compute_smatrix
+        self._t_step = 0
+        self.structure = None        # built by init_sim -> _init_structure
+        self.fields = None           # built by init_sim
         if dimensions == 3:
-            self._init_3d(cell_size, resolution, geometry, sources,
-                          default_material, boundary_layers, dtype)
-            return
-        self.grid, self.gs, self._y_pmc = _grid_for(cell_size, resolution, dimensions, dtype)
+            if self.Courant != 0.5:
+                raise NotImplementedError(
+                    "3D Courant is fixed at 0.5 (core/stepper_3d builds its "
+                    "own dt); 2D/1D runs pass Courant through to the Grid")
+            self.gs = grid_spec(cell_size, resolution, dimensions=3)
+            self.grid = None                  # no core/Grid in 3D; use gs + coeffs
+            self._y_pmc = False
+            self._pol = "tm"
+            self._eig_source = None           # 3D has no S-param path this wave
+            self._state3 = None
+        else:
+            self.grid, self.gs, self._y_pmc = _grid_for(cell_size, resolution,
+                                                        dimensions, dtype,
+                                                        courant=self.Courant)
+            self._pol = pol_for(self._sources[0].component) if self._sources else "tm"
+            # S-param path: an EigenModeSource + mode monitors -> compute_smatrix.
+            self._eig_source = next((s for s in self._sources
+                                     if isinstance(s, EigenModeSource)), None)
         self._npml = 0
         self._nabs = 0
         for bl in boundary_layers or []:
@@ -158,17 +297,46 @@ class Simulation:
             elif isinstance(bl, Absorber):
                 self._nabs = max(self._nabs, pml_npml(bl.thickness, self.gs))
         self._default = default_material if isinstance(default_material, Medium) else Medium(epsilon=float(default_material))
-        geom = list(geometry or [])
-        eps_items, chi3_items, cond_items = build_scene_items(geom, self.gs, dimensions,
-                                                              with_cond=True)
+        if sym_y:
+            if self._pol != "tm":
+                raise NotImplementedError(f"Mirror(Y) is TM-only ({_SYM_TODO})")
+            if self.gs.ny % 2:
+                raise NotImplementedError(
+                    f"Mirror(Y) needs an even cell row count ({_SYM_TODO})")
+            self._sym_cy = self.gs.ny // 2
+
+    def __getattr__(self, name):
+        # deferred-raster attributes: meep builds the structure in init_sim,
+        # not __init__ -- first touch triggers _init_structure
+        if name in ("_rm", "_cond", "_eps3d", "_coeffs3d"):
+            self._init_structure()
+            if name in self.__dict__:
+                return self.__dict__[name]
+        raise AttributeError(name)
+
+    def _init_structure(self):
+        """meep Simulation._init_structure: rasterize the geometry and build
+        ``self.structure`` -- the mp.structure owning the material tensors and
+        the compiled stepping coefficients. Idempotent; init_sim, the monitor
+        adders and the lazy accessors call it exactly where meep does."""
+        if self.dimensions == 3:
+            if self.__dict__.get("_coeffs3d") is None:
+                self._init_3d()
+            return
+        if self.structure is not None:
+            return
+        if self._sym_cy:
+            # rebuild the full-cell grid for rasterization (halved again below)
+            self.grid = Grid(nx=self.gs.nx, ny=self.gs.ny, dx=self.gs.dx,
+                             dtype=self.dtype, courant=self.Courant)
+        eps_items, chi3_items, cond_items = build_scene_items(
+            self._geometry, self.gs, self.dimensions, with_cond=True)
         bg_val, bg_chi3 = self._default.resolve()
         if bg_chi3 != 0.0:
             full = np.array([[0, 0], [self.gs.sx, 0], [self.gs.sx, self.gs.sy], [0, self.gs.sy]])
             from ..geometry.polygons import Polygon
             chi3_items.append((Polygon(full), bg_chi3))
         self._rm = rasterize_scene(eps_items, self.grid, background=bg_val, chi3_items=chi3_items)
-        self._sources = list(sources or [])
-        self._pol = pol_for(self._sources[0].component) if self._sources else "tm"
         # W5: conductivity / mu maps + Absorber sigma ramp
         bg_sd = float(getattr(self._default, "D_conductivity", 0.0) or 0.0)
         bg_sb = float(getattr(self._default, "B_conductivity", 0.0) or 0.0)
@@ -186,20 +354,15 @@ class Simulation:
                 sd = sd + ramp
                 sb = sb + ramp
             self._cond = (sd, sb, mu)
-        if sym_y:
+        if self._sym_cy:
             # Even y-mirror: rasterize the full cell (above), then run the
             # engine on the upper half with a PMC wall at the cut plane
             # (build_tm_coeffs y_mirror=+1; tests/examples/test_y_mirror.py).
             # self.gs stays full-cell for all coordinate conversion; y spans
             # are folded via _ymap/_ypoint and outputs de-mirrored.
-            if self._pol != "tm":
-                raise NotImplementedError(f"Mirror(Y) is TM-only ({_SYM_TODO})")
-            if self.gs.ny % 2:
-                raise NotImplementedError(
-                    f"Mirror(Y) needs an even cell row count ({_SYM_TODO})")
-            cy = self._sym_cy = self.gs.ny // 2
+            cy = self._sym_cy
             self.grid = Grid(nx=self.gs.nx, ny=self.gs.ny - cy, dx=self.gs.dx,
-                             dtype=dtype)
+                             dtype=self.dtype, courant=self.Courant)
             half = lambda t: None if t is None else t[:, cy:].contiguous()
             self._rm = self._rm._replace(
                 eps_tm=half(self._rm.eps_tm), eps_te_xx=half(self._rm.eps_te_xx),
@@ -208,17 +371,28 @@ class Simulation:
                 chi3=half(self._rm.chi3))
             if self._cond is not None:
                 self._cond = tuple(half(t) for t in self._cond)
-        self._coeffs = self._build_coeffs()
-        self._state = None
-        self._t_step = 0
-        self._monitors = []          # list of (name, kind, mon, meta)
-        self._last_acc = {}
-        # S-param path: an EigenModeSource + mode monitors route to compute_smatrix.
-        self._eig_source = next((s for s in self._sources if isinstance(s, EigenModeSource)),
-                               None)
-        self._mode_ports = []        # list of (name, axis, idx, lo, hi, direction)
-        self._S = None
-        self._port_index = {}       # monitor name -> port index in compute_smatrix
+        if self._pol == "te" and self._y_pmc:
+            raise NotImplementedError("1D (y-PMC) TE Simulation is not supported")
+        from .cpp_bindings_core import structure
+        self.structure = structure._from_sim(self)
+
+    @property
+    def _coeffs(self):
+        """Compiled stepping coefficients; ``self.structure`` is their single
+        owner (built lazily by _init_structure, meep style)."""
+        if self.dimensions == 3:
+            return self._coeffs3d            # lazy via __getattr__
+        if self.structure is None:
+            self._init_structure()
+        return self.structure.coeffs
+
+    @property
+    def _state(self):
+        """Live engine field state: ``self.fields`` owns it (meep); the 3D
+        path keeps its tensor state behind the same facade."""
+        if self.dimensions == 3:
+            return self._state3
+        return None if self.fields is None else self.fields._state
 
     def _absorber_ramp(self):
         """Quadratic sigma ramp on every absorbing edge (R_asymptotic 1e-15)."""
@@ -237,21 +411,9 @@ class Simulation:
     # Block only (voxel fill, no subpixel); scalar eps + D/B-conductivity only
     # (no Lorentz/Kerr in 3D this wave). See docs/specs/...-w9-wave3-3d-shim.
     # ----------------------------------------------------------------------
-    def _init_3d(self, cell_size, resolution, geometry, sources, default_material,
-                 boundary_layers, dtype):
-        self.gs = grid_spec(cell_size, resolution, dimensions=3)
+    def _init_3d(self):
         g = self.gs
-        self.grid = None                      # no core/Grid in 3D; use gs + coeffs
-        self._y_pmc = False
-        self._npml = 0
-        self._nabs = 0
-        for bl in boundary_layers or []:
-            if isinstance(bl, PML):
-                self._npml = max(self._npml, pml_npml(bl.thickness, g))
-            elif isinstance(bl, Absorber):
-                self._nabs = max(self._nabs, pml_npml(bl.thickness, g))
-        self._default = (default_material if isinstance(default_material, Medium)
-                         else Medium(epsilon=float(default_material)))
+        dtype = self.dtype
         nx, ny, nz = g.nx, g.ny, g.nz
         bg = self._default
         bg_eps, bg_chi3 = bg.resolve()
@@ -262,7 +424,7 @@ class Simulation:
         bg_sb = float(getattr(bg, "B_conductivity", 0.0) or 0.0)
         sd = torch.full((nx, ny, nz), bg_sd, dtype=dtype)
         sb = torch.full((nx, ny, nz), bg_sb, dtype=dtype)
-        for obj in (geometry or []):
+        for obj in self._geometry:
             if not isinstance(obj, Block):
                 raise NotImplementedError(
                     f"3D geometry {type(obj).__name__} not supported (W9 wave 3; "
@@ -285,19 +447,10 @@ class Simulation:
             sb[i0:i1, j0:j1, k0:k1] = sbv
         has_cond = bool((sd.abs().sum() + sb.abs().sum()).item())
         self._eps3d = eps
-        self._coeffs = build_3d_coeffs(
+        self._coeffs3d = build_3d_coeffs(
             nx, ny, nz, g.dx, eps=eps, npml=self._npml, n_abs=self._nabs,
             sigma_d=(sd if has_cond else None), sigma_b=(sb if has_cond else None),
             dtype=dtype)
-        self._state = None
-        self._t_step = 0
-        self._sources = list(sources or [])
-        self._monitors = []
-        self._last_acc = {}
-        self._eig_source = None              # 3D has no S-param path this wave
-        self._mode_ports = []
-        self._S = None
-        self._port_index = {}
 
     def _make_sources_3d(self):
         specs = list(self._sources)
@@ -336,12 +489,12 @@ class Simulation:
         return _Amp(src, amp)
 
     def _run_3d(self, n_steps):
-        self._state = init_3d_state(self.gs.nx, self.gs.ny, self.gs.nz,
-                                    npml=self._npml, dtype=self.dtype)
+        self._state3 = init_3d_state(self.gs.nx, self.gs.ny, self.gs.nz,
+                                     npml=self._npml, dtype=self.dtype)
         src = self._make_sources_3d()
         monitors = [m for (_, _, m, _) in self._monitors]
-        self._state, outs = run_3d(self._state, self._coeffs, n_steps,
-                                   source=src, monitors=monitors)
+        self._state3, outs = run_3d(self._state3, self._coeffs, n_steps,
+                                    source=src, monitors=monitors)
         for (name, kind, mon, meta), acc in zip(self._monitors, outs):
             self._last_acc[name] = (acc, mon, meta)
 
@@ -355,8 +508,7 @@ class Simulation:
         idx = [cell_index(c.x, g), cell_index_y(c.y, g), cell_index_z(c.z, g)][axis]
         return normal, idx, self._npml + 1
 
-    def _add_flux_3d(self, fcen, df, nfreq, region, name):
-        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
+    def _add_flux_3d(self, freqs, region, name):
         name = name or f"flux{len(self._monitors)}"
         normal, idx, ap = self._plane_spec_3d(region)
         g = self.gs
@@ -387,24 +539,44 @@ class Simulation:
         self._monitors.append((name, "flux", mon, {"normal": normal, "idx": idx}))
         return name
 
-    def _build_coeffs(self):
-        extra = {}
-        if self._cond is not None:
-            extra = dict(sigma_d=self._cond[0], sigma_b=self._cond[1], mu=self._cond[2])
-        if self._pol == "tm":
-            return build_tm_coeffs(self.grid, eps_inf=self._rm.eps_tm, poles=self._rm.poles,
-                                    pole_masks=self._rm.pole_masks, chi3=self._rm.chi3,
-                                    npml=self._npml, y_pmc=self._y_pmc,
-                                    y_mirror=+1 if self._sym_cy else 0, **extra)
-        if self._y_pmc:
-            raise NotImplementedError("1D (y-PMC) TE Simulation is not supported")
-        return build_te_coeffs(self.grid, eps_inf=self._rm.eps_te_xx, poles=self._rm.poles,
-                               pole_masks=self._rm.pole_masks, chi3=self._rm.chi3,
-                               npml=self._npml, **extra)
+    def _build_indexed(self, spec):
+        """IndexedSource -> LineSource with the per-point amp array as mask."""
+        if self._sym_cy:
+            raise NotImplementedError(
+                f"IndexedSource with Mirror(Y) not supported ({_SYM_TODO})")
+        ix, j0, j1 = _point_or_span(spec.center, spec.size, self.gs)
+        if j1 - j0 != len(spec.amp_arr):
+            raise ValueError(
+                f"IndexedSource amp_arr has {len(spec.amp_arr)} points but "
+                f"the srcdata region spans {j1 - j0} cells")
+        amps = np.asarray(spec.amp_arr)
+        if np.iscomplexobj(amps):
+            if np.abs(amps.imag).max() > 1e-12 * max(np.abs(amps).max(), 1e-300):
+                raise NotImplementedError(
+                    "IndexedSource with complex amplitudes: the engine injects "
+                    "a real spatial mask times a real time profile (no "
+                    "per-point phase)")
+            amps = amps.real
+        from ..core.sources import LineSource
+        src = LineSource(self.grid, ix, j0, j1, profile=spec.src.profile())
+        src.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
+        src.mask[ix, j0:j1] = torch.tensor(amps, dtype=self.grid.dtype)
+        if self._pol == "te":
+            src.mask = src.mask[:, :-1]
+        return src
 
     def _make_sources(self):
         out = []
         for spec in self._sources:
+            if isinstance(spec, IndexedSource):
+                out.append(self._build_indexed(spec))
+                continue
+            if type(spec) is GaussianBeam3DSource:
+                raise NotImplementedError(
+                    "GaussianBeam3DSource is the exact 3D complex-point-source "
+                    "beam, which the 2D real-field engine cannot inject; use "
+                    "GaussianBeam2DSource/GaussianBeamSource (amplitude-envelope "
+                    "launch)")
             if isinstance(spec, EigenModeSource):
                 raise NotImplementedError("EigenModeSource via Simulation.run is W1-limited; "
                                           "use compute_smatrix via meep_torch.ports for S-params")
@@ -436,13 +608,6 @@ class Simulation:
                 src.mask = src.mask[:, :-1]
             out.append(src)
         return out
-
-    def _init_state(self):
-        n_poles = len(self._rm.poles)
-        if self._pol == "tm":
-            return init_tm_state(self.grid, n_poles=n_poles, y_pmc=self._y_pmc,
-                                 y_mirror=+1 if self._sym_cy else 0)
-        return init_te_state(self.grid, n_poles=n_poles)
 
     # --- y-mirror folding helpers (all no-ops when _sym_cy == 0) ---
     def _ymap(self, lo, hi):
@@ -497,7 +662,7 @@ class Simulation:
             if self.dimensions == 3 or self._eig_source is not None:
                 raise NotImplementedError(
                     "step functions / stop conditions: 2D non-eigenmode runs only")
-            self._run_stepped(step_funcs, until, until_after_sources)
+            self._run_until(step_funcs, until, until_after_sources)
             return
         if n_steps is None:
             if until is not None:
@@ -516,55 +681,48 @@ class Simulation:
         if self._eig_source is not None:
             self._run_modes(n_steps)
             return
-        run = run_tm if self._pol == "tm" else run_te
-        self._state = self._init_state()
-        srcs = self._make_sources()
-        monitors = [m for (_, _, m, _) in self._monitors]
-        src = srcs[0] if srcs else None
-        self._state, outs = run(self._state, self._coeffs, n_steps, source=src, monitors=monitors)
-        for (name, kind, mon, meta), acc in zip(self._monitors, outs):
-            self._last_acc[name] = (acc, mon, meta)
+        self._run_until((), None, None, n_steps)
 
-    def _run_stepped(self, step_funcs, until, until_after_sources):
-        """meep run protocol: drive the engine chunk-by-chunk (_run_chunk keeps
-        the source time index continuous), firing step functions between chunks
-        and feeding stop conditions every step."""
-        from ..core.run import _run_chunk
-        from ..core.stepper import step_tm
-        from ..core.stepper_te import step_te
+    def _run_until(self, step_funcs, until, until_after_sources, n_steps=None):
+        """meep run protocol (Simulation._run_until): fire step functions,
+        advance ``self.fields``, and feed stop conditions every step.
+
+        fields.step_n(k) covers the hook-free stretches in single chunked
+        calls (the GPU/autograd analog of meep's chunked stepping; see its
+        docstring); an active per-step hook or stop condition forces k=1,
+        i.e. plain fields.step(). plan_hooks/chunk_size (mp.run_control)
+        size k to the finest at_every/at_time interval."""
+        self.init_sim()
+        f = self.fields
+        f.reset()                # each run() starts at t=0 with zero fields
+        self._register_sources()
         dt = self.grid.dt
         cutoff = self._source_cutoff()
         begin, end, per_step, scheduled = plan_hooks(step_funcs, cutoff)
-        conds, gate, n_total = None, 0.0, None
+        conds, gate, n_total = None, 0.0, n_steps
         stop = until if until is not None else until_after_sources
         if callable(stop) or isinstance(stop, (list, tuple)):
             conds = list(stop) if isinstance(stop, (list, tuple)) else [stop]
             if until is None:
                 gate = cutoff        # until_after_sources: condition applies post-cutoff
-        elif until is not None:
-            n_total = max(1, int(round(float(until) / dt)))
-        else:
-            n_total = max(1, int(round((cutoff + (until_after_sources or 0)) / dt)))
-        step_fn = step_tm if self._pol == "tm" else step_te
-        self._state = self._init_state()
-        srcs = self._make_sources()
-        src = srcs[0] if srcs else None
-        monitors = [m for (_, _, m, _) in self._monitors]
-        acc = [None] * len(monitors)
+        elif n_total is None:
+            if until is not None:
+                n_total = max(1, int(round(float(until) / dt)))
+            else:
+                n_total = max(1, int(round((cutoff + (until_after_sources or 0)) / dt)))
         self._t_step = 0
-        for f in begin:
-            f(self)
+        for g in begin:
+            g(self)
         fire_scheduled(self, scheduled, 0.0)
         while n_total is None or self._t_step < n_total:
             t = self._t_step * dt
             left = (n_total - self._t_step) if n_total is not None else 10 ** 9
             k = chunk_size(t, dt, left, per_step, scheduled, conds is not None)
-            self._state, outs = _run_chunk(step_fn, self._state, self._coeffs,
-                                           self._t_step, k, src, monitors)
-            for i, (mon, out) in enumerate(zip(monitors, outs)):
-                acc[i] = out if acc[i] is None else \
-                    (acc[i] + out if mon.reduce == "sum" else torch.cat([acc[i], out]))
-            self._t_step += k
+            if k == 1:
+                f.step()
+            else:
+                f.step_n(k)
+            self._t_step = f._t
             t = self._t_step * dt
             fire_per_step(self, per_step, t, dt)
             fire_scheduled(self, scheduled, t)
@@ -572,10 +730,10 @@ class Simulation:
                 flags = [bool(g(self)) for g in conds]   # feed every condition
                 if t >= gate - 1e-9 and any(flags):
                     break
-        for (name, kind, mon, meta), a in zip(self._monitors, acc):
-            self._last_acc[name] = (a, mon, meta)
-        for f in end:
-            f(self)
+        for (name, kind, mon, meta) in self._monitors:
+            self._last_acc[name] = (f._monitors[name][1], mon, meta)
+        for g in end:
+            g(self)
 
     def _run_modes(self, n_steps):
         """S-param path: EigenModeSource + mode monitors -> compute_smatrix.
@@ -595,7 +753,9 @@ class Simulation:
         from ..ports.smatrix import compute_smatrix
         es = self._eig_source
         _, axis, idx, lo, hi, direction, band, prof, amp = build_mode_source(es, self.gs)
-        src_port = Port(axis=axis, index=idx, lo=lo, hi=hi, direction=es.direction,
+        # AUTOMATIC (meep default, -1) = launch along the region normal, forward
+        src_dir = +1 if es.direction == AUTOMATIC else es.direction
+        src_port = Port(axis=axis, index=idx, lo=lo, hi=hi, direction=src_dir,
                         n_modes=es.eig_band)   # eig_band is 1-based (meep)
         ports = [src_port]
         self._port_index = {}
@@ -614,38 +774,54 @@ class Simulation:
         self._S = sm.s
 
     # --- flux monitors ---
+    def _register_monitor(self, name, kind, mon, meta):
+        """meep-level bookkeeping plus registration on the fields, which
+        accumulates the DFT inside step() (meep's add_flux ->
+        fields.add_dft_flux pattern; init_sim runs lazily here). The 3D and
+        S-param paths keep list-only bookkeeping (no fields object)."""
+        self._monitors.append((name, kind, mon, meta))
+        if self.dimensions != 3 and self._eig_source is None:
+            self.init_sim()
+            self.fields._register(name, mon)
+
     def add_flux(self, fcen, df, nfreq, *fluxes, name=None):
         """meep add_flux(fcen, df, nfreq, *fluxregions) -> DftFlux (fluxes over
         multiple regions are summed, meep style)."""
         freqs = (np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq)).tolist()
+        return DftFlux(self._add_flux, [freqs, list(fluxes), name])
+
+    def _add_flux(self, freqs, fluxes, name):
         if self.dimensions == 3:
             if len(fluxes) != 1:
                 raise NotImplementedError("3D add_flux takes exactly one region (W9 wave 3)")
-            return DftFlux(self, self._add_flux_3d(fcen, df, nfreq, fluxes[0], name), freqs)
+            return self, self._add_flux_3d(freqs, fluxes[0], name), freqs
         name = name or f"flux{len(self._monitors)}"
         parts = []
         for r, region in enumerate(fluxes):
             mon, meta = self._line_monitor(region, freqs, kind="flux")
             key = name if len(fluxes) == 1 else f"{name}:r{r}"
-            self._monitors.append((key, "flux", mon, meta))
+            self._register_monitor(key, "flux", mon, meta)
             parts.append(key)
         if len(fluxes) > 1:
             self._flux_parts = getattr(self, "_flux_parts", {})
             self._flux_parts[name] = parts
-        return DftFlux(self, name, freqs)
+        return self, name, freqs
 
     def add_near2far(self, fcen, df, nfreq, *regions, name=None):
+        """2D near-to-far contour (TM + TE). Regions with outward normal =
+        region axis * weight; a closed box = 4 regions, meep style. Trapezoid
+        endpoint weights close the loop integral when the regions share
+        corners."""
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
+        return DftNear2Far(self._add_near2far, [freqs, list(regions), name])
+
+    def _add_near2far(self, freqs, regions, name):
         if self.dimensions == 3:
             raise NotImplementedError("3D add_near2far not supported (W9 wave 3; 2D only)")
         if self._sym_cy:
             raise NotImplementedError(
                 f"add_near2far with Mirror(Y) not supported ({_SYM_TODO})")
-        """2D near-to-far contour (TM + TE). Regions with outward normal =
-        region axis * weight; a closed box = 4 regions, meep style. Trapezoid
-        endpoint weights close the loop integral when the regions share
-        corners."""
         from ..core.monitors import FluxMonitorTEY
-        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
         name = name or f"n2f{len(self._monitors)}"
         dx = self.grid.dx
         specs = []
@@ -671,12 +847,12 @@ class Simulation:
                 pts = np.stack([np.full(len(idxs), idx * dx), (idxs + off) * dx], axis=1)
             else:
                 pts = np.stack([(idxs + off) * dx, np.full(len(idxs), idx * dx)], axis=1)
-            self._monitors.append((f"{name}:f{r}", "n2f", mon,
-                                   {"normal": normal, "pts": pts}))
+            self._register_monitor(f"{name}:f{r}", "n2f", mon,
+                                   {"normal": normal, "pts": pts})
             specs.append(f"{name}:f{r}")
         self._n2f_specs = getattr(self, "_n2f_specs", {})
         self._n2f_specs[name] = (specs, freqs)
-        return DftNear2Far(self, name, freqs)
+        return self, name, freqs
 
     def get_farfield(self, name, point):
         """Complex [Ex, Ey, Ez, Hx, Hy, Hz] at a far point (meep layout);
@@ -696,18 +872,21 @@ class Simulation:
         return out[0] if len(freqs) == 1 else out
 
     def dft_ldos(self, fcen, df, nfreq, name=None):
-        if self.dimensions == 3:
-            raise NotImplementedError("3D dft_ldos not supported (W9 wave 3; deferred)")
         """meep dft_ldos-lite: record Ez at the (point) source and return
         LDOS via core.ldos.ldos_spectrum after run(). TM only."""
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
+        return DftLdos(self._add_ldos, [freqs, name])
+
+    def _add_ldos(self, freqs, name):
+        if self.dimensions == 3:
+            raise NotImplementedError("3D dft_ldos not supported (W9 wave 3; deferred)")
         c = (self._sources[0].center or Vector3())
         ix = cell_index(c.x, self.gs)
         iy = self._ypoint(cell_index_y(c.y, self.gs))
         mon = PointProbe(ix, iy)
         name = name or f"ldos{len(self._monitors)}"
-        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1))
-        self._monitors.append((name, "ldos", mon, {"freqs": freqs}))
-        return DftLdos(self, name, freqs.tolist())
+        self._register_monitor(name, "ldos", mon, {"freqs": np.asarray(freqs)})
+        return self, name, freqs
 
     def get_ldos(self, name):
         from ..core.ldos import ldos_spectrum
@@ -722,14 +901,18 @@ class Simulation:
         """Full-cell area DFT of field components (meep add_dft_fields, no
         `where` region: whole cell only). Returns a handle for get_dft_array."""
         freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
+        return DftFields(self._add_dft_fields, [freqs, list(components), name])
+
+    def _add_dft_fields(self, freqs, components, name):
         name = name or f"dft{len(self._monitors)}"
         for c in components:
             if self.dimensions == 3:
                 mon = DFTFieldsMonitor3D(self._coeffs.dt, freqs, component=c, dtype=self.dtype)
+                self._monitors.append((f"{name}:{c}", "dft", mon, {"freqs": freqs}))
             else:
                 mon = DFTFieldsMonitor(self.grid, freqs, component=c)
-            self._monitors.append((f"{name}:{c}", "dft", mon, {"freqs": freqs}))
-        return DftFields(self, name, freqs)
+                self._register_monitor(f"{name}:{c}", "dft", mon, {"freqs": freqs})
+        return self, name, freqs
 
     def get_dft_array(self, name, component, num_freq):
         """Complex (nx, ny) DFT plane of `component` at frequency index."""
@@ -737,7 +920,134 @@ class Simulation:
         a = acc[num_freq].detach().cpu().numpy()
         return self._demirror(a[0] + 1j * a[1])
 
+    # --- MST force + field-energy monitors (2D TM; core.forces machinery) ---
+    def _region_box(self, region):
+        """Region -> Ez-node index box (i0, i1, j0, j1) (half-open), clamped
+        one cell inside the grid so the staggered Hx/Hy samples the MST and
+        energy sums need stay in range."""
+        gs = self.gs
+        x0, y0, x1, y1 = rect_corners(region.center or Vector3(),
+                                      region.size or Vector3(), gs)
+        i0, i1 = span_index_range(x0, x1, gs, "x")
+        j0, j1 = span_index_range(y0, y1, gs, "y")
+        i0, j0 = max(1, i0), max(1, j0)
+        return i0, min(gs.nx - 1, max(i1, i0 + 1)), j0, min(gs.ny - 1, max(j1, j0 + 1))
+
+    def _add_mst_monitors(self, freqs, name, kind):
+        """Register full-cell Ez/Hx/Hy DFT monitors backing add_force/add_energy."""
+        if self.dimensions != 2 or self._pol != "tm":
+            raise NotImplementedError(f"add_{kind}: 2D TM runs only")
+        if self._sym_cy:
+            raise NotImplementedError(
+                f"add_{kind} with Mirror(Y) not supported ({_SYM_TODO})")
+        for c in ("Ez", "Hx", "Hy"):
+            self._register_monitor(f"{name}:{c}", kind,
+                                   DFTFieldsMonitor(self.grid, freqs, c), {})
+
+    def _dft_planes(self, name, comps):
+        """Complex (nfreq, ...) planes from the name:comp DFT accumulators."""
+        out = {}
+        for c in comps:
+            acc, _, _ = self._last_acc[f"{name}:{c}"]
+            a = acc.detach().cpu().numpy()
+            out[c] = a[:, 0] + 1j * a[:, 1]
+        return out
+
+    def add_energy(self, fcen, df, nfreq, *energys, name=None):
+        """meep add_energy(fcen, df, nfreq, *energyregions) -> DftEnergy.
+        2D TM: accumulates full-cell DFTs of Ez/Hx/Hy; the get_*_energy
+        methods integrate the time-averaged energy density over the regions."""
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
+        return DftEnergy(self._add_energy, [freqs, list(energys), name])
+
+    def _add_energy(self, freqs, regions, name):
+        name = name or f"energy{len(self._monitors)}"
+        self._add_mst_monitors(freqs, name, "energy")
+        self._energy_specs = getattr(self, "_energy_specs", {})
+        self._energy_specs[name] = [
+            (self._region_box(r), complex(getattr(r, "weight", 1.0) or 1.0).real)
+            for r in regions]
+        return self, name, freqs
+
+    def get_electric_energy(self, f):
+        """Per-frequency integral of <u_E> = eps |Ez|^2 / 4 over the regions."""
+        return self._energy(f, electric=True)
+
+    def get_magnetic_energy(self, f):
+        """Per-frequency integral of <u_H> = mu (|Hx|^2 + |Hy|^2) / 4."""
+        return self._energy(f, electric=False)
+
+    def get_total_energy(self, f):
+        """Electric + magnetic energy per frequency."""
+        return [a + b for a, b in zip(self.get_electric_energy(f),
+                                      self.get_magnetic_energy(f))]
+
+    def _energy(self, f, *, electric):
+        name = dft_name(f)
+        dx = self.grid.dx
+        eps = self._rm.eps_tm.detach().cpu().numpy()
+        mu = (self._cond[2].detach().cpu().numpy() if self._cond is not None
+              else np.ones_like(eps))
+        planes = self._dft_planes(name, ("Ez",) if electric else ("Hx", "Hy"))
+        out = 0.0
+        for (i0, i1, j0, j1), w in self._energy_specs[name]:
+            # integration measure: dx per axis the box actually extends over
+            # (area for a 2D region, length for a line, density at a point)
+            d = (i1 - i0 > 1) + (j1 - j0 > 1)
+            if electric:
+                u = eps[None, i0:i1, j0:j1] * np.abs(planes["Ez"][:, i0:i1, j0:j1]) ** 2
+            else:
+                # ponytail: Hx/Hy summed at their own staggered nodes (half a
+                # cell off the Ez box) -- fine for smooth fields; average to
+                # Ez nodes like core.forces if sub-cell accuracy matters
+                u = mu[None, i0:i1, j0:j1] * (
+                    np.abs(planes["Hx"][:, i0:i1, j0:j1]) ** 2
+                    + np.abs(planes["Hy"][:, i0:i1, j0:j1]) ** 2)
+            out = out + 0.25 * w * u.sum(axis=(1, 2)) * dx ** d
+        return out.tolist()
+
+    def add_force(self, fcen, df, nfreq, *forces, name=None):
+        """meep add_force(fcen, df, nfreq, *forceregions) -> DftForce.
+        2D TM: accumulates full-cell DFTs of Ez/Hx/Hy; get_forces integrates
+        the Maxwell stress tensor over the closed box bounding the regions
+        (core.forces.mst_force_tm). All regions must share one direction
+        (mp.X or mp.Y -- the force component); their union should enclose
+        the object in vacuum, meep style."""
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
+        return DftForce(self._add_force, [freqs, list(forces), name])
+
+    def _add_force(self, freqs, regions, name):
+        dirs = {r.direction for r in regions}
+        if not regions or len(dirs) != 1 or not dirs <= {X, Y}:
+            raise NotImplementedError(
+                "add_force needs one or more ForceRegions sharing a single "
+                "direction (mp.X or mp.Y); the MST box is the regions' union")
+        name = name or f"force{len(self._monitors)}"
+        self._add_mst_monitors(freqs, name, "force")
+        boxes = [self._region_box(r) for r in regions]
+        box = (min(b[0] for b in boxes), max(b[1] for b in boxes),
+               min(b[2] for b in boxes), max(b[3] for b in boxes))
+        self._force_specs = getattr(self, "_force_specs", {})
+        self._force_specs[name] = (box, dirs.pop(),
+                                   complex(getattr(regions[0], "weight", 1.0)
+                                           or 1.0).real)
+        return self, name, freqs
+
+    def get_forces(self, f):
+        """Per-frequency force along the regions' shared direction."""
+        from ..core.forces import mst_force_tm
+        name = dft_name(f)
+        (i0, i1, j0, j1), direction, w = self._force_specs[name]
+        planes = self._dft_planes(name, ("Ez", "Hx", "Hy"))
+        fx, fy = mst_force_tm(planes, self.grid, ix0=i0, ix1=i1 - 1,
+                              iy0=j0, iy1=j1 - 1)
+        return (w * (fx if direction == X else fy)).tolist()
+
     def add_mode_monitor(self, fcen, df, nfreq, *fluxes, name=None):
+        freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
+        return DftFlux(self._add_mode_monitor, [freqs, list(fluxes), name])
+
+    def _add_mode_monitor(self, freqs, fluxes, name):
         if self.dimensions == 3:
             raise NotImplementedError("3D EigenModeSource/S-params not supported (W9 wave 3)")
         if len(fluxes) != 1:
@@ -749,8 +1059,8 @@ class Simulation:
         axis, idx, lo, hi = self._port_spec(region)
         name = name or f"mode{len(self._mode_ports)}"
         self._mode_ports.append((name, axis, idx, lo, hi, region.direction))
-        self._mode_freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
-        return DftFlux(self, name, self._mode_freqs)
+        self._mode_freqs = freqs
+        return self, name, freqs
 
     def _port_spec(self, region: FluxRegion):
         c = region.center or Vector3()
@@ -787,7 +1097,8 @@ class Simulation:
             x0 = c.x - s.x / 2 + gs.sx / 2
             x1 = c.x + s.x / 2 + gs.sx / 2
             lo, hi = span_index_range(max(0.0, x0), min(gs.sx, x1), gs, "x")
-        meta = {"idx": idx, "lo": lo, "hi": hi}
+        meta = {"idx": idx, "lo": lo, "hi": hi,
+                "wt": complex(getattr(region, "weight", 1.0) or 1.0).real}
         if self._sym_cy:
             if not (self.dimensions == 2 and abs(s.x) <= abs(s.y)):
                 raise NotImplementedError(
@@ -807,7 +1118,7 @@ class Simulation:
             return [sum(v) for v in zip(*(self.get_fluxes(p) for p in parts))]
         acc, mon, meta = self._last_acc[name]
         dx = self.gs.dx if self.dimensions == 3 else self.grid.dx
-        vals = mon.flux(acc, dx).detach().cpu().numpy()
+        vals = mon.flux(acc, dx).detach().cpu().numpy() * meta.get("wt", 1.0)
         if meta.get("mir2"):
             vals = 2.0 * vals    # span crossed the mirror plane: half-cell flux
         return vals.tolist()
@@ -821,6 +1132,12 @@ class Simulation:
         """S[:, port_index(name), 0] -- the coefficient at monitor `name` when
         the EigenModeSource (port 0) is excited (power-normalized S-param; see
         the _run_modes docstring for the normalization mapping)."""
+        if isinstance(n_modes, DiffractedPlanewave):
+            raise NotImplementedError(
+                "get_eigenmode_coefficients(bands=DiffractedPlanewave): the "
+                "diffraction-order machinery (meep_torch/ports/orders.py) "
+                "needs a Bloch-periodic core run; Simulation has no k_point "
+                "path to drive it")
         if self._S is None:
             raise RuntimeError("run() with an EigenModeSource before get_eigenmode_coefficients")
         j = self._port_index[dft_name(name)]
@@ -918,32 +1235,56 @@ class Simulation:
         return self.round_time()
 
     def init_sim(self):
-        """Allocate the field state (the structure is built at construction)."""
-        if self._state is None:
-            self.restart_fields()
+        """meep init_sim: build the structure (_init_structure), then the
+        fields that step it, and register the sources on the fields.
+        Idempotent; run() and the monitor adders call it lazily, meep style.
+        The 3D path keeps its tensor state behind this facade (no fields
+        object; the 3D engine is driven by core.monitors_3d.run_3d)."""
+        self._init_structure()
+        if self.dimensions == 3:
+            if self._state3 is None:
+                self.restart_fields()
+            return
+        if self.fields is None:
+            from .cpp_bindings_core import fields
+            self.fields = fields(self.structure)
+            if self._eig_source is None:
+                self._register_sources()
+
+    def _register_sources(self):
+        """(Re)build the engine sources from the meep specs and register them
+        on the fields (meep's fields.add_source pattern)."""
+        self.fields.remove_sources()
+        for src in self._make_sources():
+            self.fields.add_source(src)
 
     def restart_fields(self):
         """Restart the fields at time zero, with zero fields. DFT monitors are
         kept and continue to accumulate on the next run (meep semantics)."""
         if self.dimensions == 3:
-            self._state = init_3d_state(self.gs.nx, self.gs.ny, self.gs.nz,
-                                        npml=self._npml, dtype=self.dtype)
+            self._state3 = init_3d_state(self.gs.nx, self.gs.ny, self.gs.nz,
+                                         npml=self._npml, dtype=self.dtype)
         else:
-            self._state = self._init_state()
+            self.init_sim()
+            self.fields.zero_fields()
+            self.fields._t = 0
         self._t_step = 0
 
     def reset_meep(self):
         """Delete the fields and all accumulated monitor data, as if no
         computation had been run (the rasterized structure is kept: it is
         rebuilt deterministically from the constructor inputs)."""
-        self._state = None
+        self.fields = None
+        if self.dimensions == 3:
+            self._state3 = None
         self._t_step = 0
         self._monitors = []
         self._last_acc = {}
         self._mode_ports = []
         self._S = None
         self._port_index = {}
-        for a in ("_flux_parts", "_n2f_specs", "_mode_freqs"):
+        for a in ("_flux_parts", "_n2f_specs", "_mode_freqs", "_energy_specs",
+                  "_force_specs"):
             if hasattr(self, a):
                 delattr(self, a)
 
@@ -956,6 +1297,99 @@ class Simulation:
     def using_real_fields(self):
         """Always True: this engine has no k_point/complex-field path."""
         return True
+
+    def get_filename_prefix(self):
+        """meep get_filename_prefix: filename_prefix, or the running script's
+        basename without .py (meep's default output prefix)."""
+        import os
+        import re
+        import sys
+        if isinstance(self.filename_prefix, str):
+            return self.filename_prefix
+        if self.filename_prefix is None:
+            fn = os.path.split(sys.argv[0])[1]
+            if fn in ("ipykernel_launcher.py", "__main__.py", ""):
+                return ""
+            return re.sub(r"\.py$", "", fn)
+        raise TypeError(
+            f"Expected a string for filename_prefix, or None for the default: "
+            f"{self.filename_prefix!r}")
+
+    def change_sources(self, new_sources):
+        """meep change_sources: replace the source list. Sources are built
+        lazily at run(); a polarization change (TM <-> TE) rebuilds the
+        coefficients and drops the field state."""
+        self._sources = (list(new_sources)
+                         if isinstance(new_sources, (list, tuple))
+                         else [new_sources])
+        if self.dimensions == 3:
+            return
+        self._eig_source = next((s for s in self._sources
+                                 if isinstance(s, EigenModeSource)), None)
+        pol = pol_for(self._sources[0].component) if self._sources else "tm"
+        if pol != self._pol:
+            # a polarization flip changes the compiled coefficients: drop the
+            # structure and fields; init_sim rebuilds them from the spec
+            self._pol = pol
+            self.structure = None
+            self.fields = None
+
+    def add_sources(self):
+        """meep add_sources: register self.sources with the fields (init_sim
+        builds the fields and registers the sources, meep style)."""
+        self.init_sim()
+
+    def clear_dft_monitors(self):
+        """meep clear_dft_monitors: remove all DFT monitors and their
+        accumulated data (the field state is kept)."""
+        self._monitors = []
+        self._last_acc = {}
+        self._mode_ports = []
+        if self.fields is not None:
+            self.fields.clear_dft_monitors()
+        for a in ("_flux_parts", "_n2f_specs", "_energy_specs", "_force_specs"):
+            if hasattr(self, a):
+                delattr(self, a)
+
+    # --- meep whole-cell field getters (get_efield_z family) ---
+    def _state_array(self, name):
+        """Raw field plane at its own staggered nodes (2D state fields)."""
+        if self.dimensions == 3:
+            return self.get_array(component=name)
+        if self._state is None:
+            raise RuntimeError(f"run() before get field {name!r}")
+        f = getattr(self._state, name, None)
+        if f is None:
+            raise NotImplementedError(
+                f"component {name} does not exist on a {self._pol.upper()} run")
+        if self._sym_cy:
+            raise NotImplementedError(
+                f"staggered {name} with Mirror(Y) not supported ({_SYM_TODO})")
+        return f.detach().cpu().numpy()
+
+    def get_efield_x(self):
+        """meep get_efield_x: full-cell Ex array (TE runs; staggered nodes)."""
+        return self._state_array("Ex")
+
+    def get_efield_y(self):
+        """meep get_efield_y: full-cell Ey array (TE runs; staggered nodes)."""
+        return self._state_array("Ey")
+
+    def get_efield_z(self):
+        """meep get_efield_z: full-cell Ez array (TM runs)."""
+        return self.get_array(component=Ez)
+
+    def get_hfield_x(self):
+        """meep get_hfield_x: full-cell Hx array (TM runs; staggered nodes)."""
+        return self._state_array("Hx")
+
+    def get_hfield_y(self):
+        """meep get_hfield_y: full-cell Hy array (TM runs; staggered nodes)."""
+        return self._state_array("Hy")
+
+    def get_hfield_z(self):
+        """meep get_hfield_z: full-cell Hz array (TE runs)."""
+        return self.get_array(component=Hz)
 
     def plot2D(self, ax=None, output_plane=None, fields=None, **kwargs):
         """Delegate to mp.visualization.plot2D (meep signature)."""

@@ -75,6 +75,14 @@ class GeometricObject:
         c.center = self.center + Vector3(*vec)
         return c
 
+    def info(self, indent_by=0):
+        """meep GeometricObject.info: print the class and its properties,
+        indented by ``indent_by`` spaces."""
+        pad = " " * indent_by
+        print(f"{pad}{type(self).__name__}")
+        for k, v in vars(self).items():
+            print(f"{pad}     {k} = {v}")
+
 
 class Block(GeometricObject):
     """meep Block: brick spanned by basis e1/e2/e3 (in-plane rotation only)."""
@@ -232,6 +240,14 @@ class Prism(GeometricObject):
         self.sidewall_angle = sidewall_angle
         super().__init__(center=centroid, **kwargs)
 
+    def shift(self, vec):
+        # the raster reads self.vertices, not center: shift both (meep does too)
+        c = copy.copy(self)
+        d = Vector3(*vec)
+        c.vertices = [v + d for v in self.vertices]
+        c.center = self.center + d
+        return c
+
     def scene_items(self, gs: GridSpec, dims: int = 2):
         v = [to_corner(p, gs) for p in self.vertices]
         return [(Polygon(np.array(v)), self.material)]
@@ -381,9 +397,10 @@ class Matrix:
                 f" <{r1[0]} {r1[1]} {r1[2]}>\n"
                 f" <{r2[0]} {r2[1]} {r2[2]}>>")
 
-    def __array__(self):
-        return np.array([np.asarray(self.row(0)), np.asarray(self.row(1)),
-                         np.asarray(self.row(2))])
+    def __array__(self, dtype=None, copy=None):
+        a = np.array([[v.x, v.y, v.z]
+                      for v in (self.row(0), self.row(1), self.row(2))])
+        return a if dtype is None else a.astype(dtype)
 
     def row(self, i):
         return Vector3(self.c1[i], self.c2[i], self.c3[i])

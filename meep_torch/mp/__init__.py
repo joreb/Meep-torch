@@ -19,15 +19,22 @@ from .material import (ALL, Absorber, DrudeSusceptibility, FreqRange,
                        LorentzianSusceptibility, Low, Medium, MultilevelAtom,
                        NoisyDrudeSusceptibility, NoisyLorentzianSusceptibility,
                        PML, Susceptibility, Transition, get_rotation_matrix)
-from .run_control import (DftFields, DftFlux, DftLdos, DftNear2Far, DftObj, Harminv,
-                          Volume, after_sources, after_time, at_beginning, at_end,
+from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
+                          DftNear2Far, DftObj, Harminv, PadeDFT, Volume,
+                          after_sources, after_time, at_beginning, at_end,
                           at_every, at_time, before_time, during_sources,
                           stop_after_walltime, stop_when_fields_decayed, with_prefix)
-from .simulation import (FluxRegion, Identity, Mirror, Near2FarRegion, P, R,
-                         Rotate2, Rotate4, Simulation, Symmetry, X, Y, Z)
-from .sources import (ContinuousSource, CustomSource, Dielectric, EigenModeSource,
-                      Ex, Ey, Ez, GaussianSource, Hz, Hy, Source, pol_for)
+from .simulation import (EnergyRegion, FluxRegion, ForceRegion, Identity, Mirror,
+                         ModeRegion, Near2FarRegion, P, R, Rotate2, Rotate4,
+                         Simulation, Symmetry, X, Y, Z)
+from .sources import (ALL_COMPONENTS, AUTOMATIC, ContinuousSource, CustomSource,
+                      Dielectric, DiffractedPlanewave, EVEN_Y, EVEN_Z,
+                      EigenModeSource, Ex, Ey, Ez, GaussianBeam2DSource,
+                      GaussianBeam3DSource, GaussianBeamSource, GaussianSource,
+                      Hz, Hy, IndexedSource, NO_PARITY, ODD_Y, ODD_Z, Source,
+                      pol_for)
 from .vec import Vector3, interpolate
+from .verbosity_mgr import Verbosity, verbosity
 
 inf = math.inf
 
@@ -48,3 +55,48 @@ def get_ldos_freqs(f):
 
 def get_near2far_freqs(f):
     return list(f.freqs)
+# C++ binding layer: sources/dft (SWIG-surface parity)
+from .cpp_bindings_src import (continuous_src_time, custom_py_src_time,
+                               custom_src_time, dft_data, dft_energy, dft_fields,
+                               dft_flux, dft_force, dft_near2far,
+                               diffractedplanewave, eigenmode_data,
+                               gaussian_src_time, gaussianbeam,
+                               gyrotropic_susceptibility,
+                               lorentzian_susceptibility,
+                               multilevel_susceptibility, near_src_data,
+                               noisy_lorentzian_susceptibility, pol,
+                               polarization_state, sourcedata, src_time,
+                               susceptibility)
+
+# C++ binding layer: fields/structure (SWIG-surface parity)
+from .cpp_bindings_core import (absorber, boundary_region, cond_profile, fields,
+                                flux_vol, h5file, initialize, structure)
+
+
+# C++ binding layer (SWIG-surface parity)
+from .cpp_bindings_geom import (D1, D2, D3, Dcyl, clean_vec, geom_box,
+                                geom_epsilon, grid_volume, identity, ivec,
+                                iveccyl, material_function, mirror,
+                                one_ivec, one_vec, r_to_minus_r_symmetry,
+                                rotate2, rotate4, signed_direction,
+                                simple_material_function, symm_matrix,
+                                symmetry, unit_ivec, unit_vec, vec, vector3, veccyl,
+                                vol1d, vol2d, vol3d, volcyl, volone, voltwo,
+                                volume, volume_list, zero_ivec, zero_vec)
+
+# python-layer parity exports (implemented in submodules; wired here)
+from .geometry import (Cone, Ellipsoid, GeometricObject, Lattice, Matrix, Mesh,
+                       Sphere, Wedge, cartesian_to_lattice, cartesian_to_reciprocal,
+                       get_rotation_matrix, lattice_to_cartesian,
+                       lattice_to_reciprocal, reciprocal_to_cartesian,
+                       reciprocal_to_lattice)
+from .sources import SourceTime
+from .visualization import Animate2D, JS_Animation, plot2D
+from .material import MaterialGrid
+
+# module-level meep function surface (functions.py: portable helpers, single-
+# process parallel semantics, Dft accessors; output.py: HDF5 output family).
+# The star imports honor each module's __all__; functions.interpolate
+# deliberately replaces vec.interpolate (full meep list semantics).
+from .functions import *   # noqa: F401,F403
+from .output import *      # noqa: F401,F403

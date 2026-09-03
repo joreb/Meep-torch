@@ -9,11 +9,13 @@ honor are accepted and stored, and raise ValueError/NotImplementedError at
 resolve() time with a message naming the limitation.
 """
 import math
+import warnings
 from collections import namedtuple
 from typing import Sequence
 
 import numpy as np
 
+from ..adjoint.problem import MaterialGrid as _EngineMaterialGrid
 from ..core.materials import LorentzPole, Material
 from .vec import Vector3
 
@@ -496,3 +498,85 @@ class Absorber(PML):
     """meep mp.Absorber: drop-in for PML using a matched sigma_d = sigma_b
     quadratic conductivity ramp instead of coordinate stretching. Same
     signature as PML; applied on all cell edges."""
+
+
+class MaterialGrid(_EngineMaterialGrid):
+    """meep MaterialGrid(grid_size, medium1, medium2, weights, grid_type,
+    do_averaging, beta, eta, damping).
+
+    Engine mapping: medium1/medium2 resolve (Medium.resolve) to the scalar
+    eps_min/eps_max endpoints of the engine design grid
+    (meep_torch.adjoint.problem.MaterialGrid), so this object plugs straight
+    into adjoint DesignRegion; beta/eta become the default tanh projection of
+    adjoint OptimizationProblem when it is built over this grid (beta=0, the
+    meep default, means no projection -> the engine default beta=1.0).
+    ``weights`` follow meep: flat float64 in [0,1], zeros by default; use
+    update_weights to replace them (or pass them as OptimizationProblem
+    rho0). Stored only: do_averaging (design-grid subpixel smoothing),
+    grid_type (overlapping-grid merge -- grids never overlap here), damping
+    (meep's binarization penalty). Dispersive endpoints raise: the engine
+    interpolates one scalar eps."""
+
+    def __init__(self, grid_size, medium1, medium2, weights=None,
+                 grid_type="U_DEFAULT", do_averaging=False, beta=0, eta=0.5,
+                 damping=0):
+        gs = Vector3(*grid_size)
+        # meep: a ~0 component means "not varying along that axis" -> 1
+        gs = Vector3(*[1 if abs(v) < 1e-9 else int(v) for v in (gs.x, gs.y, gs.z)])
+        self.grid_size = gs
+        self.num_params = int(gs.x * gs.y * gs.z)
+        self.medium1 = medium1
+        self.medium2 = medium2
+
+        def scalar_eps(m):
+            if isinstance(m, Medium):
+                v, _ = m.resolve()
+                if not isinstance(v, float):
+                    raise NotImplementedError(
+                        "dispersive MaterialGrid endpoints are not supported: "
+                        "the engine interpolates a scalar eps (adjoint tier)")
+                return v
+            return float(m)
+
+        shape = ((int(gs.x), int(gs.y)) if gs.z == 1
+                 else (int(gs.x), int(gs.y), int(gs.z)))
+        super().__init__(shape, eps_min=scalar_eps(medium1),
+                         eps_max=scalar_eps(medium2))
+        self.do_averaging = do_averaging
+        self.beta = beta
+        self.eta = eta
+        self.damping = damping
+        if weights is None:
+            self.weights = np.zeros((self.num_params,))
+        elif np.asarray(weights).size != self.num_params:
+            raise ValueError(
+                f"weights of shape {np.asarray(weights).size} do not match "
+                f"user specified grid dimension: {self.grid_size}")
+        else:
+            self.weights = self.check_weights(
+                np.asarray(weights).flatten().astype(np.float64))
+        grid_type_dict = {"U_MIN": 0, "U_PROD": 1, "U_MEAN": 2, "U_DEFAULT": 3}
+        if grid_type not in grid_type_dict:
+            raise ValueError(
+                f"Invalid grid_type: {grid_type}. Must be either U_MIN, "
+                f"U_PROD, U_MEAN, or U_DEFAULT")
+        self.grid_type = grid_type_dict[grid_type]
+        self.swigobj = None
+
+    def check_weights(self, w):
+        """meep check_weights: clip to [0,1] with a warning when outside."""
+        w = np.asarray(w)
+        if np.amin(w) >= 0.0 and np.amax(w) <= 1.0:
+            return w
+        warnings.warn(
+            "The weights parameter of MaterialGrid must be in the range [0,1].")
+        return np.clip(w, 0.0, 1.0)
+
+    def update_weights(self, x):
+        """meep update_weights: replace the design weights in place."""
+        x = np.asarray(x)
+        if x.size != self.num_params:
+            raise ValueError(
+                f"weights of shape {self.weights.size} do not match user "
+                f"specified grid dimension: {self.grid_size}")
+        self.weights[:] = self.check_weights(x).flatten().astype(np.float64)
