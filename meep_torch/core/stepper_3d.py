@@ -32,6 +32,7 @@ class Coeffs3D(NamedTuple):
     damp: dict              # per-grid (d1, d2): material+absorber conductivity
     cpml: dict | None       # per-axis (b, a, k) profiles, None in absorber mode
     pols: dict | None = None  # "x"/"y"/"z" -> (c1, c2, c3) ADE pole stacks
+    pmc: tuple = ()          # axes with PMC walls instead of PEC (see _term_pmc)
 
 
 class State3D(NamedTuple):
@@ -82,14 +83,38 @@ def _d(v, axis):
     return v[tuple(sl1)] - v[tuple(sl0)]
 
 
-def _pad_interior(t, axes):
+def _pad_interior(t, axes, pmc=()):
     """Zero-pad one cell on both sides of each axis in ``axes`` (PEC outer
-    edge for the tangential E components)."""
+    edge for the tangential E components). Axes in ``pmc`` are skipped --
+    ``_term_pmc`` already delivered them full-length."""
     pad = [0, 0, 0, 0, 0, 0]
     for a in axes:
+        if a in pmc:
+            continue
         pad[2 * (2 - a)] = 1
         pad[2 * (2 - a) + 1] = 1
     return torch.nn.functional.pad(t, pad)
+
+
+def _term_pmc(t, padaxes, fullax, pmc):
+    """PMC wall handling for one E-update curl term (2D ``y_pmc`` mirror:
+    tangential E live at the wall, H=0 ghost beyond it). On a pmc axis the
+    full-axis term (``fullax``) keeps its wall values (no interior trim) and
+    the reduced-axis term -- the derivative along the pmc axis -- is
+    zero-padded to the wall; that pad is exact for transverse-uniform fields,
+    whose derivative along the pmc axis is identically zero. Non-pmc axes are
+    left as-is for ``_pad_interior``. With ``pmc=()`` this reduces to the
+    plain interior trim."""
+    sl = [slice(None)] * 3
+    pad = [0, 0, 0, 0, 0, 0]
+    for a in padaxes:
+        if a == fullax:
+            if a not in pmc:
+                sl[a] = slice(1, -1)
+        elif a in pmc:
+            pad[2 * (2 - a)] = pad[2 * (2 - a) + 1] = 1
+    t = t[tuple(sl)]
+    return torch.nn.functional.pad(t, pad) if any(pad) else t
 
 
 def _prof(n, npml, offset, dt, dx, dtype, device):
@@ -118,7 +143,7 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
                     npml: int = 0, n_abs: int = 0, absorber_axes=(),
                     sigma_d=None, sigma_b=None, poles=(), pole_masks=None,
                     dtype=torch.float64, device="cpu", absorber_m: int = 2,
-                    absorber_R0: float = 1e-15) -> Coeffs3D:
+                    absorber_R0: float = 1e-15, pmc_axes=()) -> Coeffs3D:
     """Boundary modes: full CPML (``npml>0``, ``n_abs=0``), full matched-sigma
     absorber (``npml=0``, ``n_abs>0``), or mixed (``npml>0`` and ``n_abs>0``):
     CPML on the axes not in ``absorber_axes``, matched-sigma absorber on the
@@ -126,7 +151,10 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
     -- plus the absorber sigma in ``sig_bound``). Mixed mode isolates one
     boundary for a clean CPML-vs-absorber comparison (e.g. a z-uniform
     planewave with ``absorber_axes=(2,)`` sees only the z-boundary; the x/y
-    CPML is inert for the uniform transverse field)."""
+    CPML is inert for the uniform transverse field). ``pmc_axes`` swaps the
+    PEC walls on those axes for PMC (tangential E live at the wall, identity
+    CPML profile -- see ``_term_pmc``), keeping a transverse-uniform
+    planewave exactly uniform on a tiny transverse grid."""
     dt = 0.5 * dx / math.sqrt(3.0)
     e = (eps if isinstance(eps, torch.Tensor)
          else torch.ones(nx, ny, nz, dtype=dtype, device=device))
@@ -139,7 +167,7 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
         cpml = {}
         for ax, kh, ke in ((0, "hx", "ex"), (1, "hy", "ey"), (2, "hz", "ez")):
             n = dims[ax]
-            if ax in ax_set:                       # absorber axis: plain derivative
+            if ax in ax_set or ax in pmc_axes:     # absorber/PMC axis: plain derivative
                 bH, aH, kH = _ident(n - 1, ax, dtype, device)
                 bE, aE, kE = _ident(n - 2, ax, dtype, device)
             else:                                  # CPML axis
@@ -220,7 +248,8 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
             c2 = torch.tensor([v[1] for v in vs], dtype=dtype,
                               device=device).reshape(np_, 1, 1, 1)
             pols[key] = (c1, c2, c3)
-    return Coeffs3D(dt=dt, dx=dx, eps=e, damp=damp, cpml=cpml, pols=pols)
+    return Coeffs3D(dt=dt, dx=dx, eps=e, damp=damp, cpml=cpml, pols=pols,
+                    pmc=tuple(pmc_axes))
 
 
 def init_3d_state(nx: int, ny: int, nz: int, npml: int = 0, n_poles: int = 0,
@@ -264,6 +293,7 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     soft current (mask matches the component's node shape)."""
     dx = c.dx
     cp = c.cpml
+    pmc = c.pmc
 
     # ADE pole advance from E^n (meep's update_pols runs after step_db(D)
     # but before update_eh(E); the source injects after, so P precesses on
@@ -291,21 +321,24 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
         Hz = d1 * state.Hz - d2 * (_d(state.Ey, 0) - _d(state.Ex, 1)) / dx
         eps_x = _avg(c.eps, 0)
         curl_x = _pad_interior(
-            (_d(Hz, 1)[:, :, 1:-1] - _d(Hy, 2)[:, 1:-1, :]) / dx, (1, 2))
+            (_term_pmc(_d(Hz, 1), (1, 2), 2, pmc)
+             - _term_pmc(_d(Hy, 2), (1, 2), 1, pmc)) / dx, (1, 2), pmc)
         d1, d2 = c.damp["ex"]
         Ex = (_e_pole(state.Ex, state.Px_cur, pn["x"], d1, d2, eps_x, curl_x)
               if pols is not None else
               (d1 * state.Ex * eps_x + d2 * curl_x) / eps_x)
         eps_y = _avg(c.eps, 1)
         curl_y = _pad_interior(
-            (_d(Hx, 2)[1:-1, :, :] - _d(Hz, 0)[:, :, 1:-1]) / dx, (0, 2))
+            (_term_pmc(_d(Hx, 2), (0, 2), 0, pmc)
+             - _term_pmc(_d(Hz, 0), (0, 2), 2, pmc)) / dx, (0, 2), pmc)
         d1, d2 = c.damp["ey"]
         Ey = (_e_pole(state.Ey, state.Py_cur, pn["y"], d1, d2, eps_y, curl_y)
               if pols is not None else
               (d1 * state.Ey * eps_y + d2 * curl_y) / eps_y)
         eps_z = _avg(c.eps, 2)
         curl_z = _pad_interior(
-            (_d(Hy, 0)[:, 1:-1, :] - _d(Hx, 1)[1:-1, :, :]) / dx, (0, 1))
+            (_term_pmc(_d(Hy, 0), (0, 1), 1, pmc)
+             - _term_pmc(_d(Hx, 1), (0, 1), 0, pmc)) / dx, (0, 1), pmc)
         d1, d2 = c.damp["ez"]
         Ez = (_e_pole(state.Ez, state.Pz_cur, pn["z"], d1, d2, eps_z, curl_z)
               if pols is not None else
@@ -354,7 +387,8 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     dHy_dz = _d(Hy, 2) / dx
     psi_Hy_z = bEz * state.psi_Hy_z + aEz * dHy_dz
     ch_z = dHy_dz / kEz + psi_Hy_z
-    curl_x = _pad_interior(ch_y[:, :, 1:-1] - ch_z[:, 1:-1, :], (1, 2))
+    curl_x = _pad_interior(_term_pmc(ch_y, (1, 2), 2, pmc)
+                           - _term_pmc(ch_z, (1, 2), 1, pmc), (1, 2), pmc)
     d1, d2 = c.damp["ex"]
     Ex = (_e_pole(state.Ex, state.Px_cur, pn["x"], d1, d2, eps_x, curl_x)
           if pols is not None else
@@ -367,7 +401,8 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     dHz_dx = _d(Hz, 0) / dx
     psi_Hz_x = bEx * state.psi_Hz_x + aEx * dHz_dx
     ch_x = dHz_dx / kEx + psi_Hz_x
-    curl_y = _pad_interior(ch_z2[1:-1, :, :] - ch_x[:, :, 1:-1], (0, 2))
+    curl_y = _pad_interior(_term_pmc(ch_z2, (0, 2), 0, pmc)
+                           - _term_pmc(ch_x, (0, 2), 2, pmc), (0, 2), pmc)
     d1, d2 = c.damp["ey"]
     Ey = (_e_pole(state.Ey, state.Py_cur, pn["y"], d1, d2, eps_y, curl_y)
           if pols is not None else
@@ -380,14 +415,18 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     dHx_dy = _d(Hx, 1) / dx
     psi_Hx_y = bEy * state.psi_Hx_y + aEy * dHx_dy
     ch_y2 = dHx_dy / kEy + psi_Hx_y
-    curl_z = _pad_interior(ch_x2[:, 1:-1, :] - ch_y2[1:-1, :, :], (0, 1))
+    curl_z = _pad_interior(_term_pmc(ch_x2, (0, 1), 1, pmc)
+                           - _term_pmc(ch_y2, (0, 1), 0, pmc), (0, 1), pmc)
     d1, d2 = c.damp["ez"]
-    Ez = (d1 * state.Ez * eps_z + d2 * curl_z) / eps_z
+    Ez = (_e_pole(state.Ez, state.Pz_cur, pn["z"], d1, d2, eps_z, curl_z)
+          if pols is not None else
+          (d1 * state.Ez * eps_z + d2 * curl_z) / eps_z)
 
     new = State3D(
         Ex, Ey, Ez, Hx, Hy, Hz,
         psi_Ez_y, psi_Ey_z, psi_Ex_z, psi_Ez_x, psi_Ey_x, psi_Ex_y,
         psi_Hz_y, psi_Hy_z, psi_Hx_z, psi_Hz_x, psi_Hy_x, psi_Hx_y,
+        **(pout or {}),
     )
     return _inject_src(new, c, src_amp, src, eps_x, eps_y, eps_z)
 
