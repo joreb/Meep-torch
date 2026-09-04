@@ -215,12 +215,48 @@ class ModeSolver:
 
     # -- epsilon rasterization ---------------------------------------------
 
+    def _check_basis_orthogonal(self):
+        """Reject a non-orthogonal (oblique) lattice basis.
+
+        _rasterize_epsilon lays the unit cell out on a cartesian grid from
+        geometry_lattice.size alone, and stepper_bloch2 is rectangular-only
+        ("oblique basis deferred"). Handed basis1/basis2 at 60 degrees the
+        pair silently solves a *different* structure: a triangular lattice
+        came back with band 1 at K off by 27.75% against the committed
+        meep.mpb oracle, with nothing to flag it.
+
+        The physics is reachable today, just not through this entry point --
+        tests/examples/test_mpb_track.py builds a rectangular sqrt(3) x 1
+        supercell of the triangular lattice (_tri_eps) and gets Gamma/M/K
+        within 2%. Native oblique support wants the reciprocal metric
+        tensor, which arrives with the planewave eigensolver.
+        """
+        lat = self.geometry_lattice
+        b = [lat.basis1, lat.basis2, lat.basis3]
+        axes = self._active_axes()
+        for i in axes:
+            for j in axes:
+                if i >= j:
+                    continue
+                dot = (b[i].x * b[j].x + b[i].y * b[j].y + b[i].z * b[j].z)
+                if abs(dot) > 1e-9:
+                    raise NotImplementedError(
+                        f"oblique lattice basis (basis{i + 1}.basis{j + 1} = "
+                        f"{dot:.4f}, not orthogonal) is not supported by the "
+                        "Bloch-FDTD backend, which rasterizes the cell on a "
+                        "cartesian grid and would silently solve a different "
+                        "structure. Build a rectangular supercell of the "
+                        "lattice instead (see _tri_eps in "
+                        "tests/examples/test_mpb_track.py), or wait for the "
+                        "planewave eigensolver")
+
     def _rasterize_epsilon(self):
         """Supersampled coverage eps over the unit cell (min-image periodic),
         rank = number of periodic axes. First-listed object wins, like MPB."""
         axes = self._active_axes()
         if not axes:
             raise ValueError("geometry_lattice.size has no nonzero component")
+        self._check_basis_orthogonal()
         gs = self._adjust_grid_size()
         size = self.geometry_lattice.size
         n = [int(gs[i]) for i in axes]
@@ -371,9 +407,38 @@ class ModeSolver:
             "doubly-periodic TE Bloch stepper / planewave eigensolver is "
             "out of current scope")
 
+    def _zero_bands_at_gamma(self, kc):
+        """Number of omega = 0 modes at k = 0, which harminv cannot see.
+
+        A zero-frequency mode is constant in time, so it contributes no
+        oscillation to the probe series and the harmonic inversion never
+        reports it. Left uncounted, every resonance that IS found lands one
+        band index too low and the whole k-row is silently misnumbered --
+        band 1 at Gamma comes back carrying band 2's frequency.
+
+        TM (Ez = const) has exactly one such mode; the committed meep.mpb
+        oracles agree (tri_rods_mpb.json / honey_rods_mpb.json both give
+        gamma[0] = 0.0 with bands 2/3 degenerate just above). The 3D
+        no-parity path has more than one and is not validated here, so it
+        raises rather than guess a band numbering.
+        """
+        if max(abs(kc.x), abs(kc.y), abs(kc.z)) > 1e-12:
+            return 0
+        ndims = len(self._active_axes())
+        if self._parity == ODD_Z and ndims in (1, 2):
+            return 1
+        if self._parity == NO_PARITY and ndims == 1:
+            return 1                      # 1D degenerate TM path
+        raise NotImplementedError(
+            f"k = Gamma with parity {self.parity or 'none'!r} in {ndims}D: "
+            "the omega = 0 mode multiplicity is not established for this "
+            "path, so bands cannot be numbered (harminv sees no zero-"
+            "frequency mode). Use a non-zero k, or run TM/zodd in 1D/2D")
+
     def _solve_k(self, k):
         eps, dx = self._eps
         kc = reciprocal_to_cartesian(Vector3(*k), self.geometry_lattice)
+        n_zero = self._zero_bands_at_gamma(kc)
         fmax = self.fmax
         if fmax is None:
             fmax = self._estimate_fmax(kc, float(eps.mean()))
@@ -394,6 +459,7 @@ class ModeSolver:
             got = self._bloch3_freqs(eps, 2 * math.pi * kc.x,
                                      2 * math.pi * kc.y, 2 * math.pi * kc.z,
                                      dx, fmax)
+        got = [0.0] * n_zero + got
         got = got[:self.num_bands]
         return got + [math.nan] * (self.num_bands - len(got))
 

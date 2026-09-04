@@ -70,6 +70,45 @@ def test_unbacked_paths_raise():
         ms.get_efield(1)                  # band fields need an eigensolver
 
 
+def test_oblique_lattice_raises():
+    """An oblique basis is rasterized on a cartesian grid and would solve a
+    different structure (triangular K band 1 came back 27.75% off), so it
+    must raise rather than return plausible wrong bands."""
+    tri = Lattice(size=Vector3(1, 1),
+                  basis1=Vector3(math.sqrt(3) / 2, 0.5),
+                  basis2=Vector3(math.sqrt(3) / 2, -0.5))
+    ms = ModeSolver(num_bands=2, resolution=16, geometry_lattice=tri,
+                    k_points=[Vector3(0.2)],
+                    geometry=[Cylinder(0.2, material=Medium(epsilon=12))])
+    with pytest.raises(NotImplementedError, match="oblique lattice basis"):
+        ms.run_tm()
+
+
+def test_gamma_tm_band1_is_zero():
+    """At k = 0 the omega = 0 mode (Ez = const) never oscillates, so harminv
+    cannot see it; without reinserting it every found band lands one index
+    too low. meep.mpb gives exactly 0.0 for TM band 1 at Gamma."""
+    ref = json.load(open(DATA / "sq_tut_gamma_mpb.json"))
+    ms = ModeSolver(num_bands=3, resolution=32, k_points=[Vector3()],
+                    geometry_lattice=Lattice(size=Vector3(1, 1)),
+                    geometry=[Cylinder(ref["r"],
+                                       material=Medium(epsilon=ref["eps"]))])
+    ms.run_tm()
+    assert ms.all_freqs[0][0] == 0.0
+    # band 2 at Gamma follows the oracle once band 1 occupies its own slot
+    assert abs(ms.all_freqs[0][1] - ref["bands"][0][1]) / ref["bands"][0][1] <= 0.02
+
+
+def test_gamma_3d_no_parity_raises():
+    """3D no-parity has more than one omega = 0 mode at Gamma and the
+    multiplicity is not established, so band numbering must refuse."""
+    ms = ModeSolver(num_bands=1, resolution=8, k_points=[Vector3()],
+                    geometry_lattice=Lattice(size=Vector3(1, 1, 1)))
+    ms.fmax, ms.t_end = 0.4, 150.0
+    with pytest.raises(NotImplementedError, match="Gamma"):
+        ms.run()
+
+
 # --- band gates vs committed meep.mpb oracles -----------------------------
 
 def test_sq_lattice_tm_bands_vs_mpb_oracle():
