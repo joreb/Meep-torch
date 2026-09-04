@@ -84,9 +84,14 @@ class Identity(Symmetry):
     """The identity symmetry (a no-op)."""
 
 
-def _layer_axes(direction, dimensions) -> tuple[int, ...]:
+def _layer_axes(direction, dimensions, cell_size=None) -> tuple[int, ...]:
     """Grid axes a boundary layer's meep ``direction`` covers. A 1D cell
-    lies along z but the engine grid puts it on x (see _grid_for)."""
+    lies along z but the engine grid puts it on x (see _grid_for).
+
+    ``direction=ALL`` covers only axes the cell actually spans: meep's
+    grid_volume has no boundary on a direction of zero extent, so a
+    degenerate axis stays PEC instead of taking a PML thicker than it.
+    """
     if dimensions == 1:
         if direction in (ALL, Z):
             return (0,)
@@ -95,7 +100,13 @@ def _layer_axes(direction, dimensions) -> tuple[int, ...]:
             f"z only (use direction=mp.Z or mp.ALL)")
     naxes = 3 if dimensions == 3 else 2
     if direction == ALL:
-        return tuple(range(naxes))
+        axes = tuple(range(naxes))
+        if cell_size is not None:
+            extent = (cell_size.x, cell_size.y, cell_size.z)
+            spanned = tuple(ax for ax in axes if extent[ax])
+            if spanned:
+                return spanned
+        return axes
     if 0 <= direction < naxes:                    # mp.X/Y(/Z)
         return (direction,)
     raise ValueError(
@@ -324,7 +335,7 @@ class Simulation:
             else:
                 continue
             n = pml_npml(bl.thickness, self.gs)
-            for ax in _layer_axes(bl.direction, dimensions):
+            for ax in _layer_axes(bl.direction, dimensions, cs):
                 for s in ((0, 1) if bl.side == ALL else
                           ((0,) if bl.side == Low else (1,))):
                     sides[ax][s] = max(sides[ax][s], n)

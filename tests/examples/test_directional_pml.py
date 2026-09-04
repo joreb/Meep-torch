@@ -48,3 +48,14 @@ def test_pml_side_high_leaves_low_edge_pec():
     # off the PEC low wall and survives
     assert f_high.max() > 50 * f_both.max()
     assert f_high.max() > 1e-6
+
+
+def test_pml_all_skips_axis_with_no_extent():
+    """meep's grid_volume has no boundary on a direction of zero extent, so
+    direction=ALL must leave a degenerate axis PEC rather than give it a PML
+    thicker than the axis itself (upstream refl-angular-kz2d: a 12-unit x-only
+    cell with dpml=1 at resolution 100 vs the 3-cell y axis)."""
+    sim = mp.Simulation(cell_size=mp.Vector3(12), resolution=100,
+                        boundary_layers=[mp.PML(1.0)])
+    assert sim._npml_sides[0] == [100, 100]
+    assert sim._npml_sides[1] == [0, 0]
