@@ -13,7 +13,7 @@ from ..core.grid import Grid
 from ..core.monitors import FluxMonitorTE, FluxMonitorTM
 from ..core.run import run_te, run_tm
 from ..core.sources import GaussianPulse
-from ..core.stepper import init_tm_state, step_tm
+from ..core.stepper_tm import init_tm_state, step_tm
 from ..core.stepper_te import init_te_state, step_te
 from .mode_monitor import decompose
 from .mode_source import ModeSourceTE, ModeSourceTM

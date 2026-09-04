@@ -3,7 +3,7 @@
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from .stepper import TMState, step_tm
+from .stepper_tm import TMState, step_tm
 from .stepper_te import TEState, step_te
 
 

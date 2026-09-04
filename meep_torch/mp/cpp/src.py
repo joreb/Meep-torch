@@ -14,9 +14,9 @@ import cmath
 import copy
 import math
 
-from ..core.sources import (ContinuousSource as _CoreCW,
+from ...core.sources import (ContinuousSource as _CoreCW,
                             CustomSource as _CoreCustom, GaussianPulse)
-from .run_control import DftObj
+from ..run_control import DftObj
 
 _INF = 1.0e20
 

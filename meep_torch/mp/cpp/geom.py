@@ -13,7 +13,7 @@ import math
 
 import numpy as np
 
-from .vec import Vector3
+from ..vec import Vector3
 
 # enums from meep/src/meep/vec.hpp
 D1, D2, D3, Dcyl = 0, 1, 2, 3

@@ -7,7 +7,7 @@ from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import GaussianPulse, LineSource
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 
 
 def forward_saved_count(checkpoint_every: int) -> tuple[int, torch.Tensor, torch.Tensor]:

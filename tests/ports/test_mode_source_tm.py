@@ -3,7 +3,7 @@ from meep_torch.core.grid import Grid
 from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import GaussianPulse
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 from meep_torch.ports.port import Port
 from meep_torch.ports.mode_source import ModeSourceTM
 
@@ -28,7 +28,7 @@ def test_one_way_launch_30db():
     n = 1200
     fwd_e, bwd_e = 0.0, 0.0
     for t in range(n):
-        from meep_torch.core.stepper import step_tm
+        from meep_torch.core.stepper_tm import step_tm
         state = step_tm(state, coeffs, src.amplitude(t), src.mask,
                         src.h_amplitude(t), **src.h_masks)
         fwd_e += float((state.Ez[110, 20:60] ** 2).sum())
@@ -47,7 +47,7 @@ def test_one_way_launch_neg_direction_30db():
     n = 1200
     fwd_e, bwd_e = 0.0, 0.0
     for t in range(n):
-        from meep_torch.core.stepper import step_tm
+        from meep_torch.core.stepper_tm import step_tm
         state = step_tm(state, coeffs, src.amplitude(t), src.mask,
                         src.h_amplitude(t), **src.h_masks)
         # -x launch: probe at 50 (downstream, -x of source) should dominate 110

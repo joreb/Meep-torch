@@ -29,7 +29,7 @@ import numpy as np
 from .material import Medium
 from .simulation import P, R, X, Y, Z
 from .vec import Vector3
-from .cpp_bindings_geom import D1, D2, D3, Dcyl, vec, veccyl
+from .cpp.geom import D1, D2, D3, Dcyl, vec, veccyl
 
 _T0 = time.time()                      # module import ~ meep program start
 NO_DIRECTION = 5
@@ -398,7 +398,7 @@ def flip(s):
 
 def pml(thickness=1.0, direction=None, side=None, strength=1.0):
     """C-binding pml(): a PML boundary_region band."""
-    from .cpp_bindings_core import boundary_region
+    from .cpp.core import boundary_region
     return boundary_region(boundary_region.PML, thickness, direction, side,
                            strength)
 
@@ -1052,7 +1052,7 @@ def trash_output_directory(dirname):
 
 
 def create_output_file(dirname, fname):
-    from .cpp_bindings_core import h5file
+    from .cpp.core import h5file
     os.makedirs(dirname, exist_ok=True)
     return h5file(os.path.join(dirname, fname), h5file.WRITE)
 

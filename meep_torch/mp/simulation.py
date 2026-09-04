@@ -397,7 +397,7 @@ class Simulation:
     def _component_set(self):
         """Required field components, inferred from the source spec (meep
         require_component flow); the structure holds materials for any set."""
-        from .cpp_bindings_core import _TE_COMPONENTS, _TM_COMPONENTS
+        from .cpp.core import _TE_COMPONENTS, _TM_COMPONENTS
         return _TE_COMPONENTS if self._pol == "te" else _TM_COMPONENTS
 
     def _init_structure(self):
@@ -461,7 +461,7 @@ class Simulation:
                 self._cond = tuple(half(t) for t in self._cond)
         if self._pol == "te" and self._y_pmc:
             raise NotImplementedError("1D (y-PMC) TE Simulation is not supported")
-        from .cpp_bindings_core import structure
+        from .cpp.core import structure
         self.structure = structure._from_sim(self)
 
     @property
@@ -1906,7 +1906,7 @@ class Simulation:
                 self.restart_fields()
             return
         if self.fields is None:
-            from .cpp_bindings_core import fields
+            from .cpp.core import fields
             self.fields = fields(self.structure,
                                  components=self._component_set())
             if self._eig_source is None:

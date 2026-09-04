@@ -27,7 +27,7 @@ from ports_util import CASES, WL
 from torch_sparams import FCEN, N_SIN, N_SIO2, build_sim
 
 from meep_torch.core.sources import ContinuousSource
-from meep_torch.core.stepper import init_tm_state, step_tm
+from meep_torch.core.stepper_tm import init_tm_state, step_tm
 from meep_torch.ports.mode_source import ModeSourceTM
 
 HERE = pathlib.Path(__file__).parent

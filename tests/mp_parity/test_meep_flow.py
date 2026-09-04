@@ -16,10 +16,10 @@ import meep_torch.mp as mp
 from meep_torch.core.grid import Grid
 from meep_torch.core.run import run_te, run_tm
 from meep_torch.core.sources import LineSource
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 from meep_torch.core.stepper_te import init_te_state
-from meep_torch.mp.cpp_bindings_core import fields as core_fields
-from meep_torch.mp.cpp_bindings_core import structure as core_structure
+from meep_torch.mp.cpp.core import fields as core_fields
+from meep_torch.mp.cpp.core import structure as core_structure
 
 # pre-rearchitecture golden fluxes: run(until=40) on the waveguide below
 GOLDEN_PLAIN = [2.767477618387303e-08, 7.415436970115532e-08,

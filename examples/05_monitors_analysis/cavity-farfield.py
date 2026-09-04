@@ -34,7 +34,7 @@ from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.near2far import faces_from_accs, farfield_tm
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import GaussianPulse, LineSource
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 from meep_torch.geometry.polygons import Polygon
 from meep_torch.geometry.scene import rasterize_scene
 

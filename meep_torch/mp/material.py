@@ -21,7 +21,7 @@ from .vec import Vector3
 
 # side constants (meep mp.Low/High, mp.ALL); X/Y/Z live in mp/simulation.py.
 # meep's C++ boundary_side enum is {High, Low}: High=0, Low=1 (matches
-# cpp_bindings_geom and real pymeep).
+# mp.cpp.geom and real pymeep).
 High, Low = 0, 1
 ALL = -1
 

@@ -10,7 +10,7 @@ from meep_torch.core.materials import LorentzPole, analytic_eps
 from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import GaussianPulse, LineSource
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 
 POLE = LorentzPole(fn=2.0, gamma=0.1, sigma=1.5)
 EPS_INF = 2.25

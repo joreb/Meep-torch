@@ -21,21 +21,21 @@ import time
 import numpy as np
 import torch
 
-from ..core.coeffs import build_te_coeffs, build_tm_coeffs
-from ..core.grid import Grid
-from ..core.monitors import DFTFieldsMonitor, FluxMonitorTM
-from ..core.pml import absorber_sigma
-from ..core.run import _run_chunk
-from ..core.sources import SoftSource
-from ..core import stepper as _tm_phases
-from ..core import stepper_te as _te_phases
-from ..core.stepper import init_tm_state, step_tm
-from ..core.stepper_te import init_te_state, step_te
-from .coords import GridSpec, cell_index, cell_index_y, pml_npml, span_index_range
-from .material import ALL, Low
-from .run_control import Volume
-from .simulation import Simulation, X, Y
-from .vec import Vector3
+from ...core.coeffs import build_te_coeffs, build_tm_coeffs
+from ...core.grid import Grid
+from ...core.monitors import DFTFieldsMonitor, FluxMonitorTM
+from ...core.pml import absorber_sigma
+from ...core.run import _run_chunk
+from ...core.sources import SoftSource
+from ...core import stepper_tm as _tm_phases
+from ...core import stepper_te as _te_phases
+from ...core.stepper_tm import init_tm_state, step_tm
+from ...core.stepper_te import init_te_state, step_te
+from ..coords import GridSpec, cell_index, cell_index_y, pml_npml, span_index_range
+from ..material import ALL, Low
+from ..run_control import Volume
+from ..simulation import Simulation, X, Y
+from ..vec import Vector3
 
 _TM_COMPONENTS = ("Ez", "Hx", "Hy", "Dz")
 _TE_COMPONENTS = ("Hz", "Ex", "Ey", "Dx", "Dy")
@@ -468,7 +468,7 @@ _stub_raises(flux_vol, "internal C++ time-loop accumulation hook (fields.step "
 
 class fields:
     """meep::fields -- field state + stepping over a `structure`. step()
-    advances one engine step (core.stepper.step_tm) with the structure's
+    advances one engine step (core.stepper_tm.step_tm) with the structure's
     coefficients; DFT monitors registered via add_dft* accumulate inside
     step() exactly as core.run.run_tm folds them."""
 
@@ -546,7 +546,7 @@ class fields:
     def step_db(self, ft):
         """meep step_db(ft): advance B/H (ft="B", from curl E) or D (ft="D",
         from curl H). The CPML recursive-convolution psi updates and sigma
-        damping live here, where meep applies its sigma (core.stepper /
+        damping live here, where meep applies its sigma (core.stepper_tm /
         core.stepper_te phase kernels)."""
         self._state = self._phase_mod().step_db(self._state, self._mcoeffs, ft)
 

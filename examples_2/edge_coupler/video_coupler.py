@@ -48,7 +48,7 @@ exec(compile(head, "coupler_head", "exec"), g)
 from meep_torch.adjoint.filters import conic_filter, tanh_projection
 from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.sources import ContinuousSource
-from meep_torch.core.stepper import init_tm_state, step_tm
+from meep_torch.core.stepper_tm import init_tm_state, step_tm
 
 grid, eps_base, region = g["grid"], g["base"], g["region"]
 dx, RES, FCEN, NPML = g["dx"], g["RES"], g["FCEN"], g["NPML"]

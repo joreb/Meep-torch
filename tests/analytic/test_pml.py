@@ -2,7 +2,7 @@
 # Copyright (C) 2026 meep-torch contributors (original code)
 from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
-from meep_torch.core.stepper import step_tm
+from meep_torch.core.stepper_tm import step_tm
 from tests.analytic.test_energy import total_energy, yee_invariant
 from tests.analytic.test_propagation import plane_pulse_state
 

@@ -4,7 +4,7 @@ import torch
 
 from meep_torch.core.coeffs import build_te_coeffs, build_tm_coeffs
 from meep_torch.core.grid import Grid
-from meep_torch.core.stepper import init_tm_state, step_tm
+from meep_torch.core.stepper_tm import init_tm_state, step_tm
 from meep_torch.core.stepper_te import init_te_state, step_te
 
 

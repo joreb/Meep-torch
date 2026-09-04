@@ -39,7 +39,7 @@ def test_absorber_1d_vs_oracle():
     from meep_torch.core.pml import absorber_sigma
     from meep_torch.core.run import run_tm
     from meep_torch.core.sources import GaussianPulse, LineSource
-    from meep_torch.core.stepper import init_tm_state
+    from meep_torch.core.stepper_tm import init_tm_state
 
     with open(pathlib.Path(__file__).parent / "data" / "absorber_1d.json") as f:
         ref = json.load(f)

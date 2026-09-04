@@ -73,7 +73,7 @@ from meep_torch.core.materials import Si3N4, SiO2
 from meep_torch.core.monitors import DFTFieldsMonitor, FluxMonitorTM
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import GaussianPulse, LineSource
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 from meep_torch.modes.fd1d import solve_1d
 from meep_torch.ports.mode_monitor import decompose
 from meep_torch.ports.port import Port, validate_ports

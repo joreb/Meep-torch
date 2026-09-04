@@ -11,7 +11,7 @@ from meep_torch.core.grid import Grid
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import (ContinuousSource, CustomSource, GaussianPulse,
                                      LineSource, ObliqueLineSource, SoftSource)
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 
 
 def test_custom_source_passthrough():

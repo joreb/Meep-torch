@@ -44,7 +44,7 @@ import torch
 from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.sources import GaussianPulse
-from meep_torch.core.stepper import init_tm_state, step_tm
+from meep_torch.core.stepper_tm import init_tm_state, step_tm
 from meep_torch.geometry.gds import polygons_from_gds
 from meep_torch.geometry.scene import rasterize_scene
 

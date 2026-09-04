@@ -64,7 +64,7 @@ from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import GaussianPulse
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 import functools
 from meep_torch.fdfd import make_mode_source, mode_amplitude
 from meep_torch.fdfd import solve_fdfd_tm as _solve

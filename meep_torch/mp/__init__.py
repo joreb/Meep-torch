@@ -63,34 +63,34 @@ def get_ldos_freqs(f):
 
 def get_near2far_freqs(f):
     return list(f.freqs)
-# C++ binding layer: sources/dft (SWIG-surface parity)
-from .cpp_bindings_src import (continuous_src_time, custom_py_src_time,
-                               custom_src_time, dft_data, dft_energy, dft_fields,
-                               dft_flux, dft_force, dft_near2far,
-                               diffractedplanewave, eigenmode_data,
-                               gaussian_src_time, gaussianbeam,
-                               gyrotropic_susceptibility,
-                               lorentzian_susceptibility,
-                               multilevel_susceptibility, near_src_data,
-                               noisy_lorentzian_susceptibility, pol,
-                               polarization_state, sourcedata, src_time,
-                               susceptibility)
+# C++ surface parity: sources/susceptibilities/DFT monitors
+from .cpp.src import (continuous_src_time, custom_py_src_time,
+                      custom_src_time, dft_data, dft_energy, dft_fields,
+                      dft_flux, dft_force, dft_near2far,
+                      diffractedplanewave, eigenmode_data,
+                      gaussian_src_time, gaussianbeam,
+                      gyrotropic_susceptibility,
+                      lorentzian_susceptibility,
+                      multilevel_susceptibility, near_src_data,
+                      noisy_lorentzian_susceptibility, pol,
+                      polarization_state, sourcedata, src_time,
+                      susceptibility)
 
-# C++ binding layer: fields/structure (SWIG-surface parity)
-from .cpp_bindings_core import (absorber, boundary_region, cond_profile, fields,
-                                flux_vol, h5file, initialize, structure)
+# C++ surface parity: fields/structure/boundaries
+from .cpp.core import (absorber, boundary_region, cond_profile, fields,
+                       flux_vol, h5file, initialize, structure)
 
 
-# C++ binding layer (SWIG-surface parity)
-from .cpp_bindings_geom import (D1, D2, D3, Dcyl, clean_vec, geom_box,
-                                geom_epsilon, grid_volume, identity, ivec,
-                                iveccyl, material_function, mirror,
-                                one_ivec, one_vec, r_to_minus_r_symmetry,
-                                rotate2, rotate4, signed_direction,
-                                simple_material_function, symm_matrix,
-                                symmetry, unit_ivec, unit_vec, vec, vector3, veccyl,
-                                vol1d, vol2d, vol3d, volcyl, volone, voltwo,
-                                volume, volume_list, zero_ivec, zero_vec)
+# C++ surface parity: vec/volume/symmetry math
+from .cpp.geom import (D1, D2, D3, Dcyl, clean_vec, geom_box,
+                       geom_epsilon, grid_volume, identity, ivec,
+                       iveccyl, material_function, mirror,
+                       one_ivec, one_vec, r_to_minus_r_symmetry,
+                       rotate2, rotate4, signed_direction,
+                       simple_material_function, symm_matrix,
+                       symmetry, unit_ivec, unit_vec, vec, vector3, veccyl,
+                       vol1d, vol2d, vol3d, volcyl, volone, voltwo,
+                       volume, volume_list, zero_ivec, zero_vec)
 
 # python-layer parity exports (implemented in submodules; wired here)
 from .geometry import (Cone, Ellipsoid, GeometricObject, Lattice, Matrix, Mesh,

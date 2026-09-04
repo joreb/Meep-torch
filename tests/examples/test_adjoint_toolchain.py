@@ -41,7 +41,7 @@ def test_optimization_problem_gradient_and_ascent():
     from meep_torch.core.monitors import FluxMonitorTM
     from meep_torch.core.run import run_tm
     from meep_torch.core.sources import GaussianPulse, LineSource
-    from meep_torch.core.stepper import init_tm_state
+    from meep_torch.core.stepper_tm import init_tm_state
 
     RES = 10
     dx = 1.0 / RES
@@ -93,7 +93,7 @@ def test_robust_minimax_gradient_and_worstcase_ascent():
     from meep_torch.core.monitors import FluxMonitorTM
     from meep_torch.core.run import run_tm
     from meep_torch.core.sources import GaussianPulse, LineSource
-    from meep_torch.core.stepper import init_tm_state
+    from meep_torch.core.stepper_tm import init_tm_state
 
     RES = 10
     dx = 1.0 / RES

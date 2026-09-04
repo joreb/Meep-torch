@@ -23,7 +23,7 @@ from .core.grid import Grid
 from .core.monitors import FluxMonitorTM
 from .core.run import run_tm
 from .core.sources import GaussianPulse
-from .core.stepper import init_tm_state
+from .core.stepper_tm import init_tm_state
 from .fdfd import make_mode_source, mode_amplitude, solve_fdfd_tm
 from .ports.mode_monitor import decompose
 from .ports.mode_source import ModeSourceTM

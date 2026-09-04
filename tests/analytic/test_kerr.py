@@ -7,7 +7,7 @@ from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import PointProbe
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import CWRamp, LineSource
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 
 F0 = 0.25          # fundamental; THG at 0.75 still resolved at dx=0.02
 

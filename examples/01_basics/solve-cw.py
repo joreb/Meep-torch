@@ -38,7 +38,7 @@ from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import PointProbe
 from meep_torch.core.sources import CWRamp, LineSource
-from meep_torch.core.stepper import init_tm_state, step_tm
+from meep_torch.core.stepper_tm import init_tm_state, step_tm
 from meep_torch.geometry.polygons import Polygon
 from meep_torch.geometry.scene import rasterize_scene
 

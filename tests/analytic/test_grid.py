@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from meep_torch.core.grid import Grid
-from meep_torch.core.stepper import TMState, init_tm_state
+from meep_torch.core.stepper_tm import TMState, init_tm_state
 
 
 def test_dt_from_courant():

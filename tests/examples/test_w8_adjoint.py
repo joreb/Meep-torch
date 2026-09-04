@@ -17,7 +17,7 @@ from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import DFTFieldsMonitor, FluxMonitorTM
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import GaussianPulse, LineSource
-from meep_torch.core.stepper import init_tm_state
+from meep_torch.core.stepper_tm import init_tm_state
 
 F0 = 1.0
 # GaussianPulse(1.0, 0.4): t0=12.5 (=500 steps), t_end=25.0 (=1000 steps).

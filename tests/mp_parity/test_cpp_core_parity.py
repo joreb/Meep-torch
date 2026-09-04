@@ -21,8 +21,8 @@ from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
 from meep_torch.core.sources import LineSource
-from meep_torch.core.stepper import init_tm_state
-from meep_torch.mp.cpp_bindings_core import flux_vol as core_flux_vol
+from meep_torch.core.stepper_tm import init_tm_state
+from meep_torch.mp.cpp.core import flux_vol as core_flux_vol
 
 API = json.load(open(pathlib.Path(__file__).parents[2] / "scripts" / "meep_api.json"))
 

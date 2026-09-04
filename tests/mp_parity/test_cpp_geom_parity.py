@@ -7,7 +7,7 @@ import math
 import pytest
 
 import meep_torch.mp as mp
-from meep_torch.mp.cpp_bindings_geom import (
+from meep_torch.mp.cpp.geom import (
     D1, D2, D3, Dcyl, geom_box, geom_epsilon, grid_volume, identity, ivec,
     material_function, mirror, r_to_minus_r_symmetry, rotate2, rotate4,
     signed_direction, simple_material_function, symm_matrix, symmetry, vec,
