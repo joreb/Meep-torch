@@ -37,6 +37,7 @@ Backend knobs beyond meep's API (fmax, t_end, courant, differentiable,
 import inspect
 import itertools
 import math
+import time
 
 import numpy as np
 import torch
@@ -50,6 +51,14 @@ from ..mp.geometry import (Block, Cylinder, Lattice, Sphere,
                            reciprocal_to_cartesian)
 from ..mp.material import Medium
 from ..mp.vec import Vector3
+from ..mp.verbosity_mgr import verbosity
+
+# meep registers an 'mpb' flag on the shared verbosity singleton and
+# gates every mpb print on `verbosity.mpb > 0`, which defaults to on.
+# Gating on ModeSolver.verbose instead (default False) silently
+# swallowed the band-range and gap lines the upstream examples print.
+if not hasattr(verbosity, "mpb"):
+    verbosity.add_verbosity_var(name="mpb")
 
 inf = math.inf
 
@@ -531,10 +540,17 @@ class ModeSolver:
                   f"({len(self.k_points)} k-points)")
 
         self.init_params(p, reset_fields)
+        self.eigensolver_iters = []
+        t0 = time.time()
 
         for i, k in enumerate(self.k_points):
             self.current_k = k
             self.solve_kpoint(k)
+            # meep records one entry per k-point. Both backends here reach
+            # every band in a single shot -- a direct eigensolve, or one
+            # FDTD run harvested by harminv -- so the count is 1 rather
+            # than MPB's iterative-eigensolver sweep count.
+            self.eigensolver_iters.append(1)
             self.all_freqs[i, :] = np.array(self.freqs)
             self.band_range_data = self.update_band_range_data(
                 self.band_range_data,
@@ -554,11 +570,52 @@ class ModeSolver:
                         "Band function should take 1 or 2 arguments. "
                         "The first must be a ModeSolver instance")
 
+        self.total_run_time += time.time() - t0
+
         if len(self.k_points) > 1:
             self.output_band_range_data(self.band_range_data)
             self.gap_list = self.output_gaps(self.band_range_data)
         else:
             self.gap_list = []
+
+    def display_kpoint_data(self, name, data):
+        """meep display_kpoint_data: one CSV line per k-point, prefixed by
+        the parity string (e.g. ``tefreqs:, 3, 0.1, ...``)."""
+        if verbosity.mpb > 0:
+            print(f"{self.parity}{name}:, {self.k_split_index}", end="")
+            for d in data:
+                print(f", {d}", end="")
+            print()
+
+    def display_eigensolver_stats(self):
+        """meep display_eigensolver_stats: iteration/flop/time summary.
+
+        Same arithmetic and output lines as meep/python/solver.py. Both
+        backends solve each k-point in one shot, so the iteration count is
+        1 per k rather than an iterative sweep count, and mean flops stays
+        0 unless eigensolver_flops was set (meep behaves the same way).
+        """
+        num_runs = len(self.eigensolver_iters)
+        if num_runs <= 0:
+            return
+
+        min_iters = min(self.eigensolver_iters)
+        max_iters = max(self.eigensolver_iters)
+        mean_iters = np.mean(self.eigensolver_iters)
+        print(f"eigensolver iterations for {num_runs} kpoints: "
+              f"{min_iters}-{max_iters}, mean = {mean_iters}", end="")
+
+        sorted_iters = sorted(self.eigensolver_iters)
+        idx1 = num_runs // 2
+        idx2 = ((num_runs + 1) // 2) - 1
+        median_iters = 0.5 * (sorted_iters[idx1] + sorted_iters[idx2])
+        print(f", median = {median_iters}")
+
+        mean_flops = self.eigensolver_flops / (num_runs * mean_iters)
+        print(f"mean flops per iteration = {mean_flops}")
+
+        mean_time = self.total_run_time / (mean_iters * num_runs)
+        print(f"mean time per iteration = {mean_time} s")
 
     def run(self, *band_functions):
         self.run_parity(NO_PARITY, True, *band_functions)
@@ -610,7 +667,7 @@ class ModeSolver:
         return update_brd(brd, freqs, [])
 
     def output_band_range_data(self, br_data):
-        if self.verbose:
+        if verbosity.mpb > 0:
             fmt = "Band {} range: {} at {} to {} at {}"
             for tup, band in zip(br_data, range(1, len(br_data) + 1)):
                 (min_freq, min_kpoint), (max_freq, max_kpoint) = tup
@@ -629,7 +686,7 @@ class ModeSolver:
                 return ogaps(br_rest[0], br_rest[1:], i + 1, gaps)
             gap_size = (200 * (br_rest_min_f - br_cur_max_f)) / (
                 br_rest_min_f + br_cur_max_f)
-            if self.verbose:
+            if verbosity.mpb > 0:
                 print(f"Gap from band {i} ({br_cur_max_f}) to band "
                       f"{i + 1} ({br_rest_min_f}), {gap_size}%")
             return ogaps(br_rest[0], br_rest[1:], i + 1,
