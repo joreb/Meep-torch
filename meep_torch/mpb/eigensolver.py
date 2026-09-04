@@ -88,7 +88,7 @@ def _avg_forward(eps: np.ndarray, axis: int) -> np.ndarray:
 
 
 def _assemble(eps: np.ndarray, dx: float, dy: float, kx: float, ky: float,
-              polarization: str):
+              polarization: str, eps_te=None):
     nx, ny = eps.shape
     dxf, dyf = bloch_d_matrices(nx, ny, dx, dy, kx, ky)
     if polarization == "tm":
@@ -96,11 +96,18 @@ def _assemble(eps: np.ndarray, dx: float, dy: float, kx: float, ky: float,
         A = (dxf.conj().T @ dxf + dyf.conj().T @ dyf).tocsr()
         M = sp.diags(eps.reshape(-1, order="F"))
         return A, M
-    # TE: -d/dx (1/eps_y d/dx Hz) - d/dy (1/eps_x d/dy Hz) = omega^2 Hz.
-    # 1/eps sits on the edge the derivative lands on, so it is the forward
-    # average of the cell-centred eps along that same axis.
-    inv_x = 1.0 / _avg_forward(eps, axis=0)
-    inv_y = 1.0 / _avg_forward(eps, axis=1)
+    # TE: d/dx((1/eps_yy) d/dx Hz) + d/dy((1/eps_xx) d/dy Hz) = -omega^2 Hz.
+    # Note which component goes with which derivative: d/dx Hz is set by
+    # E_y and d/dy Hz by E_x, so the x-derivative carries eps_yy and the
+    # y-derivative eps_xx. Swapping them is invisible for scalar eps and
+    # wrong for a smoothed tensor.
+    # 1/eps sits on the edge the derivative lands on, hence the forward
+    # average along that same axis.
+    exx, eyy = (eps, eps) if eps_te is None else eps_te
+    exx = np.asarray(exx, dtype=float)
+    eyy = np.asarray(eyy, dtype=float)
+    inv_x = 1.0 / _avg_forward(eyy, axis=0)
+    inv_y = 1.0 / _avg_forward(exx, axis=1)
     Wx = sp.diags(inv_x.reshape(-1, order="F"))
     Wy = sp.diags(inv_y.reshape(-1, order="F"))
     A = (dxf.conj().T @ Wx @ dxf + dyf.conj().T @ Wy @ dyf).tocsr()
@@ -135,7 +142,8 @@ def _solve_scipy(A, M, num_bands: int) -> list[float]:
 
 
 def _solve_torch(eps_t: torch.Tensor, dx: float, dy: float, kx: float,
-                 ky: float, num_bands: int, polarization: str) -> torch.Tensor:
+                 ky: float, num_bands: int, polarization: str,
+                 eps_te=None) -> torch.Tensor:
     """Differentiable path: assemble in torch and eigendecompose.
 
     The operator has to be built from the eps *tensor* for autograd to
@@ -160,8 +168,11 @@ def _solve_torch(eps_t: torch.Tensor, dx: float, dy: float, kx: float,
         d = torch.sqrt(eps_c.T.reshape(-1))
         B = A / d[:, None] / d[None, :]
     else:
-        inv_x = (1.0 / (0.5 * (eps_c + torch.roll(eps_c, -1, 0)))).T.reshape(-1)
-        inv_y = (1.0 / (0.5 * (eps_c + torch.roll(eps_c, -1, 1)))).T.reshape(-1)
+        # x-derivative carries eps_yy, y-derivative eps_xx (see _assemble)
+        exx, eyy = ((eps_c, eps_c) if eps_te is None else
+                    tuple(torch.as_tensor(e).to(torch.complex128) for e in eps_te))
+        inv_x = (1.0 / (0.5 * (eyy + torch.roll(eyy, -1, 0)))).T.reshape(-1)
+        inv_y = (1.0 / (0.5 * (exx + torch.roll(exx, -1, 1)))).T.reshape(-1)
         B = (Dx.conj().T @ (inv_x[:, None] * Dx)
              + Dy.conj().T @ (inv_y[:, None] * Dy))
     B = 0.5 * (B + B.conj().T)
@@ -171,12 +182,18 @@ def _solve_torch(eps_t: torch.Tensor, dx: float, dy: float, kx: float,
 
 def bloch_bands_2d(eps, dx: float, dy: float, kx: float, ky: float,
                    num_bands: int, polarization: str = "tm",
-                   differentiable: bool = False) -> list[float]:
+                   differentiable: bool = False, eps_te=None) -> list[float]:
     """Lowest ``num_bands`` frequencies at Bloch vector (kx, ky).
 
     ``eps``: (nx, ny) cell-centred relative permittivity.
     ``kx``/``ky``: cartesian, radians per unit length (2*pi*k_meep).
     ``polarization``: ``"tm"`` (zodd, Ez) or ``"te"`` (zeven, Hz).
+    ``eps_te``: optional ``(eps_xx, eps_yy)`` pair for the TE operator --
+    subpixel-smoothed diagonal from
+    :func:`meep_torch.geometry.smoothing.blend_te_supersampled`. Without it
+    TE uses the scalar ``eps`` and converges at ~1st order on a staircased
+    boundary. Ignored for TM, whose single E component runs parallel to
+    every interface and needs no tensor treatment.
     ``differentiable``: torch path with autograd through the eigensolve, so
     bands carry gradient w.r.t. ``eps``; returns a tensor. The default
     scipy path is faster, detached, and returns a plain list.
@@ -191,8 +208,9 @@ def bloch_bands_2d(eps, dx: float, dy: float, kx: float, ky: float,
     if differentiable:
         eps_t = (eps if isinstance(eps, torch.Tensor)
                  else torch.as_tensor(np.asarray(eps, dtype=float)))
-        return _solve_torch(eps_t, dx, dy, kx, ky, num_bands, polarization)
+        return _solve_torch(eps_t, dx, dy, kx, ky, num_bands, polarization,
+                            eps_te=eps_te)
     eps_np = (eps.detach().cpu().numpy() if isinstance(eps, torch.Tensor)
               else np.asarray(eps, dtype=float))
-    A, M = _assemble(eps_np, dx, dy, kx, ky, polarization)
+    A, M = _assemble(eps_np, dx, dy, kx, ky, polarization, eps_te=eps_te)
     return _solve_scipy(A, M, num_bands)

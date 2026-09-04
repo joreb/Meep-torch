@@ -72,10 +72,11 @@ def test_te_bands_vs_mpb_oracle():
     """run_te (zeven) through the FDFD Bloch eigensolve, over the full
     Gamma-X-M-Gamma path of the mpb_tutorial square-lattice case.
 
-    TE carries E in-plane across the rod boundaries, so the staircased
-    interface dominates the error: ~2.6% at resolution 32, converging
-    (5.4% at 16, 1.2% at 64). Kottke subpixel smoothing would restore
-    2nd order -- see the follow-up note in the task file.
+    TE carries E in-plane across the rod boundaries, where the normal
+    component of E is discontinuous, so the interface treatment dominates
+    the error. With diagonal-projected Kottke subpixel smoothing:
+    2.45% at resolution 16, 1.22% at 32, 0.67% at 64 (plain volume
+    averaging was 5.43 / 2.60 / 1.16%).
     """
     ref = json.load(open(DATA / "sq_tut_te_mpb.json"))
     ms = ModeSolver(num_bands=4, resolution=ref["resolution"],
@@ -88,7 +89,7 @@ def test_te_bands_vs_mpb_oracle():
     got, want = np.array(ms.all_freqs), np.array(ref["bands"])[:, :4]
     assert got[0, 0] == 0.0                       # omega = 0 band at Gamma
     err = np.abs(got - want) / np.where(want > 1e-9, want, 1.0)
-    assert err.max() <= 0.03, f"worst TE band error {err.max():.3%}"
+    assert err.max() <= 0.015, f"worst TE band error {err.max():.3%}"
 
 
 def test_tm_bands_vs_mpb_oracle_full_path():
@@ -344,3 +345,25 @@ def test_mpbdata_parity_vs_meep_mpb():
     assert np.allclose(o, u, atol=1e-8)
     assert np.allclose(np.array(oracle["tile_r"]), np.array(ours["tile_r"]),
                        atol=1e-10)
+
+
+def test_kottke_supersampled_matches_analytic_means():
+    """A cell half-covered by an interface with normal x-hat must come back
+    harmonic in xx and arithmetic in yy -- the whole point of the scheme.
+
+    Also pins the coverage convention: the fraction must reference one
+    phase across the grid, not each cell's own maximum. Per-cell referencing
+    makes uniform inside and uniform outside cells both read 1.0, so the
+    gradient (and with it every interface normal) vanishes.
+    """
+    from meep_torch.geometry.smoothing import blend_te_supersampled
+
+    nx, ny, ss = 8, 8, 4
+    fine = np.ones((nx * ss, ny * ss))
+    fine[:14, :] = 12.0                       # cuts coarse column 3 in half
+    exx, eyy = blend_te_supersampled(fine.reshape(nx, ss, ny, ss))
+    assert exx[3, 0].item() == pytest.approx(1 / (0.5 / 12 + 0.5 / 1))
+    assert eyy[3, 0].item() == pytest.approx(0.5 * 12 + 0.5 * 1)
+    # uniform cells stay untouched on both components
+    assert exx[0, 0].item() == pytest.approx(12.0)
+    assert eyy[6, 0].item() == pytest.approx(1.0)

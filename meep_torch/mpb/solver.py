@@ -52,6 +52,7 @@ from ..mp.geometry import (Block, Cylinder, Lattice, Sphere,
 from ..mp.material import Medium
 from ..mp.vec import Vector3
 from ..mp.verbosity_mgr import verbosity
+from ..geometry.smoothing import blend_te_supersampled
 
 # meep registers an 'mpb' flag on the shared verbosity singleton and
 # gates every mpb print on `verbosity.mpb > 0`, which defaults to on.
@@ -194,6 +195,7 @@ class ModeSolver:
 
         self._parity = NO_PARITY
         self._eps = None
+        self._eps_te = None
 
     # -- meep-exact resolution handling -----------------------------------
 
@@ -347,7 +349,10 @@ class ModeSolver:
         shape = []
         for a in range(len(axes)):
             shape += [n[a], ss]
-        eps = fine.reshape(shape).mean(axis=tuple(range(1, 2 * len(axes), 2)))
+        blocks = fine.reshape(shape)
+        eps = blocks.mean(axis=tuple(range(1, 2 * len(axes), 2)))
+        self._eps_te = (blend_te_supersampled(blocks)
+                        if len(axes) == 2 else None)
         return torch.as_tensor(eps, dtype=torch.float64), d[0]
 
     # -- band extraction backends ------------------------------------------
@@ -484,7 +489,8 @@ class ModeSolver:
                 eps, dx, dx, 2 * math.pi * kc.x, 2 * math.pi * kc.y,
                 self.num_bands,
                 "te" if self._parity == EVEN_Z else "tm",
-                differentiable=self.differentiable)
+                differentiable=self.differentiable,
+                eps_te=self._eps_te)
         n_zero = self._zero_bands_at_gamma(kc)
         fmax = self.fmax
         if fmax is None:
