@@ -7,8 +7,6 @@ dist/
 
 # local agent-tooling artifacts (not part of the library)
 .claude/
-.claude-flow/
-.swarm/
 .mcp.json
 CLAUDE.md
 pr.ps1
@@ -19,16 +17,8 @@ ruvector.db
 reference/
 pr.ps1
 
-# tidy3d reference clone (MIT mode-solver files ported with attribution; clone itself never committed)
-tidy3d/
-tidy3d_extras/
-mpb/
-fdtdx/
-fdtd/
-femwell/
-meep/
-angler/
-"Photonics_Simulation/"
+
+
 
 # examples_2 plot-data caches (regenerable from the run via --replot; not for review)
 examples_2/*_data.npz
