@@ -414,3 +414,94 @@ def test_diamond_band_vs_mpb():
     assert abs(best - want) / want <= 0.03, \
         f"diamond band {want:.4f} -> nearest {best:.4f} " \
         f"(got {[round(f, 4) for f in got[:8]]})"
+
+
+def _bloch2_te_bands(eps, kx, ky, dt, dx, fmax, t_end=600.0):
+    """Doubly-periodic TE Bloch stepper driven like _bloch2_bands, harvested
+    off Hz instead of Ez."""
+    from meep_torch.core.stepper_bloch2 import (init_bloch2_state_te,
+                                                step_bloch2_te, te_eps_edges)
+
+    class _G:
+        pass
+
+    g = _G()
+    g.nx, g.ny = eps.shape
+    g.zeros = lambda *s: torch.zeros(*s, dtype=torch.float64)
+    st = init_bloch2_state_te(g)
+    eps_x, eps_y = te_eps_edges(eps)
+    mask = torch.zeros(*eps.shape, dtype=torch.float64)
+    mask[g.nx // 3 + 1, g.ny // 5 + 2] = 1.0
+    pulse = GaussianPulse(fmax / 2, fmax)
+    n_steps = int(round(t_end / dt))
+    probes = [(g.nx // 3 + 1, g.ny // 5 + 2), (2 * g.nx // 3, g.ny // 2 + 1),
+              (g.nx // 2 - 2, 1)]
+    series = np.empty((len(probes), n_steps), dtype=complex)
+    for t in range(n_steps):
+        st = step_bloch2_te(st, eps_x, eps_y, dt, dx, kx, ky,
+                            src_c=pulse.amplitude((t + 0.5) * dt), src_s=0.0,
+                            src_mask=mask)
+        for p, (pi, pj) in enumerate(probes):
+            series[p, t] = complex(st.Hz_c[pi, pj].item(), st.Hz_s[pi, pj].item())
+    t0 = int(round(60.0 / dt))
+    freqs = []
+    for p in range(len(probes)):
+        freqs += [m.freq for m in harminv(series[p, t0:], dt, 0.02, fmax)
+                  if m.Q > 100.0 and m.amp > 1e-9]
+    out = []
+    for f in sorted(freqs):
+        if not out or f - out[-1] > 1e-3 * max(f, 1e-9):
+            out.append(f)
+    return out
+
+
+def test_bloch2_te_empty_lattice_analytic():
+    """TE stepper against the exact empty-lattice dispersion.
+
+    With eps = 1 there is no geometry error left, so this isolates the
+    operator itself: the staggering, the Bloch phase couplings, and the
+    quadrature pair. Folded free-photon bands are f = |k + G| with
+    G = (m, n) on the unit cell.
+    """
+    n = 24
+    eps = torch.ones(n, n, dtype=torch.float64)
+    dx = 1.0 / n
+    for kx_m, ky_m in ((0.25, 0.0), (0.3, 0.2)):
+        got = _bloch2_te_bands(eps, 2 * math.pi * kx_m, 2 * math.pi * ky_m,
+                               0.4 * dx, dx, 1.2)
+        want = sorted(math.hypot(kx_m + a, ky_m + b)
+                      for a in range(-2, 3) for b in range(-2, 3))[:3]
+        for wf in want:
+            best = min(got, key=lambda g: abs(g - wf)) if got else 1e9
+            assert abs(best - wf) / wf <= 0.01, \
+                f"k=({kx_m},{ky_m}) band {wf:.4f} -> {best:.4f} (got {got[:5]})"
+
+
+def test_bloch2_te_rod_lattice_vs_mpb():
+    """TE stepper on the mpb_tutorial rod lattice, at X and M.
+
+    Loose tolerance on purpose: this is the time-domain path, carrying
+    temporal discretization and harminv extraction error on top of the
+    staircased rod boundary. The eigensolver reaches ~1.8% on the same
+    grid where this sits near 5%, which is why
+    meep_torch.mpb.ModeSolver routes 2D band structures through the
+    eigensolve and these steppers exist for time-domain work. The gate is
+    here to catch a broken operator, not to certify accuracy.
+    """
+    ref = json.load(open(DATA / "sq_tut_te_mpb.json"))
+    res = 24
+    ii = (np.arange(res) + 0.5) / res - 0.5
+    X, Y = np.meshgrid(ii, ii, indexing="ij")
+    eps = torch.as_tensor(np.where(X ** 2 + Y ** 2 < 0.2 ** 2, 12.0, 1.0),
+                          dtype=torch.float64)
+    dx = 1.0 / res
+    for kidx in (5, 10):                      # X and M, away from Gamma
+        kx_m, ky_m = ref["k"][kidx]
+        want = [f for f in ref["bands"][kidx][:3] if f > 1e-6]
+        got = _bloch2_te_bands(eps, 2 * math.pi * kx_m, 2 * math.pi * ky_m,
+                               0.4 * dx, dx, 0.8)
+        assert got, f"no TE modes found at k=({kx_m},{ky_m})"
+        for wf in want:
+            best = min(got, key=lambda g: abs(g - wf))
+            assert abs(best - wf) / wf <= 0.08, \
+                f"k=({kx_m},{ky_m}) band {wf:.4f} -> {best:.4f} (got {got[:5]})"
