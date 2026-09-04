@@ -1,23 +1,38 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""meep.mpb-shaped ModeSolver on the Bloch-FDTD + harminv backend.
+"""meep.mpb-shaped ModeSolver over two band backends.
 
 Class surface mirrors meep/python/solver.py: constructor signature, the
 run_* family, solve_kpoint, freqs/all_freqs/band_range_data/gap_list
-bookkeeping, retrieve_gap. Eigenfrequencies come from the periodic
-Bloch-FDTD steppers (core.stepper_bloch2/3) + harminv, not a planewave
-eigensolver, so only these parities are backed:
+bookkeeping, retrieve_gap.
 
-  run_tm / run_zodd : 1D and 2D lattices (Ez polarization, stepper_bloch2)
-  run (NO_PARITY)   : 1D lattices (polarizations degenerate -> TM path)
-                      and 3D lattices (stepper_bloch3, point-source capture)
+  2D lattices -> FDFD Bloch eigensolve (mpb.eigensolver), both parities:
+      run_tm / run_zodd  (Ez)   and   run_te / run_zeven  (Hz)
+  1D / 3D     -> Bloch-FDTD steppers (core.stepper_bloch2/3) + harminv:
+      run_tm / run_zodd : 1D
+      run (NO_PARITY)   : 1D (polarizations degenerate -> TM path) and
+                          3D (stepper_bloch3, point-source capture)
 
-Everything needing per-band mode FIELDS (get_efield & co) raises
-NotImplementedError: band fields need a planewave eigensolver (for guided
-strip/slab cross-sections use meep_torch.modes.fd1d/fd2d directly).
+The split is about band *numbering*, not speed. An eigensolve returns the
+N lowest eigenvalues complete and ordered, so band n is eigenvalue n.
+Harminv instead reports whichever resonances it detects and the band index
+is that list's sort position, so a missed or duplicated mode renumbers
+every band above it -- measured against the committed meep.mpb oracle,
+the 2D harminv path missed band 1 entirely at small |k| and duplicated it
+into band 2's slot elsewhere. The remaining harminv paths (1D, 3D) carry
+that caveat until the eigensolver grows a vector 3D operator.
 
-Backend knobs beyond meep's API (fmax, t_end, courant, ...) are plain
-attributes documented on the class.
+FDFD is 2nd-order in the grid spacing, not spectral like MPB's planewave
+basis, so oracle comparisons want resolution-aware tolerances rather than
+golden equality (TM ~0.3%, TE ~2.6% at resolution 32; both converge).
+
+Everything needing per-band mode FIELDS (get_efield & co) still raises:
+the eigensolver returns eigenvalues only, eigenvectors are not exported
+yet (for guided strip/slab cross-sections use meep_torch.modes.fd1d/fd2d
+directly).
+
+Backend knobs beyond meep's API (fmax, t_end, courant, differentiable,
+...) are plain attributes documented on the class.
 """
 import inspect
 import itertools
@@ -25,6 +40,8 @@ import math
 
 import numpy as np
 import torch
+
+from .eigensolver import bloch_bands_2d
 
 from ..core.sources import GaussianPulse
 from ..core.stepper_bloch2 import init_bloch2_state, step_bloch2_tm
@@ -50,10 +67,11 @@ _PARITY_NAMES = {NO_PARITY: "", EVEN_Z: "zeven", ODD_Z: "zodd",
                  ODD_Y + EVEN_Z: "yodd, zeven",
                  ODD_Y + ODD_Z: "yodd, zodd"}
 
-_FIELDS_MSG = ("{} needs per-band mode fields; the Bloch-FDTD+harminv "
-               "backend yields eigenfrequencies only (a planewave "
-               "eigensolver is out of scope -- for guided strip/slab "
-               "cross-sections use meep_torch.modes.fd1d/fd2d directly)")
+_FIELDS_MSG = ("{} needs per-band mode fields; both band backends yield "
+               "eigenfrequencies only -- the FDFD eigensolve does not "
+               "export eigenvectors yet, and harminv has none (for "
+               "guided strip/slab cross-sections use "
+               "meep_torch.modes.fd1d/fd2d directly)")
 
 
 class MPBArray(np.ndarray):
@@ -88,6 +106,10 @@ class ModeSolver:
     fmin = 0.02          # harminv band floor
     fmax = None          # harminv band ceiling; None -> empty-lattice estimate
     supersample = 4      # eps coverage supersampling per axis
+    # FDFD eigensolver (2D): False -> scipy eigsh, fastest, detached;
+    # True -> torch path with autograd through the eigensolve, so bands
+    # are differentiable w.r.t. epsilon. Same frequencies either way.
+    differentiable = False
     min_Q = 100.0        # harminv mode acceptance
     min_amp = 1e-9
 
@@ -398,14 +420,17 @@ class ModeSolver:
         ndims = len(self._active_axes())
         if p == ODD_Z and ndims in (1, 2):
             return
+        if p == EVEN_Z and ndims == 2:
+            return                        # TE via the FDFD Bloch eigensolve
         if p == NO_PARITY and ndims in (1, 3):
             return
         raise NotImplementedError(
             f"parity {_PARITY_NAMES.get(p, p)!r} in {ndims}D is not backed: "
-            "only TM/zodd (1D/2D lattices, stepper_bloch2) and no-parity "
-            "(1D degenerate TM; 3D via stepper_bloch3) are available -- a "
-            "doubly-periodic TE Bloch stepper / planewave eigensolver is "
-            "out of current scope")
+            "available: TM/zodd (1D/2D), TE/zeven (2D, FDFD Bloch "
+            "eigensolve), no-parity (1D degenerate TM; 3D via "
+            "stepper_bloch3). 2D no-parity would be the union of the two "
+            "polarizations and is not wired; y-parities need a mirror-"
+            "reduced cell")
 
     def _zero_bands_at_gamma(self, kc):
         """Number of omega = 0 modes at k = 0, which harminv cannot see.
@@ -438,6 +463,19 @@ class ModeSolver:
     def _solve_k(self, k):
         eps, dx = self._eps
         kc = reciprocal_to_cartesian(Vector3(*k), self.geometry_lattice)
+        if len(self._active_axes()) == 2:
+            # 2D goes through the FDFD Bloch eigensolve: the N lowest
+            # eigenvalues are complete and ordered, so band n is eigenvalue
+            # n and there is no band-numbering step to get wrong. The
+            # harminv path below infers the index from a sorted detection
+            # list and mis-assigns wherever a mode is missed or duplicated.
+            if abs(kc.z) > 1e-12:
+                raise NotImplementedError("2D lattice requires in-plane k")
+            return bloch_bands_2d(
+                eps, dx, dx, 2 * math.pi * kc.x, 2 * math.pi * kc.y,
+                self.num_bands,
+                "te" if self._parity == EVEN_Z else "tm",
+                differentiable=self.differentiable)
         n_zero = self._zero_bands_at_gamma(kc)
         fmax = self.fmax
         if fmax is None:

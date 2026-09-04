@@ -63,11 +63,87 @@ def test_unbacked_paths_raise():
                     geometry_lattice=Lattice(size=Vector3(1, 1)),
                     geometry=[Cylinder(0.2, material=Medium(epsilon=4.0))])
     with pytest.raises(NotImplementedError):
-        ms.run_te()                       # TE Bloch stepper not available
+        ms.run()                          # 2D no-parity: union of TM + TE
     with pytest.raises(NotImplementedError):
-        ms.run()                          # 2D no-parity needs TE + TM
-    with pytest.raises(NotImplementedError):
-        ms.get_efield(1)                  # band fields need an eigensolver
+        ms.get_efield(1)                  # band fields not exported yet
+
+
+def test_te_bands_vs_mpb_oracle():
+    """run_te (zeven) through the FDFD Bloch eigensolve, over the full
+    Gamma-X-M-Gamma path of the mpb_tutorial square-lattice case.
+
+    TE carries E in-plane across the rod boundaries, so the staircased
+    interface dominates the error: ~2.6% at resolution 32, converging
+    (5.4% at 16, 1.2% at 64). Kottke subpixel smoothing would restore
+    2nd order -- see the follow-up note in the task file.
+    """
+    ref = json.load(open(DATA / "sq_tut_te_mpb.json"))
+    ms = ModeSolver(num_bands=4, resolution=ref["resolution"],
+                    k_points=[Vector3(*k) for k in ref["k"]],
+                    geometry_lattice=Lattice(size=Vector3(1, 1)),
+                    geometry=[Cylinder(ref["r"],
+                                       material=Medium(epsilon=ref["eps"]))])
+    ms.run_te()
+    assert ms.parity == "zeven"
+    got, want = np.array(ms.all_freqs), np.array(ref["bands"])[:, :4]
+    assert got[0, 0] == 0.0                       # omega = 0 band at Gamma
+    err = np.abs(got - want) / np.where(want > 1e-9, want, 1.0)
+    assert err.max() <= 0.03, f"worst TE band error {err.max():.3%}"
+
+
+def test_tm_bands_vs_mpb_oracle_full_path():
+    """TM over the same path, including the four small-|k| points where the
+    harminv backend silently misnumbered bands ((0.1,0), (0.2,0), (0.3,0),
+    (0.1,0.1) -- band 1 was missed and every band shifted down a slot).
+    An eigensolve returns the N lowest eigenvalues complete and ordered, so
+    the band index cannot drift."""
+    ref = json.load(open(DATA / "sq_tut_gamma_mpb.json"))
+    ms = ModeSolver(num_bands=4, resolution=ref["resolution"],
+                    k_points=[Vector3(*k) for k in ref["k"]],
+                    geometry_lattice=Lattice(size=Vector3(1, 1)),
+                    geometry=[Cylinder(ref["r"],
+                                       material=Medium(epsilon=ref["eps"]))])
+    ms.run_tm()
+    got, want = np.array(ms.all_freqs), np.array(ref["bands"])[:, :4]
+    err = np.abs(got - want) / np.where(want > 1e-9, want, 1.0)
+    assert err.max() <= 0.01, f"worst TM band error {err.max():.3%}"
+    # the TM gap the tutorial is about: mpb reports 39.8% gap-midgap
+    gap = min(got[:, 1]) - max(got[:, 0])
+    assert 0.35 <= 2 * gap / (min(got[:, 1]) + max(got[:, 0])) <= 0.42
+
+
+def test_differentiable_bands_match_finite_difference():
+    """differentiable=True must put real gradient on epsilon, and must not
+    change the frequencies: a detached path that silently returned the same
+    numbers without gradient would pass any value-only check."""
+    import torch
+    from meep_torch.mpb.eigensolver import bloch_bands_2d
+
+    n = 16
+    ii = (np.arange(n) + 0.5) / n - 0.5
+    X, Y = np.meshgrid(ii, ii, indexing="ij")
+    rod = torch.as_tensor((X ** 2 + Y ** 2) < 0.2 ** 2, dtype=torch.float64)
+
+    def band2(scale):
+        eps = 1.0 + rod * (scale - 1.0)
+        return bloch_bands_2d(eps, 1 / n, 1 / n, 2 * np.pi * 0.3, 0.0, 3,
+                              "tm", differentiable=True)[1]
+
+    s = torch.tensor(12.0, dtype=torch.float64, requires_grad=True)
+    band2(s).backward()
+    h = 1e-5
+    with torch.no_grad():
+        fd = (band2(torch.tensor(12.0 + h, dtype=torch.float64)).item()
+              - band2(torch.tensor(12.0 - h, dtype=torch.float64)).item()) / (2 * h)
+    assert s.grad is not None and abs(s.grad.item()) > 1e-6
+    assert abs(s.grad.item() - fd) / abs(fd) < 1e-5
+    # both backends must agree on the values themselves
+    eps_np = 1.0 + rod.numpy() * 11.0
+    sci = bloch_bands_2d(eps_np, 1 / n, 1 / n, 2 * np.pi * 0.3, 0.0, 3, "tm")
+    with torch.no_grad():
+        tor = bloch_bands_2d(1.0 + rod * 11.0, 1 / n, 1 / n, 2 * np.pi * 0.3,
+                             0.0, 3, "tm", differentiable=True)
+    assert np.allclose(sci, [float(v) for v in tor], atol=1e-12)
 
 
 def test_oblique_lattice_raises():
