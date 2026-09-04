@@ -5,8 +5,8 @@
 # # Bent waveguide via the meep-syntax shim
 #
 # meep-syntax twin of bent-waveguide.py via `meep_torch.mp`. 90-degree bent
-# waveguide (two eps=12 Blocks), CW Ez source, PML 1, until=200 (reduced to
-# 3000 steps to match the raw twin's runtime trim). Output matches
+# waveguide (two eps=12 Blocks), CW Ez source, PML 1, until=200 -- physical
+# time, so the resolution can change without touching the run call. Output matches
 # bent-waveguide.py field (L2 < 1e-3 rel); saved to
 # `output/bent-waveguide_mp.png`.
 #
@@ -36,7 +36,7 @@ fcen = 1.0 / (2.0 * math.sqrt(11.0))
 # %%
 sim = mp.Simulation(
     cell_size=mp.Vector3(16, 16, 0),
-    resolution=10,
+    resolution=32,
     geometry=[
         mp.Block(size=mp.Vector3(12, 1, mp.inf), center=mp.Vector3(-2.5, -3.5, 0),
                  material=mp.Medium(epsilon=12)),
@@ -48,7 +48,8 @@ sim = mp.Simulation(
                        size=mp.Vector3(0, 1, 0))],
     boundary_layers=[mp.PML(1.0)],
 )
-sim.run(n_steps=3000)   # raw twin: meep until=200 -> 4000, trimmed to 3000
+sim.run(until=200)       # meep's own stop time; dt = Courant/resolution
+                         # handles the step count (12800 at resolution 32)
 ez = sim.get_array(component=mp.Ez)
 eps = sim.get_array(component=mp.Dielectric)
 

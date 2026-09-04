@@ -14,18 +14,20 @@ a thin ny. dtype= kwarg passes through to Grid (float64 default; float32
 opt-in, validated at scale in tests/autodiff/test_float32.py).
 """
 import math
+import os
 import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 
-from ..core.grid import Grid
+from ..core.grid import Grid, default_device
 from ..core.materials import Material
 from ..core.monitors import DFTFieldsMonitor, FluxMonitorTE, FluxMonitorTM, PointProbe
 from ..core.monitors_3d import DFTFieldsMonitor3D, FluxMonitor3D, PlaneSource, PointSource3D, run_3d
 from ..core.stepper_3d import build_3d_coeffs, init_3d_state
 from ..geometry.scene import rasterize_scene
+from .cyl_shim import CYLINDRICAL
 from .coords import (GridSpec, box3d, cell_index, cell_index_y, cell_index_z, grid_spec,
                      pml_npml, rect_corners, span_index_range, to_corner)
 from .geometry import Block, build_scene_items
@@ -115,17 +117,20 @@ def _layer_axes(direction, dimensions, cell_size=None) -> tuple[int, ...]:
 
 
 def _grid_for(cell: Vector3, resolution: float, dimensions: int, dtype,
-              courant: float = 0.5) -> tuple[Grid, GridSpec, bool]:
+              courant: float = 0.5,
+              device: str | None = None) -> tuple[Grid, GridSpec, bool]:
     if dimensions == 1:
         sx = float(cell.z)
         dx = 1.0 / float(resolution)
         nx = max(3, int(round(sx / dx)))
         ny = 3
-        g = Grid(nx=nx, ny=ny, dx=dx, dtype=dtype, courant=courant)
+        g = Grid(nx=nx, ny=ny, dx=dx, dtype=dtype, courant=courant,
+                 device=device or default_device())
         gs = GridSpec(nx, ny, dx, sx, ny * dx)
         return g, gs, True
     gs = grid_spec(cell, resolution)
-    g = Grid(nx=gs.nx, ny=gs.ny, dx=gs.dx, dtype=dtype, courant=courant)
+    g = Grid(nx=gs.nx, ny=gs.ny, dx=gs.dx, dtype=dtype, courant=courant,
+             device=device or default_device())
     return g, gs, False
 
 
@@ -201,7 +206,7 @@ class Simulation:
     output_single_precision, accurate_fields_near_cylorigin. k_point runs the
     Bloch-periodic path (mp/bloch_shim.py; unsupported combos raise at run
     time). Raise on non-default:
-    m (no cylindrical engine), force_complex_fields (real-field engine),
+    force_complex_fields (real-field engine; cylindrical runs are exempt),
     force_all_components, bfast_scaled_k, material_function / epsilon_func /
     epsilon_input_file (no pointwise material sampling), output_volume."""
 
@@ -218,7 +223,8 @@ class Simulation:
                  filename_prefix=None, output_volume=None,
                  output_single_precision=False, geometry_center=Vector3(),
                  force_all_components=False, split_chunks_evenly=True,
-                 chunk_layout=None, collect_stats=False, dtype=torch.float64):
+                 chunk_layout=None, collect_stats=False, dtype=torch.float64,
+                 device=None):
         cs = Vector3(*cell_size)
         if dimensions in (2, 3) and cs.z and not cs.x and not cs.y:
             # meep's grid_volume infers a z-only cell as 1D whatever the
@@ -227,20 +233,28 @@ class Simulation:
             dimensions = 1
         self.dimensions = dimensions
         self.dtype = dtype
+        # meep-torch extension: engine device. None -> default_device()
+        # (MEEP_TORCH_DEVICE, else CUDA when present).
+        self.device = device or default_device()
         self.cell_size = cell_size
         self.resolution = resolution
         self.run_index = 0           # meep: bumped after each run()
-        if force_complex_fields:
+        if force_complex_fields and dimensions != CYLINDRICAL:
             raise NotImplementedError(
                 "force_complex_fields: the engine steps real fields only "
-                "(using_real_fields() is always True)")
+                "(using_real_fields() is always True). Cylindrical runs are "
+                "exempt: the BOR engine carries complex F(r, z) e^{i m phi} "
+                "fields by construction")
         # k_point: Bloch-periodic run (mp/bloch_shim.py drives
         # core/stepper_bloch); unsupported combos raise there at run time
         self._bloch = k_point not in (False, None)
         self._bloch_state = None
-        if m:
+        self.m = m
+        if m and dimensions != CYLINDRICAL:
             raise NotImplementedError(
-                "m != 0 needs the cylindrical engine, which is not ported")
+                f"m = {m} is the azimuthal number of a cylindrical run; pass "
+                "dimensions=mp.CYLINDRICAL with it (cell_size = "
+                "Vector3(sr, 0, sz))")
         if bfast_scaled_k is not None:
             raise NotImplementedError(
                 "bfast_scaled_k (BFAST oblique planewaves) is not supported")
@@ -302,7 +316,17 @@ class Simulation:
         self._t_step = 0
         self.structure = None        # built by init_sim -> _init_structure
         self.fields = None           # built by init_sim
-        if dimensions == 3:
+        if dimensions == CYLINDRICAL:
+            # mp/cyl_shim.py owns the (r, z) grid and the BOR stepper state;
+            # _grid_for/pol_for are cartesian-only and pol_for raises on the
+            # cylindrical components (Er/Ep/Hr/Hp) outright.
+            self.grid = self.gs = None
+            self._y_pmc = False
+            self._pol = "cyl"
+            self._eig_source = None
+            self._state3 = None
+            self._cyl = None                  # CylRun, built on first run()
+        elif dimensions == 3:
             if self.Courant != 0.5:
                 raise NotImplementedError(
                     "3D Courant is fixed at 0.5 (core/stepper_3d builds its "
@@ -316,7 +340,8 @@ class Simulation:
         else:
             self.grid, self.gs, self._y_pmc = _grid_for(cell_size, resolution,
                                                         dimensions, dtype,
-                                                        courant=self.Courant)
+                                                        courant=self.Courant,
+                                                        device=self.device)
             self._pol = pol_for(self._sources[0].component) if self._sources else "tm"
             # S-param path: an EigenModeSource + mode monitors -> compute_smatrix.
             self._eig_source = next((s for s in self._sources
@@ -327,7 +352,11 @@ class Simulation:
         self.boundary_layers = list(boundary_layers or [])
         self._npml_sides = [[0, 0], [0, 0], [0, 0]]
         self._nabs_sides = [[0, 0], [0, 0], [0, 0]]
-        for bl in self.boundary_layers:
+        # Cylindrical keeps the layer list (cyl_shim._absorber_cells reads it
+        # straight off the Simulation) but not the cartesian cell counts:
+        # there is no GridSpec to measure a thickness against, and the BOR
+        # stepper places its own matched absorber ramp on outer r and both z.
+        for bl in (() if dimensions == CYLINDRICAL else self.boundary_layers):
             if isinstance(bl, PML):
                 sides = self._npml_sides
             elif isinstance(bl, Absorber):
@@ -520,11 +549,12 @@ class Simulation:
         bg_eps, bg_chi3 = bg.resolve()
         if isinstance(bg_eps, Material) or bg_chi3 != 0.0:
             raise NotImplementedError("3D dispersive/Kerr default material not supported (W9 wave 3)")
-        eps = torch.full((nx, ny, nz), float(bg_eps), dtype=dtype)
+        eps = torch.full((nx, ny, nz), float(bg_eps), dtype=dtype,
+                         device=self.device)
         bg_sd = float(getattr(bg, "D_conductivity", 0.0) or 0.0)
         bg_sb = float(getattr(bg, "B_conductivity", 0.0) or 0.0)
-        sd = torch.full((nx, ny, nz), bg_sd, dtype=dtype)
-        sb = torch.full((nx, ny, nz), bg_sb, dtype=dtype)
+        sd = torch.full((nx, ny, nz), bg_sd, dtype=dtype, device=self.device)
+        sb = torch.full((nx, ny, nz), bg_sb, dtype=dtype, device=self.device)
         for obj in self._geometry:
             if not isinstance(obj, Block):
                 raise NotImplementedError(
@@ -553,7 +583,7 @@ class Simulation:
             npml=tuple(tuple(p) for p in self._npml_sides),
             n_abs=tuple(tuple(p) for p in self._nabs_sides),
             sigma_d=(sd if has_cond else None), sigma_b=(sb if has_cond else None),
-            dtype=dtype)
+            dtype=dtype, device=self.device)
 
     def _make_sources_3d(self):
         specs = list(self._sources)
@@ -584,16 +614,19 @@ class Simulation:
             raw = [s.x or 0.0, s.y or 0.0, s.z or 0.0]
             full_plane = any(math.isinf(t) for k, t in enumerate(raw) if k != axis)
             if full_plane:
-                src = PlaneSource(g.nx, g.ny, g.nz, dt, comp, axis, idx, prof)
+                src = PlaneSource(g.nx, g.ny, g.nz, dt, comp, axis, idx, prof,
+                                  device=self.device)
             else:
                 ap = self._npml
                 src = PlaneSource(g.nx, g.ny, g.nz, dt, comp, axis, idx, prof,
-                                  lo=ap, hi=min(g.nx, g.ny, g.nz) - ap)
+                                  lo=ap, hi=min(g.nx, g.ny, g.nz) - ap,
+                                  device=self.device)
         return _Amp(src, amp)
 
     def _run_3d(self, n_steps):
         self._state3 = init_3d_state(self.gs.nx, self.gs.ny, self.gs.nz,
-                                     npml=self._npml, dtype=self.dtype)
+                                     npml=self._npml, dtype=self.dtype,
+                                     device=self.device)
         src = self._make_sources_3d()
         monitors = [m for (_, _, m, _) in self._monitors]
         self._state3, outs = run_3d(self._state3, self._coeffs, n_steps,
@@ -663,7 +696,8 @@ class Simulation:
         from ..core.sources import LineSource
         src = LineSource(self.grid, ix, j0, j1, profile=spec.src.profile())
         src.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
-        src.mask[ix, j0:j1] = torch.tensor(amps, dtype=self.grid.dtype)
+        src.mask[ix, j0:j1] = torch.tensor(amps, dtype=self.grid.dtype,
+                                           device=self.grid.device)
         if self._pol == "te":
             src.mask = src.mask[:, :-1]
         return src
@@ -712,7 +746,8 @@ class Simulation:
                 ys = [c.y - gs.sy / 2 + (j + 0.5) * gs.dx for j in range(j0, j1)]
                 w = np.array([complex(amp_func(Vector3(c.x, y, 0.0))) for y in ys])
                 src.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
-                src.mask[ix, j0:j1] = torch.tensor(w.real, dtype=self.grid.dtype)
+                src.mask[ix, j0:j1] = torch.tensor(w.real, dtype=self.grid.dtype,
+                                                device=self.grid.device)
                 if np.abs(w.imag).max() > 0.0:
                     # complex amplitude on real fields (meep: inject
                     # Re[a * s(t)]): the imaginary part rides the
@@ -785,9 +820,17 @@ class Simulation:
                     for s in self._sources), default=0.0)
 
     def round_time(self):
+        if self.dimensions == CYLINDRICAL:
+            # the BOR run owns its own clock; step functions (Harminv,
+            # stop_when_fields_decayed) call this from inside run_cyl
+            run = getattr(self, "_cyl", None)
+            return 0.0 if run is None else run.t * run.dt
         return self._t_step * (self._coeffs.dt if self.dimensions == 3 else self.grid.dt)
 
     def get_field_point(self, c, pt):
+        if self.dimensions == CYLINDRICAL:
+            from .cyl_shim import get_field_point as _cyl_field_point
+            return _cyl_field_point(self, c, pt)
         """Field value of component ``c`` at the cell containing meep point
         ``pt``. D components map to eps_inf * E at that cell; a component the
         state does not carry falls back to the run polarization's primary
@@ -903,6 +946,10 @@ class Simulation:
             raise NotImplementedError(
                 f"EigenModeSource with Mirror symmetry not supported: "
                 f"compute_smatrix has no mirror path yet ({_SYM_TODO})")
+        if self.dimensions == CYLINDRICAL:
+            from .cyl_shim import run_cyl
+            return run_cyl(self, step_funcs, until, until_after_sources,
+                           n_steps)
         if self._bloch and self.dimensions != 3:
             from .bloch_shim import needs_bloch, run_bloch
             if needs_bloch(self):
@@ -928,11 +975,15 @@ class Simulation:
                 T = 0
             dt = self._coeffs.dt if self.dimensions == 3 else self.grid.dt
             n_steps = max(1, int(round(float(T) / dt)))
-        self._t_step = n_steps
+        # _run_until owns the counter (it advances it from the fields'
+        # own clock); the 3D and S-param backends do not, so they get it
+        # bumped here. Doing both double-counts the time.
         if self.dimensions == 3:
+            self._t_step += n_steps
             self._run_3d(n_steps)
             return
         if self._eig_source is not None:
+            self._t_step += n_steps
             self._run_modes(n_steps)
             return
         self._run_until((), None, None, n_steps)
@@ -1064,13 +1115,21 @@ class Simulation:
                 n_total = max(1, int(round(float(until) / dt)))
             else:
                 n_total = max(1, int(round((cutoff + (until_after_sources or 0)) / dt)))
-        self._t_step = 0
+        # meep's clock accumulates across run() calls: three run(until=10)
+        # leave round_time() at 30, not 10. This used to reset to 0 while
+        # still reading the fields' absolute counter back below, so the
+        # loop compared an absolute step against a relative target and a
+        # second run() exited immediately -- silently doing nothing. The
+        # tutorial pattern "run to steady state, then run again to dump
+        # fields" produced one frame instead of twenty.
+        start = self._t_step
+        stop_at = None if n_total is None else start + n_total
         for g in begin:
             _eval_step_func(self, g, "step")
-        fire_scheduled(self, scheduled, 0.0)
-        while n_total is None or self._t_step < n_total:
+        fire_scheduled(self, scheduled, start * dt)
+        while stop_at is None or self._t_step < stop_at:
             t = self._t_step * dt
-            left = (n_total - self._t_step) if n_total is not None else 10 ** 9
+            left = (stop_at - self._t_step) if stop_at is not None else 10 ** 9
             k = chunk_size(t, dt, left, per_step, scheduled, conds is not None)
             if k == 1:
                 f.step()
@@ -1149,6 +1208,14 @@ class Simulation:
         return DftFlux(self._add_flux, [freqs, list(fluxes), name])
 
     def _add_flux(self, freqs, fluxes, name):
+        if self.dimensions == CYLINDRICAL:
+            raise NotImplementedError(
+                "flux monitors in a cylindrical run are not supported: the "
+                "surface element on an (r, z) cell is 2*pi*r dr dz, not dr "
+                "dz, and that weighting was deliberately left unguessed -- a "
+                "wrong constant silently scales a cross-section instead of "
+                "failing. Needs a meep.mpb/meep oracle to pin. Point probes "
+                "(get_field_point), near2far and dft_ldos do work")
         if self.dimensions == 3:
             if len(fluxes) != 1:
                 raise NotImplementedError("3D add_flux takes exactly one region (W9 wave 3)")
@@ -1170,6 +1237,9 @@ class Simulation:
         region axis * weight; a closed box = 4 regions, meep style. Trapezoid
         endpoint weights close the loop integral when the regions share
         corners."""
+        if self.dimensions == CYLINDRICAL:
+            from .cyl_shim import add_near2far as _cyl_add_near2far
+            return _cyl_add_near2far(self, fcen, df, nfreq, *regions)
         freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
         return DftNear2Far(self._add_near2far, [freqs, list(regions), name])
 
@@ -1286,6 +1356,9 @@ class Simulation:
         """Complex [Ex, Ey, Ez, Hx, Hy, Hz] at a far point (meep layout);
         (nfreq, 6) when nfreq > 1. ``tol`` is accepted for meep signature
         parity (the exact Hankel kernels have no iteration to tolerate)."""
+        if self.dimensions == CYLINDRICAL:
+            from .cyl_shim import get_farfield as _cyl_get_farfield
+            return _cyl_get_farfield(self, name, point, tol)
         if self.dimensions == 3:
             E, H, freqs = self._farfields_3d(name, [[point.x, point.y, point.z]])
             out = np.concatenate([E[:, 0, :], H[:, 0, :]], axis=1)
@@ -1335,6 +1408,9 @@ class Simulation:
     def dft_ldos(self, fcen, df, nfreq, name=None):
         """meep dft_ldos-lite: record Ez at the (point) source and return
         LDOS via core.ldos.ldos_spectrum after run(). TM only."""
+        if self.dimensions == CYLINDRICAL:
+            from .cyl_shim import dft_ldos as _cyl_dft_ldos
+            return _cyl_dft_ldos(self, fcen, df, nfreq)
         freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, max(nfreq, 1)).tolist()
         return DftLdos(self._add_ldos, [freqs, name])
 
@@ -1541,6 +1617,12 @@ class Simulation:
             raise NotImplementedError("3D EigenModeSource/S-params not supported (W9 wave 3)")
         if len(fluxes) != 1:
             raise NotImplementedError("add_mode_monitor takes exactly one region here")
+        if self._eig_source is None:
+            # meep's add_mode_monitor is add_flux plus mode decomposition. With
+            # no EigenModeSource there is no S-param path to feed, so register
+            # a real DFT flux monitor -- get_eigenmode_coefficients decomposes
+            # it -- instead of recording a port spec nothing ever fills.
+            return self._add_flux(freqs, fluxes, name or f"mode{len(self._monitors)}")
         region = fluxes[0]
         # For the S-param path: store the port spec; run() routes an
         # EigenModeSource + these monitors to compute_smatrix. freqs are kept
@@ -1700,10 +1782,11 @@ class Simulation:
         iterative mode solver on this path)."""
         if isinstance(bands, DiffractedPlanewave):
             raise NotImplementedError(
-                "get_eigenmode_coefficients(bands=DiffractedPlanewave): the "
-                "diffraction-order machinery (meep_torch/ports/orders.py) "
-                "needs a Bloch-periodic core run; Simulation has no k_point "
-                "path to drive it")
+                "get_eigenmode_coefficients(bands=DiffractedPlanewave): only "
+                "the 0th order is wired (bands=[1] on a flux monitor); "
+                "selecting an arbitrary order m needs the full "
+                "diffraction-order projection at k_y != 0 "
+                "(meep_torch/ports/orders.py)")
         if not isinstance(bands, (list, tuple, range)):
             raise TypeError("get_eigenmode_coefficients: bands must be either "
                             "a list or DiffractedPlanewave object")
@@ -1788,6 +1871,43 @@ class Simulation:
         alpha[0, :, 0], alpha[0, :, 1] = a_p, a_m
         return alpha
 
+    def _subvolume(self, arr, center, size):
+        """Restrict a full-cell array to meep's (center, size) box.
+
+        meep collapses an axis whose ``size`` component is 0, so a
+        ``size=Vector3(16,0)`` cut returns a 1D line, not a 2D patch. Both
+        arguments used to be accepted and ignored here, which returned the
+        whole field and silently changed the shape a caller got -- the 90
+        degree bend tutorial collects 334 such slices and hands them to
+        imshow, getting (334, 160, 160) instead of (334, 160).
+        """
+        if center is None and size is None:
+            return arr
+        if self.dimensions == 3:
+            raise NotImplementedError(
+                "get_array(center=, size=) sub-volumes are 1D/2D only")
+        gs = self.gs
+        c = center if center is not None else Vector3()
+        sz = size if size is not None else Vector3(gs.sx, gs.sy, 0)
+        out, drop = arr, []
+        for ax, (lo_c, ext, n, idx) in enumerate((
+                (float(c.x), float(sz.x), gs.nx, lambda v: cell_index(v, gs)),
+                (float(c.y), float(sz.y), gs.ny, lambda v: cell_index_y(v, gs)))):
+            if ext == 0:                      # meep collapses a zero extent
+                i0 = max(0, min(n - 1, idx(lo_c)))
+                out = out[i0:i0 + 1] if ax == 0 else out[:, i0:i0 + 1]
+                drop.append(ax)
+                continue
+            # meep counts both endpoints and one more: a size-4 box at
+            # resolution 10 comes back as 42 samples, not 41. Clamped to the
+            # cell, which is why a full-width cut matches either way.
+            npts = min(n, int(round(ext / gs.dx)) + 2)
+            i0 = max(0, min(n - npts, idx(lo_c - ext / 2.0)))
+            out = out[i0:i0 + npts] if ax == 0 else out[:, i0:i0 + npts]
+        for ax in reversed(drop):
+            out = np.squeeze(out, axis=ax)
+        return out
+
     def get_array(self, component=Dielectric, center=None, size=None):
         if self.dimensions == 3:
             if component == Dielectric:
@@ -1799,13 +1919,15 @@ class Simulation:
                 raise ValueError(f"unsupported component {component!r}")
             return f.detach().cpu().numpy()
         if component == Dielectric:
-            return self._demirror(self._rm.eps_tm.detach().cpu().numpy() if self._pol == "tm"
-                                  else self._rm.eps_te_xx.detach().cpu().numpy())
+            return self._subvolume(self._demirror(
+                self._rm.eps_tm.detach().cpu().numpy() if self._pol == "tm"
+                else self._rm.eps_te_xx.detach().cpu().numpy()), center, size)
         if self._state is None:
             raise RuntimeError("run() before get_array(fields)")
         if component in ("Ez", "Ex"):
-            return self._demirror(self._state.Ez.detach().cpu().numpy(),
-                                  self._comp_parity("Ez"))
+            return self._subvolume(
+                self._demirror(self._state.Ez.detach().cpu().numpy(),
+                               self._comp_parity("Ez")), center, size)
         if component in ("Hz", "Hy"):
             return self._demirror(self._state.Hz.detach().cpu().numpy()) if self._pol == "te" \
                 else self._state.Hz if hasattr(self._state, "Hz") else None
@@ -1886,6 +2008,11 @@ class Simulation:
         Idempotent; run() and the monitor adders call it lazily, meep style.
         The 3D path keeps its tensor state behind this facade (no fields
         object; the 3D engine is driven by core.monitors_3d.run_3d)."""
+        if self.dimensions == CYLINDRICAL:
+            # cyl_shim builds the BOR state lazily on the first run(); there
+            # is no cartesian structure to compile and pol_for has no name
+            # for the cylindrical components
+            return
         if self.dimensions != 3 and self.fields is None:
             # meep's sim.sources / sim.symmetries are mutable (append after
             # construction): re-derive polarization, eigenmode source, and
@@ -1924,7 +2051,8 @@ class Simulation:
         kept and continue to accumulate on the next run (meep semantics)."""
         if self.dimensions == 3:
             self._state3 = init_3d_state(self.gs.nx, self.gs.ny, self.gs.nz,
-                                         npml=self._npml, dtype=self.dtype)
+                                         npml=self._npml, dtype=self.dtype,
+                                         device=self.device)
         else:
             self.init_sim()
             self.fields.zero_fields()
@@ -1938,6 +2066,8 @@ class Simulation:
         self.fields = None
         if self.dimensions == 3:
             self._state3 = None
+        if self.dimensions == CYLINDRICAL:
+            self._cyl = None              # CylRun: stepper state + monitors
         self._bloch_state = None
         self._t_step = 0
         self._monitors = []
@@ -1959,6 +2089,26 @@ class Simulation:
     def using_real_fields(self):
         """Always True: this engine has no k_point/complex-field path."""
         return True
+
+    def use_output_directory(self, dname: str = ""):
+        """meep use_output_directory: send every output_* file to ``dname``.
+
+        Created if missing. With no argument meep uses
+        ``get_filename_prefix() + "-out"`` and clears the prefix, so a
+        script `foo.py` writes into `foo-out/`; that is reproduced here.
+        meep also trashes the directory's previous contents on first use --
+        not done, since silently deleting a directory the caller named is a
+        worse failure than leaving a stale file behind.
+        """
+        if not dname:
+            dname = self.get_filename_prefix() + "-out"
+            self.filename_prefix = None
+        os.makedirs(dname, exist_ok=True)
+        self._output_directory = dname
+        from .verbosity_mgr import verbosity
+        if verbosity.meep > 0:
+            print(f"Meep: using output directory '{dname}'")
+        return dname
 
     def get_filename_prefix(self):
         """meep get_filename_prefix: filename_prefix, or the running script's
@@ -1984,7 +2134,7 @@ class Simulation:
         self._sources = (list(new_sources)
                          if isinstance(new_sources, (list, tuple))
                          else [new_sources])
-        if self.dimensions == 3:
+        if self.dimensions in (3, CYLINDRICAL):
             return
         self._eig_source = next((s for s in self._sources
                                  if isinstance(s, EigenModeSource)), None)

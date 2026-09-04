@@ -82,7 +82,7 @@ print(f"aafgc_ion_729  grid {nx}x{nz} = {nx*nz/1e6:.1f}M cells, "
 k0f = int(OX_BOT * RES)
 k1f = k0f + max(int(H_FILM * RES), 4)
 k_surf = int((OX_BOT + H_FILM + OX_TOP) * RES)
-base = torch.full((nx, nz), 1.0, dtype=torch.float64)         # vacuum
+base = torch.full((nx, nz), 1.0, dtype=torch.float64, device=grid.device)         # vacuum
 base[:, :k_surf] = N_SIO ** 2                                 # oxides
 base[:, k0f:k1f] = N_SIN ** 2                                 # film
 
@@ -219,13 +219,13 @@ eps_fin = region.paint(base, r).detach()
 with torch.no_grad():
     FE_fin, E_fin = FE_of(eps_fin)
 FE_fin = float(FE_fin)
-np.save(OUT / "aafgc_ion_729_rho.npy", rho_f.numpy())
+np.save(OUT / "aafgc_ion_729_rho.npy", rho_f.cpu().numpy())
 print(f"aafgc_ion_729  BEST FE proxy = {FE_fin:.4f} "
       f"({10*math.log10(max(FE_fin,1e-12)):.1f} dB; paper AAFGC: -3.8 dB "
       f"with metals+ITO omitted here)")
 
 # spot size at the ion plane (1/e^2 of the intensity lobe)
-I_line = (E_fin[:, ia_z].abs() ** 2).numpy()
+I_line = (E_fin[:, ia_z].abs() ** 2).cpu().numpy()
 pk = I_line.max()
 above = np.where(I_line > pk / math.e ** 2)[0]
 spot = (above.max() - above.min()) * dx if len(above) else float("nan")
@@ -257,8 +257,8 @@ with torch.no_grad():
                          int(round(T_RUN / grid.dt)), source=src_r,
                          monitors=[mon_r], checkpoint_every=400)
 ez_r = (acc_r.cpu()[0, 0] + 1j * acc_r.cpu()[0, 1])
-P_in_t = float((np.abs(ez_r.numpy()[icol, k0f - SPAN:k1f + SPAN]) ** 2).sum())
-FE_t = float((np.abs(ez.numpy()[ia_x - WIN:ia_x + WIN, ia_z]) ** 2).sum()) / P_in_t
+P_in_t = float((np.abs(ez_r.cpu().numpy()[icol, k0f - SPAN:k1f + SPAN]) ** 2).sum())
+FE_t = float((np.abs(ez.cpu().numpy()[ia_x - WIN:ia_x + WIN, ia_z]) ** 2).sum()) / P_in_t
 rel = abs(FE_fin - FE_t) / max(FE_t, 1e-12)
 print(f"aafgc_ion_729  FDTD cross-check FE = {FE_t:.4f} "
       f"({10*math.log10(max(FE_t,1e-12)):.1f} dB, rel diff {rel*100:.1f}%)")
@@ -277,10 +277,10 @@ a1.set_xlabel("iteration"); a1.set_ylabel("FE proxy [dB]")
 a1.set_title(f"FDFD {10*math.log10(max(FE_fin,1e-12)):.1f} dB | "
              f"FDTD {10*math.log10(max(FE_t,1e-12)):.1f} dB")
 a1.legend(fontsize=7)
-a2.imshow(eps_fin.numpy()[:, :int(10 * RES)].T, origin="lower", cmap="viridis",
+a2.imshow(eps_fin.cpu().numpy()[:, :int(10 * RES)].T, origin="lower", cmap="viridis",
           extent=[0, LX, 0, 10], aspect="auto")
 a2.set_title("design (chip zoom, z<10 um)")
-a3.imshow(E_fin.abs().numpy().T, origin="lower", cmap="inferno",
+a3.imshow(E_fin.abs().cpu().numpy().T, origin="lower", cmap="inferno",
           extent=[0, LX, 0, LZ], aspect="auto", vmax=float(E_fin.abs().max()) * 0.25)
 a3.plot([ia_x * dx], [ia_z * dx], "c*", ms=12)
 a3.set_title("|Ez| FDFD -- beam to the ion (star)")

@@ -23,9 +23,9 @@ def _laser_run(Rp, endt, res=100):
     grid = Grid(nx=int(sz * res), ny=4, dx=1.0 / res)
     nx = grid.nx
     ncav_cells = int(Lcav * res)
-    mask = torch.zeros(nx, dtype=grid.dtype)
+    mask = torch.zeros(nx, dtype=grid.dtype, device=grid.device)
     mask[:ncav_cells] = 1.0
-    eps = torch.ones(nx, dtype=grid.dtype)
+    eps = torch.ones(nx, dtype=grid.dtype, device=grid.device)
     eps[:ncav_cells] = p["ncav"] ** 2
     coeffs = build_1d_coeffs(
         grid, eps=eps, npml=(0, int(dpml * res)),      # left wall = PEC mirror

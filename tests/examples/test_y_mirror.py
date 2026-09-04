@@ -30,7 +30,7 @@ def _s21(half: bool):
     nx = 300
     ny = 120 if not half else 60
     g = Grid(nx=nx, ny=ny, dx=1 / RES)
-    eps = torch.full((nx, ny), N_CL ** 2, dtype=g.dtype)
+    eps = torch.full((nx, ny), N_CL ** 2, dtype=g.dtype, device=g.device)
     jw = int(0.05 * RES * 20)                      # 1.0 um half-width wg
     if half:
         eps[:, :jw] = N_CO ** 2                    # core hugs the cut plane

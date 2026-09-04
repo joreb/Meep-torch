@@ -9,7 +9,7 @@ from meep_torch.core.stepper_tm import init_tm_state, step_tm
 
 def plane_pulse_state(g, x0, w, y_pmc=True):
     s = init_tm_state(g, y_pmc=y_pmc)
-    x = torch.arange(g.nx, dtype=g.dtype)
+    x = torch.arange(g.nx, dtype=g.dtype, device=g.device)
     ez = torch.exp(-((x - x0) ** 2) / (2 * w**2))
     Ez = ez[:, None].repeat(1, g.ny)
     # +x propagating: Hy = -Ez interpolated to half-grid

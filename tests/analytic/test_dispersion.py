@@ -27,7 +27,7 @@ def slab_transmission(n2: complex, d: float, f: float) -> float:
 
 def run_transmission(with_slab: bool) -> torch.Tensor:
     g = Grid(nx=1400, ny=8, dx=0.02)
-    slab = torch.zeros(g.nx, g.ny, dtype=torch.float64)
+    slab = torch.zeros(g.nx, g.ny, dtype=torch.float64, device=g.device)
     slab[600:700, :] = 1.0                     # 2 um slab
     eps = 1.0 + (EPS_INF - 1.0) * slab if with_slab else None
     poles = [POLE] if with_slab else []

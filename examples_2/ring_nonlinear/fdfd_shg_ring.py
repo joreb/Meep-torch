@@ -101,7 +101,7 @@ core_s = (eps_s > 0.5 * (float(eps_s.min()) + float(eps_s.max()))).to(torch.floa
 ring_core = core_s.clone()
 ring_core[:, :o1y + int((W_WG / 2 + GAP / 2) * RES)] = 0.0   # cut the bus
 X, Y = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
-w = ring_core.numpy()
+w = ring_core.cpu().numpy()
 cx = float((X * w).sum() / w.sum())
 cy = float((Y * w).sum() / w.sum())
 
@@ -214,7 +214,7 @@ Esh_sg = solve_fdfd_tm(e_ss, dx, 2 * f_res, jz_sh_sg, NPML)
 prof_s, _ = port_mode_line(e_ss, sp_port, 2 * f_res, dx)
 a_x = (Esh_sg[:, sp_port.lo:sp_port.hi]
        * prof_s.to(torch.complex128)[None, :]).sum(dim=1).abs() ** 2
-seg = a_x[NPML + int(1.5 * RES): sg_nx - NPML - RES].numpy()
+seg = a_x[NPML + int(1.5 * RES): sg_nx - NPML - RES].cpu().numpy()
 pk = [k for k in range(1, len(seg) - 1)
       if seg[k] > seg[k - 1] and seg[k] >= seg[k + 1] and seg[k] > 0.1 * seg.max()]
 period = float(np.mean(np.diff(pk)) * dx)
@@ -275,13 +275,13 @@ a1.plot((1 / h[:, 0]) * 1e3, h[:, 1] / h[:, 1].max(), "o-")
 a1.axvline(1e3 / f_res, color="r", lw=0.8)
 a1.set_xlabel("pump wavelength [nm]"); a1.set_ylabel("circ. power [norm]")
 a1.set_title(f"resonance hunt: on/off = {enh:.0f}x")
-a2.imshow(Ep.abs().numpy().T, origin="lower", cmap="inferno",
+a2.imshow(Ep.abs().cpu().numpy().T, origin="lower", cmap="inferno",
           extent=[0, nx * dx, 0, ny * dx])
 a2.set_title(f"pump |Ez| at {1e3/f_res:.1f} nm (cuDSS)")
-a3.imshow(Es_pol.abs().numpy().T, origin="lower", cmap="inferno",
+a3.imshow(Es_pol.abs().cpu().numpy().T, origin="lower", cmap="inferno",
           extent=[0, nx * dx, 0, ny * dx])
 a3.set_title(f"SH |Ez| QPM-poled (Lambda={period:.2f} um)")
-a4.imshow((poling * ring_core).numpy().T, origin="lower", cmap="RdBu",
+a4.imshow((poling * ring_core).cpu().numpy().T, origin="lower", cmap="RdBu",
           extent=[0, nx * dx, 0, ny * dx])
 a4.set_title(f"poling sign (poled/unpoled SH out: {g2:.0f}x)")
 for a in axs.flat[1:]:

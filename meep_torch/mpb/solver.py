@@ -722,7 +722,7 @@ class ModeSolver:
         if self._eps is None:
             self._eps = self._rasterize_epsilon()
         eps, _ = self._eps
-        return MPBArray(eps.numpy(), self.get_lattice())
+        return MPBArray(eps.cpu().numpy(), self.get_lattice())
 
     def allow_negative_epsilon(self):
         self.is_negative_epsilon_ok = True

@@ -139,7 +139,7 @@ def test_differentiable_bands_match_finite_difference():
     assert s.grad is not None and abs(s.grad.item()) > 1e-6
     assert abs(s.grad.item() - fd) / abs(fd) < 1e-5
     # both backends must agree on the values themselves
-    eps_np = 1.0 + rod.numpy() * 11.0
+    eps_np = 1.0 + rod.cpu().numpy() * 11.0
     sci = bloch_bands_2d(eps_np, 1 / n, 1 / n, 2 * np.pi * 0.3, 0.0, 3, "tm")
     with torch.no_grad():
         tor = bloch_bands_2d(1.0 + rod * 11.0, 1 / n, 1 / n, 2 * np.pi * 0.3,

@@ -55,7 +55,7 @@ def cw_snapshots(name):
                         src.h_amplitude(t_idx), **h_masks)
         if (t_idx + 1) % every == 0:
             snaps.append(state.Ez.detach().cpu().numpy().astype(np.float32))
-    return np.stack(snaps), s["eps"].numpy(), s["extent"], grid
+    return np.stack(snaps), s["eps"].cpu().numpy(), s["extent"], grid
 
 # %% [markdown]
 # ## Render

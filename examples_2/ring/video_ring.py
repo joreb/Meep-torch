@@ -102,7 +102,7 @@ for t in range(n_steps):
 
 # %%
 vmax = max(f.max() for f in frames[len(frames) // 2:]) * 0.5
-core = (eps_c[::sub, ::sub] > 0.5 * (float(eps_c.min()) + float(eps_c.max()))).numpy()
+core = (eps_c[::sub, ::sub] > 0.5 * (float(eps_c.min()) + float(eps_c.max()))).cpu().numpy()
 fig, ax = plt.subplots(figsize=(7.2, 7.0))
 im = ax.imshow(frames[0].T, origin="lower", cmap="inferno", vmin=0, vmax=vmax,
                extent=[0, nx * dx, 0, ny * dx])

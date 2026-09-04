@@ -58,7 +58,7 @@ def _cavity_probe_series(n_steps):
     probe = PointProbe(icx, icy)
     st = init_tm_state(g)
     st, (series,) = run_tm(st, c, n_steps, source=src, monitors=[probe])
-    return series.detach().numpy()
+    return series.detach().cpu().numpy()
 
 
 def test_holey_wvg_cavity_q_vs_oracle():

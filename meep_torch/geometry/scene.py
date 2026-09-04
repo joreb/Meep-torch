@@ -57,13 +57,13 @@ def rasterize_scene(
     chi3_items: Sequence[tuple[Polygon, float]] = (),
 ) -> RasterizedMaterials:
     bg_val, bg_poles = _material_value(background)
-    eps_tm = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64)
-    eps_te_xx = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64)
-    eps_te_yy = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64)
-    chi3 = torch.zeros((grid.nx, grid.ny), dtype=torch.float64)
+    eps_tm = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64, device=grid.device)
+    eps_te_xx = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64, device=grid.device)
+    eps_te_yy = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64, device=grid.device)
+    chi3 = torch.zeros((grid.nx, grid.ny), dtype=torch.float64, device=grid.device)
 
     poles: list = list(bg_poles)
-    masks: list = [torch.ones((grid.nx, grid.ny), dtype=torch.float64) for _ in bg_poles]
+    masks: list = [torch.ones((grid.nx, grid.ny), dtype=torch.float64, device=grid.device) for _ in bg_poles]
 
     for poly, mat in items:
         cov = coverage(poly, grid)

@@ -120,7 +120,16 @@ def solve_1d(eps_line, dx: float, f: float, pol: str, k: int = 1, bc: str = "pec
         vals_c, vecs_c = scipy.linalg.eig(A)
         real = np.abs(vals_c.imag) < 1e-10
         vals, vecs = vals_c[real].real, vecs_c[:, real].real
-    return _finalize(vals, vecs, k)
+    modes = _finalize(vals, vecs, k)
+    # The eigensolve is scipy, so results come back on the CPU whatever device
+    # the caller's eps was on. Return them on the input's device: every
+    # consumer immediately combines the profile with that same eps (mode
+    # overlaps in ports/mode_monitor, source masks in ports/mode_source), so
+    # a CPU return turns into a device mismatch at each point of use instead
+    # of being handled once, here.
+    if isinstance(eps_line, torch.Tensor) and eps_line.device.type != "cpu":
+        modes = Modes1D(neff=modes.neff, profiles=modes.profiles.to(eps_line.device))
+    return modes
 
 
 def solve_1d_tm_torch(eps_line, dx: float, f: float, k: int = 1) -> torch.Tensor:

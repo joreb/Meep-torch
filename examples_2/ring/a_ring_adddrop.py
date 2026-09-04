@@ -127,7 +127,7 @@ ax1.set_xlabel("wavelength [nm]"); ax1.set_ylabel("power")
 ax1.set_title(f"add-drop (half-ring method): drop Q={Q:.0f}, "
               f"FSR={fsr_nm:.2f} nm")
 ax1.legend(fontsize=8); ax1.set_ylim(0, 1.05)
-ax2.imshow(eps_g.numpy().T, origin="lower", cmap="viridis",
+ax2.imshow(eps_g.cpu().numpy().T, origin="lower", cmap="viridis",
            extent=[0, grid_g.nx / 4, 0, grid_g.ny / 4])
 ax2.set_title("gdsfactory ring_double r=50 W=1 gaps=0.2 (674 nm)")
 ax2.set_xlabel("x [um]")

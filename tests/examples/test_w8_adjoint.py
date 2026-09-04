@@ -27,8 +27,8 @@ CKPT = 200
 
 
 def _blob_eps(theta, grid, cx, cy, r, edge):
-    x = torch.arange(grid.nx, dtype=grid.dtype)[:, None]
-    y = torch.arange(grid.ny, dtype=grid.dtype)[None, :]
+    x = torch.arange(grid.nx, dtype=grid.dtype, device=grid.device)[:, None]
+    y = torch.arange(grid.ny, dtype=grid.dtype, device=grid.device)[None, :]
     dist = torch.sqrt((x - cx) ** 2 + (y - cy) ** 2)
     disk = 0.5 * (1.0 - torch.tanh((dist - r) / edge))
     return 1.0 + theta * disk

@@ -86,7 +86,7 @@ def build_eps():
     k0f = int(OX_BOT * RES)
     k1f = k0f + max(int(H_FILM * RES), 4)
     k_surf = int((OX_BOT + H_FILM + OX_TOP) * RES)
-    base = torch.full((nx, nz), 1.0, dtype=torch.float64)
+    base = torch.full((nx, nz), 1.0, dtype=torch.float64, device=grid.device)
     base[:, :k_surf] = N_SIO ** 2
     base[:, k0f:k1f] = N_SIN ** 2
     rho = torch.from_numpy(np.load(
@@ -195,7 +195,7 @@ print("MEEP_DONE")
 
 def meep_video(eps, p_in, zc, tmp):
     npy = tmp / "aafgc_eps.npy"
-    np.save(npy, eps.numpy())
+    np.save(npy, eps.cpu().numpy())
     params = dict(LX=LX, LZ=LZ, RES=RES, NPML=NPML, FCEN=FCEN,
                   eps_npy=str(npy), eps_h5=str(tmp / "aafgc_eps.h5"),
                   x_src=(p_in.index) * DX, z_src=zc * DX,

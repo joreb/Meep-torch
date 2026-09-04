@@ -29,7 +29,7 @@ POLE_E = (0.0871, 0.0003, 0.3745)
 
 def _setup():
     g = Grid(nx=160, ny=80, dx=0.17)
-    mask = torch.zeros(160, 80, dtype=g.dtype)
+    mask = torch.zeros(160, 80, dtype=g.dtype, device=g.device)
     mask[80:110, 16:64] = 1.0
     smask = g.zeros(160, 80)
     smask[30, 20:60] = 1.0

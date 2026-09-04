@@ -201,7 +201,7 @@ for it in range(8):
 
 # %%
 rho_f = best[1]
-np.save(OUT / "aafgc_ion_729_design3d_rho.npy", rho_f.numpy())
+np.save(OUT / "aafgc_ion_729_design3d_rho.npy", rho_f.cpu().numpy())
 print(f"aafgc_design3d  done: J {history[0]:.3e} -> {best[0]:.3e} "
       f"({best[0]/max(history[0],1e-30):.1f}x) in {time.time()-t00:.0f}s")
 
@@ -210,7 +210,7 @@ fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4))
 a1.plot(history, "bo-")
 a1.set_xlabel("iteration"); a1.set_ylabel("window DFT power [arb]")
 a1.set_title(f"3D adjoint design: {best[0]/max(history[0],1e-30):.1f}x over seed")
-a2.imshow(r.numpy().T, origin="lower", cmap="viridis",
+a2.imshow(r.cpu().numpy().T, origin="lower", cmap="viridis",
           extent=[X0_DEV, X0_DEV + L_DEV, 0, W_STRIP])
 a2.set_xlabel("x [um]"); a2.set_ylabel("y [um]")
 a2.set_title("plan-view film pattern (projected)")

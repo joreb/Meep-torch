@@ -30,7 +30,7 @@ def _run(coeffs, grid, probes, t_end=40.0):
     src.mask = src.mask[:, :-1]
     _, out = run_te(init_te_state(grid), coeffs, int(round(t_end / grid.dt)),
                     source=src, monitors=probes)
-    return [o.detach().numpy() for o in out]
+    return [o.detach().cpu().numpy() for o in out]
 
 
 def test_diagonal_tensor_matches_isotropic():

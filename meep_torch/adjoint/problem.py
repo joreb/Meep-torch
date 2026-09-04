@@ -100,7 +100,7 @@ class OptimizationProblem:
         if not need_gradient:
             return float(J), None
         J.backward()
-        return float(J), rho.grad.detach().numpy().copy()
+        return float(J), rho.grad.detach().cpu().numpy().copy()
 
     def eval_at_delta(self, i: int, j: int, h: float) -> float:
         """Objective with rho[i, j] perturbed by h (finite-difference checks)."""

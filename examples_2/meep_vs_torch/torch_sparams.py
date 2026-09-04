@@ -118,7 +118,7 @@ def torch_sparams(name):
         re_e, im_e = acc.cpu().unbind(1)[0], acc.cpu().unbind(1)[1]
         name_key = "o1" if p is None else p.name
         profiles[name_key] = dict(
-            ez=torch.sqrt(re_e[0] ** 2 + im_e[0] ** 2).numpy(),
+            ez=torch.sqrt(re_e[0] ** 2 + im_e[0] ** 2).cpu().numpy(),
             ys=(np.arange(gp.lo, gp.hi) + 0.5) / RES + s["y0"])
     a_in = dec[0][0][0, 0]
     sp = {p.name: float(abs(dec[i + 1][0][0, 0] / a_in) ** 2)

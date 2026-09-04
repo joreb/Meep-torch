@@ -24,15 +24,15 @@ def holey_bands_at(kx_meep, res=10):
     nx, ny = int(ref["sy"] * res), int(1.0 * res)
     grid = Grid(nx=nx, ny=ny, dx=dx)
     npml = int(ref["dpml"] * res)
-    coeffs = build_tm_coeffs(grid, eps_inf=torch.ones(nx, ny, dtype=torch.float64),
+    coeffs = build_tm_coeffs(grid, eps_inf=torch.ones(nx, ny, dtype=torch.float64, device=grid.device),
                              npml=npml, y_pmc=True)
     # 4x4-supersampled coverage eps (the ring-cyl edge-averaging lesson)
     cx = nx // 2
     ss = 4
-    xi = (torch.arange(nx * ss, dtype=torch.float64) + 0.5) / ss - 0.5
-    yj = (torch.arange(ny * ss, dtype=torch.float64) + 0.5) / ss - 0.5
+    xi = (torch.arange(nx * ss, dtype=torch.float64, device=grid.device) + 0.5) / ss - 0.5
+    yj = (torch.arange(ny * ss, dtype=torch.float64, device=grid.device) + 0.5) / ss - 0.5
     II, JJ = torch.meshgrid(xi, yj, indexing="ij")
-    fine = torch.ones(nx * ss, ny * ss, dtype=torch.float64)
+    fine = torch.ones(nx * ss, ny * ss, dtype=torch.float64, device=grid.device)
     in_slab = ((II - cx).abs() * dx) < ref["w"] / 2
     fine[in_slab] = ref["eps"]
     in_hole = ((II - cx) * dx) ** 2 + ((JJ - ny / 2) * dx) ** 2 < ref["r"] ** 2

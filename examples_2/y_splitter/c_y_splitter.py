@@ -223,7 +223,7 @@ with torch.no_grad():
                        int(round(T_RUN / grid.dt)), source=src,
                        monitors=[mon], checkpoint_every=400)
 acc = acc.cpu()
-ez = np.abs((acc[0, 0] + 1j * acc[0, 1]).numpy())
+ez = np.abs((acc[0, 0] + 1j * acc[0, 1]).cpu().numpy())
 T_up, T_dn = float(abs(s_up) ** 2), float(abs(s_dn) ** 2)
 tot = T_up + T_dn
 il_db = -10 * math.log10(max(tot, 1e-12))
@@ -249,7 +249,7 @@ ax1.set_xlabel("iteration"); ax1.set_ylabel("2 sqrt(T21 T31) [%]")
 ax1.set_title(f"total {tot*100:.1f}%, IL {il_db:.2f} dB, "
               f"imbalance {imb*100:.2f}% (measured)")
 ax1.legend(fontsize=7)
-ax2.imshow(eps_c.numpy().T, origin="lower", cmap="viridis",
+ax2.imshow(eps_c.cpu().numpy().T, origin="lower", cmap="viridis",
            extent=[0, nx*dx, 0, ny*dx], aspect="auto")
 ax2.set_title("DEFAULT mmi1x2_with_sbend seed (0.5 um strip)")
 ax3.imshow(eps_fin.cpu().numpy().T, origin="lower", cmap="viridis",

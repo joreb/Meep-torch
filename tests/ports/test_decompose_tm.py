@@ -16,7 +16,7 @@ FREQS = [0.13, 0.15, 0.17]
 
 def _run_straight():
     grid = Grid(nx=160, ny=80, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:, 35:45] = 12.0
     coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=10)
     port = Port(axis="x", index=30, lo=20, hi=60, direction=+1)

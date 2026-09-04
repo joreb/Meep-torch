@@ -11,8 +11,8 @@ G = Grid(nx=16, ny=16, dx=0.05)
 
 
 def _blob():
-    x = torch.arange(16, dtype=torch.float64)[:, None]
-    y = torch.arange(16, dtype=torch.float64)[None, :]
+    x = torch.arange(16, dtype=torch.float64, device=G.device)[:, None]
+    y = torch.arange(16, dtype=torch.float64, device=G.device)[None, :]
     return torch.exp(-((x - 8.0) ** 2 + (y - 8.0) ** 2) / 4.0)
 
 
@@ -29,26 +29,26 @@ def _loss_for(eps=None, chi3=None, pole_mask=None, n_steps=10, checkpoint_every=
 def test_gradcheck_eps():
     def f(eps):
         return _loss_for(eps=eps)
-    eps0 = torch.full((16, 16), 2.0, dtype=torch.float64, requires_grad=True)
+    eps0 = torch.full((16, 16), 2.0, dtype=torch.float64, device=G.device, requires_grad=True)
     assert torch.autograd.gradcheck(f, (eps0,), eps=1e-6, atol=1e-4)
 
 
 def test_gradcheck_chi3():
     def f(chi3):
         return _loss_for(eps=2.0, chi3=chi3)
-    x0 = torch.full((16, 16), 0.05, dtype=torch.float64, requires_grad=True)
+    x0 = torch.full((16, 16), 0.05, dtype=torch.float64, device=G.device, requires_grad=True)
     assert torch.autograd.gradcheck(f, (x0,), eps=1e-6, atol=1e-4)
 
 
 def test_gradcheck_pole_mask():
     def f(mask):
         return _loss_for(eps=2.0, pole_mask=mask)
-    m0 = torch.full((16, 16), 0.5, dtype=torch.float64, requires_grad=True)
+    m0 = torch.full((16, 16), 0.5, dtype=torch.float64, device=G.device, requires_grad=True)
     assert torch.autograd.gradcheck(f, (m0,), eps=1e-6, atol=1e-4)
 
 
 def test_gradcheck_uncheckpointed_matches():
-    eps0 = torch.full((16, 16), 2.0, dtype=torch.float64, requires_grad=True)
+    eps0 = torch.full((16, 16), 2.0, dtype=torch.float64, device=G.device, requires_grad=True)
     l1 = _loss_for(eps=eps0, checkpoint_every=0)
     (g1,) = torch.autograd.grad(l1, eps0)
     l2 = _loss_for(eps=eps0, checkpoint_every=3)

@@ -17,8 +17,8 @@ def test_vertical_interface_normal_points_x():
     c = coverage(p, G)
     n = normals(c)
     band = n[15, 5:25]
-    assert torch.allclose(band[:, 0], torch.ones(20, dtype=torch.float64), atol=1e-6)
-    assert torch.allclose(band[:, 1], torch.zeros(20, dtype=torch.float64), atol=1e-6)
+    assert torch.allclose(band[:, 0], torch.ones(20, dtype=torch.float64, device=G.device), atol=1e-6)
+    assert torch.allclose(band[:, 1], torch.zeros(20, dtype=torch.float64, device=G.device), atol=1e-6)
     assert torch.all(n[5, :, :] == 0)  # interior cell: no normal
 
 

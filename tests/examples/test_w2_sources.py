@@ -32,7 +32,7 @@ def test_line_source_amp_func_spatial_profile():
     g = Grid(nx=40, ny=30, dx=0.1)
     src = LineSource(g, ix=5, j0=10, j1=20, profile=GaussianPulse(1.0, 0.2),
                      amp_func=lambda y: math.exp(-((y - 1.55) ** 2) / 0.02))
-    m = src.mask[5, 10:20].numpy()
+    m = src.mask[5, 10:20].cpu().numpy()
     assert int(np.argmax(m)) == 5              # j=15 -> y=1.55 (gaussian center)
     assert abs(m.max() - 1.0) < 1e-6 and m.min() < 0.01
 
@@ -42,7 +42,7 @@ def test_soft_source_area_launches_field():
     mask = g.zeros(g.nx, g.ny)
     mask[10, 15:25] = 1.0
     src = SoftSource(g, mask, GaussianPulse(0.5, 0.2))
-    c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64), npml=8)
+    c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device), npml=8)
     st = init_tm_state(g)
     st, _ = run_tm(st, c, 200, source=src, monitors=())
     assert float(st.Ez.abs().max()) > 1e-6
@@ -55,13 +55,13 @@ def test_oblique_line_source_launch_angle():
     npml = 20
     src = ObliqueLineSource(g, ix=npml + 5, j0=npml, j1=g.ny - npml,
                             profile=GaussianPulse(fcen, 0.1), theta=theta, fcen=fcen)
-    c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64), npml=npml)
+    c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device), npml=npml)
     st = init_tm_state(g)
     n_steps = int(round(60.0 / g.dt))            # let the pulse propagate +x
     st, _ = run_tm(st, c, n_steps, source=src, monitors=())
     # k_y from FFT of Ez(y) at a downstream column
     col = g.nx - npml - 30
-    Ez_y = st.Ez[col, npml:g.ny - npml].numpy()
+    Ez_y = st.Ez[col, npml:g.ny - npml].cpu().numpy()
     if Ez_y.std() < 1e-8:                         # pulse not reached -> skip angle check
         assert False, "oblique pulse did not reach the downstream column"
     spec = np.abs(np.fft.rfft(Ez_y - Ez_y.mean(), n=8192))

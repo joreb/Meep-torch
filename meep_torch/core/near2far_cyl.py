@@ -31,7 +31,7 @@ def run_bor_dft(state, c, n_steps, *, src, src_profile, freqs):
             F = getattr(state, comp)
             off = 1.0 if comp.startswith("E") else 0.5
             ph = np.exp(-2j * np.pi * freqs * (t + off) * c.dt) * c.dt
-            contrib = F.numpy()[None, ...] * ph.reshape((-1,) + (1,) * F.dim())
+            contrib = F.cpu().numpy()[None, ...] * ph.reshape((-1,) + (1,) * F.dim())
             acc[comp] = contrib if acc[comp] is None else acc[comp] + contrib
     return state, acc
 

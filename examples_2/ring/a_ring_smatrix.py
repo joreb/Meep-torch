@@ -110,7 +110,7 @@ ny_h = j_center + PAD_TOP
 nx_h = grid_f.nx
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 grid = Grid(nx=nx_h, ny=ny_h, dx=dx, device=DEV)
-eps = torch.full((nx_h, ny_h), N_CLAD ** 2, dtype=grid.dtype)
+eps = torch.full((nx_h, ny_h), N_CLAD ** 2, dtype=grid.dtype, device=grid.device)
 eps[:, :j_center] = eps_f[:, :j_center]
 eps[:, j_center:] = eps[:, j_center - 1: j_center]   # extend guides straight up
 eps = eps.to(DEV)
@@ -192,13 +192,13 @@ def run_ports(src_port, mons_ports):
 # run 1: bus-driven
 r1 = run_ports(p_in, [p_in, p_thru, p_arcR])
 a_in = r1[0][0][:, 0]
-t = (r1[1][0][:, 0] / a_in).numpy()                  # through (+x out)
-kap = (r1[2][0][:, 0] / a_in).numpy()                # into ring, +y out at R
+t = (r1[1][0][:, 0] / a_in).cpu().numpy()                  # through (+x out)
+kap = (r1[2][0][:, 0] / a_in).cpu().numpy()                # into ring, +y out at R
 
 # run 2: arc-driven (down the right side, through coupler, up the left)
 r2 = run_ports(p_arcR, [p_arcR, p_arcL])
 a_inR = r2[0][1][:, 0]                               # -y incident (a_minus)
-A = (r2[1][0][:, 0] / a_inR).numpy()                 # +y outgoing at L
+A = (r2[1][0][:, 0] / a_inR).cpu().numpy()                 # +y outgoing at L
 # magnitude-only normalization: dividing by complex t would strip the
 # BUS propagation phase (a path A never traveled) -- that error tripled
 # the apparent FSR. A's own phase IS the half-loop propagation phase.

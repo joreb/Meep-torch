@@ -22,7 +22,7 @@ def test_standing_wave_area_dft():
     grid = Grid(nx=16, ny=12, dx=0.1)
     f0, f1 = 0.8, 1.6
     mon = DFTFieldsMonitor(grid, [f0, f1], component="Ez")
-    P = torch.rand(16, 12, dtype=grid.dtype)
+    P = torch.rand(16, 12, dtype=grid.dtype, device=grid.device)
     T = 100.0                                   # integer periods of f0 and f1
     n_steps = int(round(T / grid.dt))
     acc = torch.zeros_like(mon.sample(_FakeState(P), 0))

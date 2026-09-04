@@ -29,7 +29,7 @@ KX = math.sqrt(max(0.0, K0 * K0 - KY * KY))
 
 def test_bloch_planewave_angle():
     g = Grid(nx=NX, ny=NY, dx=DX)
-    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64),
+    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device),
                              npml=NPML, y_pmc=True)
     st = init_bloch_tm_state(g)
     ix = NPML + 5
@@ -46,11 +46,11 @@ def test_bloch_planewave_angle():
         st = step_bloch_tm(st, coeffs, KY, src_c=src_c, src_s=src_s, src_mask=mask)
 
     # physical E = (Ez_c + i Ez_s) * exp(i k_y y); FFT2 over (x, y), interior away from PML
-    y = (torch.arange(NY, dtype=torch.float64) + 0.5) * DX
+    y = (torch.arange(NY, dtype=torch.float64, device=g.device) + 0.5) * DX
     phase = torch.exp(1j * KY * y)
     x0, x1 = NPML + 40, NX - NPML - 10
-    Ec = st.Ez_c[x0:x1, :].numpy(); Es = st.Ez_s[x0:x1, :].numpy()
-    Ephys = (Ec + 1j * Es) * phase.numpy()[None, :]
+    Ec = st.Ez_c[x0:x1, :].cpu().numpy(); Es = st.Ez_s[x0:x1, :].cpu().numpy()
+    Ephys = (Ec + 1j * Es) * phase.cpu().numpy()[None, :]
     # 2D FFT (x real, y real -> use full fft for angle, zero-padded)
     nf = 4096
     spec = np.abs(np.fft.fft2(Ephys, s=(nf, nf)))
@@ -81,7 +81,7 @@ def test_bloch_ky_zero_decouples_quadratures():
     # k_y=0: the i k_y coupling vanishes -> the c and s quadratures evolve
     # independently under a periodic-y TM stepper. A c-only source leaves s=0.
     g = Grid(nx=NX, ny=NY, dx=DX)
-    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64),
+    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device),
                              npml=NPML, y_pmc=True)
     st = init_bloch_tm_state(g)
     ix = NPML + 5
@@ -99,7 +99,7 @@ def test_bloch_energy_conservation():
     # and check total EM energy drift < 1e-6 over 1000 steps. Catches a
     # quadrature-coupling sign asymmetry (artificial gain/loss).
     g = Grid(nx=NX, ny=NY, dx=DX)
-    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64),
+    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device),
                              npml=NPML, y_pmc=True)
     st = init_bloch_tm_state(g)
     ix = NPML + 5
@@ -121,7 +121,7 @@ def test_bloch_energy_conservation():
 
 def test_bloch_cfl_violation_raises():
     g = Grid(nx=20, ny=20, dx=0.1)
-    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64),
+    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device),
                              npml=4, y_pmc=True)
     st = init_bloch_tm_state(g)
     bad_ky = 2.0 / g.dt                         # exceeds 1/dt bound

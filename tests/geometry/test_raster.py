@@ -27,8 +27,11 @@ def supersample(poly, grid, S=32):
     inside = Path(poly.vertices).contains_points(
         np.stack([X.ravel(), Y.ravel()], 1)
     ).reshape(grid.nx * S, grid.ny * S)
+    # coverage() returns on the grid's device, and these are compared
+    # element-wise, so the oracle has to land there too.
     return torch.tensor(
-        inside.reshape(grid.nx, S, grid.ny, S).mean(axis=(1, 3)), dtype=torch.float64
+        inside.reshape(grid.nx, S, grid.ny, S).mean(axis=(1, 3)),
+        dtype=torch.float64, device=grid.device
     )
 
 

@@ -1,9 +1,33 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
 import math
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 
 import torch
+
+
+def default_device() -> str:
+    """Device every engine grid lands on unless told otherwise.
+
+    ``MEEP_TORCH_DEVICE`` decides; absent it, CPU.
+
+    The GPU is worth having -- 409.9 ms/step against 1.07 ms/step on the TM
+    stepper at 400x400 float64 (RTX A4000, a 382x difference) -- but it is
+    not the *default*, deliberately. Auto-selecting CUDA whenever the machine
+    has it makes a script's behaviour depend on which machine ran it, and
+    silently breaks any caller that builds its own tensors next to a Grid,
+    since those land on the CPU and meet CUDA state one frame later. Opting
+    in costs one line; opting out of a surprise costs an evening of
+    "Expected all tensors to be on the same device".
+
+    So: export MEEP_TORCH_DEVICE=cuda once for a machine-wide switch, or pass
+    ``device=`` explicitly (``Simulation(device=...)``, ``Grid(device=...)``).
+
+    Resolved per Grid construction rather than cached, so a test can set the
+    environment variable and build a Grid without a module reload.
+    """
+    return os.environ.get("MEEP_TORCH_DEVICE", "cpu")
 
 
 @dataclass(frozen=True)
@@ -13,7 +37,7 @@ class Grid:
     dx: float
     courant: float = 0.5
     dtype: torch.dtype = torch.float64  # Phase 1 default: correctness-first (spec amended); float32 opt-in, validated at scale in tests/autodiff/test_float32.py
-    device: str = "cpu"
+    device: str = field(default_factory=default_device)
 
     def __post_init__(self):
         if self.nx < 3:

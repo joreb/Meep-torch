@@ -40,7 +40,7 @@ def test_noise_spectrum_matches_transfer():
                          source=src, monitors=[probe])
     t = np.arange(n_steps) * grid.dt
     src_amp = np.array([pulse.amplitude((i + 0.5) * grid.dt) for i in range(n_steps)])
-    G = _spectrum(s_det.detach().numpy(), grid.dt, BAND) / _spectrum(src_amp, grid.dt, BAND)
+    G = _spectrum(s_det.detach().cpu().numpy(), grid.dt, BAND) / _spectrum(src_amp, grid.dt, BAND)
 
     # noise-driven: average |E(f)|^2 over seeds; white drive -> proportional
     # to |G(f)|^2, so the ratio must be band-flat
@@ -50,7 +50,7 @@ def test_noise_spectrum_matches_transfer():
         rnd = RandomSource(grid, ix=60, j0=78, j1=82, seed=seed)
         _, (s,) = run_tm(init_tm_state(grid), coeffs, n_steps,
                          source=rnd, monitors=[probe])
-        acc += _spectrum(s.detach().numpy(), grid.dt, BAND) ** 2
+        acc += _spectrum(s.detach().cpu().numpy(), grid.dt, BAND) ** 2
     ratio = (acc / n_seeds) / G ** 2
     ratio_db = 10 * np.log10(ratio / ratio.mean())
     assert np.abs(ratio_db).max() <= 3.0, f"flatness {ratio_db} dB"

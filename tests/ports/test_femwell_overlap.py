@@ -103,7 +103,7 @@ def test_femwell_neff_and_overlap():
     E_fem = torch.zeros(n_cmp, N_NODES, dtype=torch.float64)
     H_fem = torch.zeros(n_cmp, N_NODES, dtype=torch.float64)
     for mi, m in enumerate(fem_modes[:n_cmp][::-1]):  # match descending order
-        ez_y = _extract_ez_along_y(m, basis0, y_nodes.numpy())
+        ez_y = _extract_ez_along_y(m, basis0, y_nodes.cpu().numpy())
         ez = torch.tensor(ez_y, dtype=torch.float64)
         ez = ez / ez.abs().max()  # normalize shape (sign/amp fixed below)
         E_fem[mi] = ez

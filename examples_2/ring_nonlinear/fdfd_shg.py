@@ -116,7 +116,7 @@ def a_of_x(Es):
 xs = np.arange(nx) * dx
 i0 = p_in.index + int(1.0 * RES)                    # start past the source
 i1 = nx - NPML - int(1.0 * RES)
-P_unp = (a_of_x(Es_unp).abs() ** 2).numpy()
+P_unp = (a_of_x(Es_unp).abs() ** 2).cpu().numpy()
 
 # %% [markdown]
 # ## Self-calibrated poling
@@ -145,7 +145,7 @@ period = float(np.mean(np.diff(pk)) * dx) if len(pk) >= 3 else float("nan")
 dk_grid = 2 * math.pi / period
 poling = torch.sign(torch.cos(dk_grid * x_um))[:, None]
 Es_pol = sh_solve(poling)
-P_pol = (a_of_x(Es_pol).abs() ** 2).numpy()
+P_pol = (a_of_x(Es_pol).abs() ** 2).cpu().numpy()
 
 # %% [markdown]
 # ## Gates and plot
@@ -168,7 +168,7 @@ assert g2 > 50, f"QPM gain too small: {g2}"
 assert abs(period - LAM) / LAM < 0.15, f"beat period {period} vs {LAM}"
 
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 6), sharex=True)
-ax1.imshow(np.abs(Es_pol.numpy()).T, origin="lower", cmap="inferno",
+ax1.imshow(np.abs(Es_pol.cpu().numpy()).T, origin="lower", cmap="inferno",
            extent=[0, nx * dx, 0, ny * dx], aspect="auto")
 ax1.set_title(f"|E(2f0)| QPM-poled (Lambda={LAM:.2f} um)")
 ax2.semilogy(xs[i0:i1], P_pol[i0:i1], label="poled (QPM)")

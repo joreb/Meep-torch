@@ -8,8 +8,8 @@ from meep_torch.core.stepper_tm import init_tm_state, step_tm
 
 
 def gaussian_blob(g, x0, y0, w):
-    x = torch.arange(g.nx, dtype=g.dtype)[:, None]
-    y = torch.arange(g.ny, dtype=g.dtype)[None, :]
+    x = torch.arange(g.nx, dtype=g.dtype, device=g.device)[:, None]
+    y = torch.arange(g.ny, dtype=g.dtype, device=g.device)[None, :]
     return torch.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * w**2))
 
 
@@ -53,8 +53,8 @@ def test_energy_conserved_in_pec_box():
         if i % 50 == 0:
             invariants.append(yee_invariant(s_prev, s, m, g.dx))
             energies.append(total_energy(s, m, g.dx))
-    u = torch.tensor(invariants, dtype=torch.float64)
-    e = torch.tensor(energies, dtype=torch.float64)
+    u = torch.tensor(invariants, dtype=torch.float64, device=g.device)
+    e = torch.tensor(energies, dtype=torch.float64, device=g.device)
     # exact discrete invariant: conserved to float64 machine level (measured ~5e-16)
     assert (u.max() - u.min()) / u.mean() < 1e-12
     # naive staggered metric: intrinsic ~3% oscillation, no gross gain/loss

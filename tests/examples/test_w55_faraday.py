@@ -72,8 +72,8 @@ def test_faraday_profiles_vs_oracle():
     for t in range(int(round(ref["tmax"] / grid.dt))):
         amp = -math.cos(2 * math.pi * ref["fsrc"] * (t + 0.5) * grid.dt)
         state = step_1d(state, coeffs, amp, src_ix)
-    got_y = state.Ey.numpy()                     # meep Ex -> our Ey
-    got_z = state.Ez.numpy()                     # meep Ey -> our Ez
+    got_y = state.Ey.cpu().numpy()                     # meep Ex -> our Ey
+    got_z = state.Ez.cpu().numpy()                     # meep Ey -> our Ez
     ref_x = np.array(ref["ex"])
     ref_y = np.array(ref["ey"])
     n_ours = max(abs(got_y).max(), abs(got_z).max())

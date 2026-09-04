@@ -26,7 +26,7 @@ def _vacuum_ldos(ix, iy):
     _, (e,) = run_tm(init_tm_state(grid), coeffs, n_steps,
                      source=src, monitors=[PointProbe(ix, iy)])
     j = np.array([pulse.amplitude((t + 0.5) * grid.dt) for t in range(n_steps)])
-    return ldos_spectrum(e.detach().numpy(), j, grid.dt, BAND)
+    return ldos_spectrum(e.detach().cpu().numpy(), j, grid.dt, BAND)
 
 
 def test_vacuum_ldos_linear_in_f_and_translation_invariant():
@@ -75,7 +75,7 @@ def test_metal_cavity_ldos():
     n1 = sim.dft_ldos(fcen, 0.2, 3)             # reuse: records center Ez series
     sim.run(until=400)
     acc, _, _ = sim._last_acc[n1.name]          # dft_ldos returns a DftLdos object
-    series = acc.detach().numpy()
+    series = acc.detach().cpu().numpy()
     tail = series[int(round(60.0 / sim.grid.dt)):]
     modes = [m for m in harminv(tail, sim.grid.dt, 0.55, 0.8) if m.amp > 1e-6]
     m0 = max(modes, key=lambda m: m.amp)

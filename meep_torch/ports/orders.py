@@ -27,7 +27,7 @@ class BlochDFTLine:
         self.acc = np.zeros(grid.ny, dtype=np.complex128)
 
     def sample(self, state, t_idx: int):
-        e = (state.Ez_c[self.ix, :] + 1j * state.Ez_s[self.ix, :]).numpy()
+        e = (state.Ez_c[self.ix, :] + 1j * state.Ez_s[self.ix, :]).cpu().numpy()
         self.acc += e * np.exp(1j * self.w0 * (t_idx + 0.5) * self.dt)
 
 

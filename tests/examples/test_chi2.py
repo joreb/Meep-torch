@@ -39,8 +39,8 @@ def _cw_profile(amp):
 
 
 def _run(A, chi2_val):
-    eps = torch.ones(NX, NY, dtype=GRID.dtype)
-    chi2 = torch.zeros(NX, NY, dtype=GRID.dtype)
+    eps = torch.ones(NX, NY, dtype=GRID.dtype, device=GRID.device)
+    chi2 = torch.zeros(NX, NY, dtype=GRID.dtype, device=GRID.device)
     chi2[SLAB0:SLAB1, :] = chi2_val
     coeffs = build_tm_coeffs(GRID, eps_inf=eps, chi2=chi2, npml=NPML, y_pmc=True)
     mask = GRID.zeros(NX, NY)
@@ -49,7 +49,7 @@ def _run(A, chi2_val):
     n_steps = int(round(T_END / GRID.dt))
     _, (series,) = run_tm(init_tm_state(GRID, y_pmc=True), coeffs, n_steps,
                           source=src, monitors=[PointProbe(PROBE_IX, 1)])
-    return series.detach().numpy()
+    return series.detach().cpu().numpy()
 
 
 def _p2f0(series):
@@ -63,7 +63,7 @@ def _p2f0(series):
 
 def test_chi2_zero_bit_parity():
     """Gate (i): chi2=0 fixed-point loop is bit-identical to the fast path."""
-    eps = torch.ones(NX, NY, dtype=GRID.dtype)
+    eps = torch.ones(NX, NY, dtype=GRID.dtype, device=GRID.device)
     coeffs_lin = build_tm_coeffs(GRID, eps_inf=eps, npml=NPML, y_pmc=True)
     coeffs_chi2 = build_tm_coeffs(GRID, eps_inf=eps, chi2=0.0, npml=NPML,
                                   y_pmc=True)

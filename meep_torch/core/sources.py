@@ -126,7 +126,8 @@ class ObliqueLineSource:
     def amplitude(self, t_idx: int) -> float:
         t = (t_idx + 0.5) * self.dt
         env = self.profile.amplitude(t)
-        ys = (torch.arange(self.j0, self.j1, dtype=torch.float64) + 0.5) * self.grid.dx
+        ys = (torch.arange(self.j0, self.j1, dtype=torch.float64,
+                           device=self.grid.device) + 0.5) * self.grid.dx
         wave = torch.cos(self.ky * ys - self.omega * t) * env
         m = self.grid.zeros(self.grid.nx, self.grid.ny)
         m[self.ix, self.j0:self.j1] = wave.to(m.dtype)

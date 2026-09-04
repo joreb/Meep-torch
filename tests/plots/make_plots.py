@@ -38,7 +38,7 @@ def _field_ax(ax, eps, Ez, title):
 
 def straight_waveguide():
     grid = Grid(nx=160, ny=80, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:, 35:45] = 12.0
     coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=10)
     src = LineSource(grid, ix=20, j0=35, j1=45, profile=CWRamp(FCEN, t_ramp=50.0))
@@ -55,7 +55,7 @@ def straight_waveguide():
 
 def eigenmode_source():
     grid = Grid(nx=160, ny=80, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:, 35:45] = 12.0
     coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=10)
     port = Port(axis="x", index=60, lo=20, hi=60, direction=+1)
@@ -77,7 +77,7 @@ def eigenmode_source():
 def bend_flux():
     # 16x16 um cell, 1 um guide eps=12: horizontal arm -> 90 deg bend -> vertical arm
     grid = Grid(nx=160, ny=160, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:110, 60:70] = 12.0     # horizontal arm
     eps[100:110, 60:] = 12.0    # vertical arm
     ports = [
@@ -87,8 +87,8 @@ def bend_flux():
     freqs = [0.10 + 0.01 * i for i in range(11)]
     sm = compute_smatrix(eps, grid, ports, pol="tm", fcen=FCEN, fwidth=FWIDTH,
                          freqs=freqs, n_steps=6000, npml=10)
-    T = (sm.s[:, 1, 0].abs() ** 2).numpy()
-    R = (sm.s[:, 0, 0].abs() ** 2).numpy()
+    T = (sm.s[:, 1, 0].abs() ** 2).cpu().numpy()
+    R = (sm.s[:, 0, 0].abs() ** 2).cpu().numpy()
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(freqs, T, "o-", color="#1f77b4", label="T = |S21|^2")
     ax.plot(freqs, R, "s-", color="#d62728", label="R = |S11|^2")

@@ -122,7 +122,7 @@ def test_refl_quartz():
         c = build_tm_coeffs(g, eps_inf=eps_inf, poles=poles, pole_masks=masks, npml=npml, y_pmc=True)
         st = init_tm_state(g, n_poles=len(poles))
         st, (acc,) = run_tm(st, c, int(round(80 / g.dt)), source=src, monitors=[mon])
-        return mon.flux(acc, g.dx).numpy()
+        return mon.flux(acc, g.dx).cpu().numpy()
     empty = raw_run(1.0)
     slab = Polygon(np.array([[6.0, 0.0], [11.0, 0.0], [11.0, g.ny * g.dx], [6.0, g.ny * g.dx]]))
     rm = rasterize_scene([(slab, SiO2)], g, background=1.0)
@@ -156,7 +156,7 @@ def test_gaussian_beam():
     y = torch.tensor([-0.5 * s + (j + 0.5) * g.dx for j in range(g.ny)])
     src.mask = g.zeros(g.nx, g.ny)
     src.mask[ix_src, :] = torch.exp(-(y ** 2) / (w0 ** 2))
-    c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64), npml=npml)
+    c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device), npml=npml)
     st = init_tm_state(g)
     for t in range(1000):
         st = step_tm(st, c, src.amplitude(t), src.mask)

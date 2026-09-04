@@ -59,7 +59,7 @@ def test_optimization_problem_gradient_and_ascent():
                            monitors=[mon], checkpoint_every=100)
         return mon.flux(acc, dx)[0]
 
-    base = torch.ones(nx, ny, dtype=torch.float64)
+    base = torch.ones(nx, ny, dtype=torch.float64, device=grid.device)
     opt = OptimizationProblem(run_fn, base, region,
                               filter_radius=0.2, dx=dx, beta=4.0)
     f0, g = opt()
@@ -111,7 +111,7 @@ def test_robust_minimax_gradient_and_worstcase_ascent():
                            monitors=[mon], checkpoint_every=100)
         return mon.flux(acc, dx)[0]
 
-    base = torch.ones(nx, ny, dtype=torch.float64)
+    base = torch.ones(nx, ny, dtype=torch.float64, device=grid.device)
     opt = RobustOptimizationProblem(run_fn, base, region,
                                     etas=(0.4, 0.5, 0.6),
                                     filter_radius=0.2, dx=dx, beta=6.0)

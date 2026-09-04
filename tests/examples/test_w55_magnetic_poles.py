@@ -50,7 +50,7 @@ def _run(with_slab):
     n_steps = int(round(80.0 / grid.dt))
     state0 = init_tm_state(grid, y_pmc=True, n_mpoles=1 if with_slab else 0)
     _, (st, sr) = run_tm(state0, coeffs, n_steps, source=src, monitors=probes)
-    return st.detach().numpy(), sr.detach().numpy(), grid.dt
+    return st.detach().cpu().numpy(), sr.detach().cpu().numpy(), grid.dt
 
 
 def _dft(s, dt, f):

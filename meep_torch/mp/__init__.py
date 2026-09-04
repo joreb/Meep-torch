@@ -11,6 +11,7 @@ get_array, run(until=). No Harminv/symmetries/oblique/near2far (later waves).
 import math
 
 from .coords import GridSpec, cell_index, grid_spec, pml_npml, rect_corners, to_corner
+from .cyl_shim import CYLINDRICAL, Ep, Er, Hp, Hr
 from .geometry import Block, Cylinder, Prism, build_scene_items
 from .material import (ALL, Absorber, DrudeSusceptibility, FreqRange,
                        GyrotropicDrudeSusceptibility,

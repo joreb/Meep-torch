@@ -75,7 +75,7 @@ def _run_a(pole_mask_on):
     _, (series,) = run_tm(init_tm_state(GRID_A, n_poles=n_poles, y_pmc=True),
                           coeffs, n_steps, source=src,
                           monitors=[PointProbe(PROBE_IX_A, 1)])
-    return series.detach().numpy()
+    return series.detach().cpu().numpy()
 
 
 def _drude_R_analytic(f0, d, fn=0.0, gamma=0.03, sigma=0.6, fp=0.4, eps_inf=1.0):

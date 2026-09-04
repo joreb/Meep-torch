@@ -29,4 +29,4 @@ def test_rasterized_waveguide_flux_conserved():
     _, (a, b) = run_tm(s, m, 9000, source=src, monitors=[monA, monB])
     fA, fB = monA.flux(a, g.dx), monB.flux(b, g.dx)
     assert torch.all(fA > 0)
-    assert torch.allclose(fB / fA, torch.ones(3, dtype=torch.float64), atol=0.01)
+    assert torch.allclose(fB / fA, torch.ones(3, dtype=torch.float64, device=g.device), atol=0.01)

@@ -181,7 +181,7 @@ def bloch_diffraction_orders(state: BlochTMState, ix: int, ky: float, G: float,
     (m=0 vacuum) flux: |a_m|^2 * (k_x_m / k_x0). Returns (orders, powers) where
     powers[m+n_modes] is the (real) order power (0 for evanescent orders).
     """
-    e = (state.Ez_c[ix, :] + 1j * state.Ez_s[ix, :]).numpy()
+    e = (state.Ez_c[ix, :] + 1j * state.Ez_s[ix, :]).cpu().numpy()
     ny = e.shape[0]
     # Fourier harmonics of the periodic envelope: a_m = (1/ny) sum_j e_j exp(-i m G y_j)
     ys = (np.arange(ny) + 0.5) * dy

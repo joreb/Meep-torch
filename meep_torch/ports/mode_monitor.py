@@ -29,13 +29,18 @@ def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,
               n_modes: int, axis_sign: float = -1.0, bc: str = "pec"):
     Ec, Hc = dft_fields(acc)
     nf = len(freqs)
-    a_p = torch.zeros(nf, n_modes, dtype=torch.complex128)
-    a_m = torch.zeros(nf, n_modes, dtype=torch.complex128)
+    # The mode solve is a scipy eigenproblem, so solve_1d hands back CPU
+    # profiles whatever device it was given, while the DFT accumulators live
+    # on the engine device. Overlap them without moving one side and torch
+    # raises "Expected all tensors to be on the same device".
+    dev = Ec.device
+    a_p = torch.zeros(nf, n_modes, dtype=torch.complex128, device=dev)
+    a_m = torch.zeros(nf, n_modes, dtype=torch.complex128, device=dev)
     eps_line = eps_line.detach()
     for i, f in enumerate(freqs):
         modes = solve_1d(eps_line, dx, f, pol, k=n_modes, bc=bc)
         for m in range(n_modes):
-            prof = modes.profiles[m]
+            prof = modes.profiles[m].to(dev)
             neff = float(modes.neff[m])
             if pol == "tm":
                 Em = prof
@@ -44,7 +49,7 @@ def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,
                 # stored Hz is NOT sign-flipped vs the mode (unlike TM's Hy), so
                 # Hm = +prof; axis_sign is unused here.
                 Hm = prof
-                Em = neff * prof / eps_line.to(prof.dtype)
+                Em = neff * prof / eps_line.to(dtype=prof.dtype, device=dev)
             N = float((Em * Hm).sum()) * dx
             if abs(N) < _NORM_FLOOR:
                 raise ValueError(f"degenerate/leaky mode {m} at f={f}: norm {N:.3e}")
@@ -111,17 +116,18 @@ def decompose_3d(mon, acc, eps_cs, dx, n_modes: int = 1,
             f"({h0 - l0}, {h1 - l1}) window derived from mon and eps_cs")
     sub = np.real(eps_np[l0:h0 + 1, l1:h1 + 1]).astype(np.float64)
     nf = len(freqs)
-    a_p = torch.zeros(nf, n_modes, dtype=torch.complex128)
-    a_m = torch.zeros(nf, n_modes, dtype=torch.complex128)
+    dev = Ea.device                       # solve_2d is scipy: CPU profiles
+    a_p = torch.zeros(nf, n_modes, dtype=torch.complex128, device=dev)
+    a_m = torch.zeros(nf, n_modes, dtype=torch.complex128, device=dev)
     dS = dx * dx
     for i, f in enumerate(freqs):
         modes = solve_2d(sub, dx, f, k=n_modes, target_neff=target_neff)
         for m in range(n_modes):
             sl = (slice(0, h0 - l0), slice(0, h1 - l1), m)
-            Em_a = modes.Ex[sl]           # lab Ey on the (j+1/2, k) sublattice
-            Em_b = modes.Ey[sl]           # lab Ez on the (j, k+1/2) sublattice
-            Hm_b = modes.Hx[sl] * ETA_0   # lab Hy, rescaled to FDTD units
-            Hm_a = modes.Hy[sl] * ETA_0   # lab Hz
+            Em_a = modes.Ex[sl].to(dev)   # lab Ey on the (j+1/2, k) sublattice
+            Em_b = modes.Ey[sl].to(dev)   # lab Ez on the (j, k+1/2) sublattice
+            Hm_b = modes.Hx[sl].to(dev) * ETA_0  # lab Hy, in FDTD units
+            Hm_a = modes.Hy[sl].to(dev) * ETA_0  # lab Hz
             N = complex((Em_a * Hm_a - Em_b * Hm_b).sum()) * dS
             if abs(N) < _NORM_FLOOR:
                 raise ValueError(f"degenerate/leaky mode {m} at f={f}: norm {abs(N):.3e}")

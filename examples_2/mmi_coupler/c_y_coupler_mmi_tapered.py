@@ -159,10 +159,10 @@ print(f"c_y_coupler_mmi_tapered  |S21|^2={T_up*100:.1f}% |S31|^2={T_dn*100:.1f}%
 
 # %%
 acc_ez = accs[3].cpu()
-ez = np.abs((acc_ez[0, 0] + 1j * acc_ez[0, 1]).numpy())
-core = (eps_c > 0.5 * (float(eps_c.min()) + float(eps_c.max()))).numpy()
+ez = np.abs((acc_ez[0, 0] + 1j * acc_ez[0, 1]).cpu().numpy())
+core = (eps_c > 0.5 * (float(eps_c.min()) + float(eps_c.max()))).cpu().numpy()
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7))
-ax1.imshow(eps_c.numpy().T, origin="lower", cmap="viridis",
+ax1.imshow(eps_c.cpu().numpy().T, origin="lower", cmap="viridis",
            extent=[0, nx * dx, 0, ny * dx], aspect="auto")
 ax1.set_title("gdsfactory mmi_tapered 1x2 (length_mmi=34, outputs on image positions, 674 nm)")
 ax1.set_ylabel("y [um]")
@@ -264,7 +264,7 @@ with torch.no_grad():
     _, (acc3,) = run_tm(init_tm_state(grid), coeffs3,
                         int(round(T_RUN / grid.dt)), source=src3,
                         monitors=[mon3], checkpoint_every=400)
-ez_o = np.abs(((acc3.cpu())[0, 0] + 1j * (acc3.cpu())[0, 1]).numpy())
+ez_o = np.abs(((acc3.cpu())[0, 0] + 1j * (acc3.cpu())[0, 1]).cpu().numpy())
 Tu, Td = float(abs(su) ** 2), float(abs(sd) ** 2)
 tot_o = Tu + Td
 np.save(OUT / "c_y_coupler_mmi_tapered_rho.npy", rho_f.cpu().numpy())

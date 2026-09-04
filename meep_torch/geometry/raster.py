@@ -62,7 +62,9 @@ def coverage(poly: Polygon, grid: Grid, origin=(0.0, 0.0)) -> torch.Tensor:
     # below the smallest genuine fractional coverage (~dx-scaled, O(0.01)).
     cov[np.isclose(cov, 1.0, atol=1e-9)] = 1.0
     cov[np.isclose(cov, 0.0, atol=1e-9)] = 0.0
-    return torch.tensor(cov, dtype=torch.float64)
+    # coverage feeds the smoothing blends, which combine it with grid-sized
+    # engine tensors, so it has to land where the grid lives.
+    return torch.tensor(cov, dtype=torch.float64, device=grid.device)
 
 
 def normals(cov: torch.Tensor) -> torch.Tensor:

@@ -153,7 +153,7 @@ E_ce = (accs_d[1][0, 0] + 1j * accs_d[1][0, 1]).cpu().squeeze()
 
 # %%
 # lateral beam width at the CE plane (1/e^2 of the y-profile at beam max x)
-I_xy = (E_ce.abs() ** 2).numpy()
+I_xy = (E_ce.abs() ** 2).cpu().numpy()
 ix_pk = int(I_xy.sum(axis=1).argmax())
 prof_y = I_xy[ix_pk]
 above = np.where(prof_y > prof_y.max() / np.e ** 2)[0]

@@ -239,7 +239,7 @@ Tu, Td = float(Tu), float(Td)
 tot = Tu + Td
 il_db = -10 * math.log10(max(tot, 1e-12))
 imb = abs(Tu - Td) / max(tot, 1e-12)
-np.save(OUT / "c_y_coupler_mmi_tapered_fdfd_rho.npy", rho_f.numpy())
+np.save(OUT / "c_y_coupler_mmi_tapered_fdfd_rho.npy", rho_f.cpu().numpy())
 print(f"c_y_coupler_mmi_tapered_fdfd  BEST Tu={Tu*100:.1f}% Td={Td*100:.1f}% "
       f"total={tot*100:.1f}% (IL {il_db:.2f} dB), imbalance {imb*100:.2f}%")
 
@@ -264,13 +264,13 @@ ax1.plot([i_best], [post64[i_best] * 100], "r*", ms=14, label=f"best it{i_best}"
 ax1.set_xlabel("iteration"); ax1.set_ylabel("2 sqrt(Tu Td) [%]")
 ax1.set_title(f"FDFD: total {tot*100:.1f}%, IL {il_db:.2f} dB, imbalance {imb*100:.2f}%")
 ax1.legend(fontsize=7)
-ax2.imshow(eps_base.numpy().T, origin="lower", cmap="viridis",
+ax2.imshow(eps_base.cpu().numpy().T, origin="lower", cmap="viridis",
            extent=[0, nx*dx, 0, ny*dx], aspect="auto")
 ax2.set_title("tuned mmi_tapered seed")
-ax3.imshow(eps_fin.numpy().T, origin="lower", cmap="viridis",
+ax3.imshow(eps_fin.cpu().numpy().T, origin="lower", cmap="viridis",
            extent=[0, nx*dx, 0, ny*dx], aspect="auto")
 ax3.set_title("FDFD-optimized")
-ax4.imshow(Ez_fin.abs().numpy().T, origin="lower", cmap="inferno",
+ax4.imshow(Ez_fin.abs().cpu().numpy().T, origin="lower", cmap="inferno",
            extent=[0, nx*dx, 0, ny*dx], aspect="auto")
 ax4.set_title(r"$|E_z|$ (FDFD steady-state)")
 for ax in (ax3, ax4):

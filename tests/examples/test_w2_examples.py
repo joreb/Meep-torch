@@ -21,13 +21,13 @@ def _oblique_angle(theta_deg, fcen=0.3, dx=0.05):
     npml = 20
     src = ObliqueLineSource(g, ix=npml + 5, j0=npml, j1=g.ny - npml,
                             profile=GaussianPulse(fcen, 0.1), theta=theta, fcen=fcen)
-    c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64), npml=npml)
+    c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device), npml=npml)
     st = init_tm_state(g)
     n_steps = int(round(60.0 / g.dt))
     for t in range(n_steps):
         st = step_tm(st, c, src.amplitude(t), src.mask)
     col = g.nx - npml - 30
-    Ez_y = st.Ez[col, npml:g.ny - npml].numpy()
+    Ez_y = st.Ez[col, npml:g.ny - npml].cpu().numpy()
     spec = np.abs(np.fft.rfft(Ez_y - Ez_y.mean(), n=8192))
     kys = np.fft.rfftfreq(8192, dx) * 2 * math.pi
     k_meas = float(kys[int(spec.argmax())])
@@ -62,7 +62,7 @@ def _bloch_refl_R(theta_deg, n2=2.0, fcen=0.3, dx=0.04):
     omega = k0
 
     def run(diel):
-        eps = torch.ones(g.nx, g.ny, dtype=torch.float64)
+        eps = torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device)
         if diel:
             eps[ix_if:, :] = n2 * n2
         c = build_tm_coeffs(g, eps_inf=eps, npml=npml, y_pmc=True)

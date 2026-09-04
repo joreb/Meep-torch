@@ -38,7 +38,7 @@ freqs = np.linspace(0.105, 0.195, 25)
 # %%
 sim = mp.Simulation(
     cell_size=mp.Vector3(16, 32, 0),
-    resolution=10,
+    resolution=32,
     geometry=[
         mp.Block(size=mp.Vector3(12, 1, mp.inf), center=mp.Vector3(-2, -11.5, 0),
                  material=mp.Medium(epsilon=12)),
@@ -55,7 +55,16 @@ sim = mp.Simulation(
 # %% [markdown]
 # ## Mode monitors and run
 # Input monitor at the source plane measures reflection; output monitor on the
-# vertical arm measures transmission. One 7000-step pulse run covers the sweep.
+# vertical arm measures transmission.
+#
+# The stop is physical time, not a step count: dt = Courant/resolution, so a
+# raw `n_steps` has to be rescaled by hand every time the resolution moves
+# (at resolution 32, n_steps=50000 is t=781 -- about 4x longer than needed).
+# `until_after_sources` counts from when the sources turn off, so it is
+# resolution-independent. 400 is past convergence: R/T are identical to four
+# decimals at 400, 600 and 700 (upstream bend-flux.py uses the adaptive
+# stop_when_fields_decayed, which the S-param path does not accept -- see
+# Simulation.run, step functions are 2D non-eigenmode only).
 
 # %%
 m_in = sim.add_mode_monitor(fcen, freqs[1] - freqs[0], len(freqs),
@@ -63,7 +72,7 @@ m_in = sim.add_mode_monitor(fcen, freqs[1] - freqs[0], len(freqs),
 m_out = sim.add_mode_monitor(fcen, freqs[1] - freqs[0], len(freqs),
                             mp.FluxRegion(center=mp.Vector3(3.5, 12, 0),
                                           size=mp.Vector3(4, 0, 0), direction=-1))
-sim.run(n_steps=7000)
+sim.run(until_after_sources=400)
 R = np.abs(sim.get_eigenmode_coefficients(m_in, [1]).alpha[0, :, 0]) ** 2
 T = np.abs(sim.get_eigenmode_coefficients(m_out, [1]).alpha[0, :, 0]) ** 2
 wl = 1.0 / freqs

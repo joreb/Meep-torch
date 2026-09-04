@@ -237,14 +237,14 @@ results["reopt@n2"] = report("reopt@n2", N_SIN1 - 0.04, s2.neff, Tu, Td)
 Tu, Td, _, _ = setups["n1"].eval_rho(rho_re)
 results["reopt@n1"] = report("reopt-design@n1(xcheck)", N_SIN1,
                              setups["n1"].neff, Tu, Td)
-np.save(OUT / "c_y_splitter_fdfd_rho_reopt_n2.npy", rho_re.numpy())
+np.save(OUT / "c_y_splitter_fdfd_rho_reopt_n2.npy", rho_re.cpu().numpy())
 print(f"re-opt@n2 wall-clock {wall2/60:.1f} min, {len(post64_2)} iterations, "
       f"best it{ibest2}", flush=True)
 
 rho_re3, post64_3, ibest3, wall3 = reopt(s3, "n3")
 Tu, Td, eps_re3, Ez_re3 = s3.eval_rho(rho_re3)
 results["reopt@n3"] = report("reopt@n3", N_SIN1 - 0.10, s3.neff, Tu, Td)
-np.save(OUT / "c_y_splitter_fdfd_rho_reopt_n3.npy", rho_re3.numpy())
+np.save(OUT / "c_y_splitter_fdfd_rho_reopt_n3.npy", rho_re3.cpu().numpy())
 print(f"re-opt@n3 wall-clock {wall3/60:.1f} min, {len(post64_3)} iterations, "
       f"best it{ibest3}", flush=True)
 
@@ -280,10 +280,10 @@ ax2.axhline(results["frozen@n3"]["tot"] * 100, color="#c33", ls="--",
 ax2.set_xlabel("re-opt iteration"); ax2.set_ylabel("2·sqrt(Tu·Td) [%]")
 ax2.set_title("re-optimization seeded from baseline rho")
 ax2.legend(fontsize=7)
-ax3.imshow(np.abs(Ez_deg3.numpy()).T, origin="lower", cmap="inferno",
+ax3.imshow(np.abs(Ez_deg3.cpu().numpy()).T, origin="lower", cmap="inferno",
            extent=[0, nx * dx, 0, ny * dx], aspect="auto")
 ax3.set_title(f"|Ez| frozen design @Δn=-0.10 ({results['frozen@n3']['tot']*100:.1f}%)")
-ax4.imshow(np.abs(Ez_re3.numpy()).T, origin="lower", cmap="inferno",
+ax4.imshow(np.abs(Ez_re3.cpu().numpy()).T, origin="lower", cmap="inferno",
            extent=[0, nx * dx, 0, ny * dx], aspect="auto")
 ax4.set_title(f"|Ez| re-optimized @Δn=-0.10 ({results['reopt@n3']['tot']*100:.1f}%)")
 for ax in (ax3, ax4):

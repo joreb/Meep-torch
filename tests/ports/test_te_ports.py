@@ -14,7 +14,7 @@ FREQS = [0.13, 0.15, 0.17]
 
 def _waveguide():
     grid = Grid(nx=160, ny=80, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:, 35:45] = 12.0
     coeffs = build_te_coeffs(grid, eps_inf=eps, npml=10)
     return grid, coeffs
@@ -51,7 +51,7 @@ def test_te_one_way_launch_20db():
 
 def test_te_straight_guide():
     grid = Grid(nx=200, ny=80, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:, 35:45] = 12.0
     ports = [
         Port(axis="x", index=40, lo=20, hi=59, direction=+1),
@@ -66,7 +66,7 @@ def test_te_straight_guide():
 
 def test_te_y_normal_raises():
     grid = Grid(nx=200, ny=80, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     ports = [Port(axis="y", index=40, lo=20, hi=59, direction=+1)]
     with pytest.raises(NotImplementedError):
         compute_smatrix(eps, grid, ports, pol="te", fcen=FCEN, fwidth=FWIDTH,

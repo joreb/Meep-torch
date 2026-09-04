@@ -19,9 +19,9 @@ NX, NY, DX, NPML = 400, 40, 0.05, 30
 
 def _run(with_interface):
     g = Grid(nx=NX, ny=NY, dx=DX)
-    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(NX, NY, dtype=torch.float64),
+    coeffs = build_tm_coeffs(g, eps_inf=torch.ones(NX, NY, dtype=torch.float64, device=g.device),
                              npml=NPML, y_pmc=True)
-    eps = torch.ones(NX, NY, dtype=torch.float64)
+    eps = torch.ones(NX, NY, dtype=torch.float64, device=g.device)
     if with_interface:
         eps[240:, :] = N2 ** 2                    # half-space x > 12
     eps_x = eps

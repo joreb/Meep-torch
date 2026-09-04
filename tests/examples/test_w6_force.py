@@ -32,9 +32,9 @@ def _run(with_mirror):
     n_steps = int(round(80.0 / grid.dt))
     _, accs = run_tm(init_tm_state(grid, y_pmc=True), coeffs, n_steps,
                      source=src, monitors=mons)
-    planes = {c: (a[:, 0] + 1j * a[:, 1]).detach().numpy()
+    planes = {c: (a[:, 0] + 1j * a[:, 1]).detach().cpu().numpy()
               for c, a in zip(("Ez", "Hx", "Hy"), accs[:3])}
-    return planes, accs[3].detach().numpy(), grid
+    return planes, accs[3].detach().cpu().numpy(), grid
 
 
 def test_radiation_pressure():

@@ -117,12 +117,12 @@ def _source_terms(sim):
             vals = vals * np.array([complex(amp_func(Vector3(c.x, y, 0.0)))
                                     for y in ys])
         mask_c = g.zeros(g.nx, g.ny)
-        mask_c[ix, j0:j1] = torch.tensor(vals.real, dtype=g.dtype,
+        mask_c[ix, j0:j1] = torch.tensor(vals.real, dtype=g.dtype, device=g.device,
                                          device=g.device)
         mask_s = None
         if np.abs(vals.imag).max() > 0.0:
             mask_s = g.zeros(g.nx, g.ny)
-            mask_s[ix, j0:j1] = torch.tensor(vals.imag, dtype=g.dtype,
+            mask_s[ix, j0:j1] = torch.tensor(vals.imag, dtype=g.dtype, device=g.device,
                                              device=g.device)
         terms.append((prof, mask_c, mask_s))
     return terms

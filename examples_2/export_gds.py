@@ -140,5 +140,5 @@ for name, (ddir, px, fr, dx) in DESIGNS.items():
               f"run examples_2/{ddir}/{name}.py first")
         continue
     rho = torch.from_numpy(np.load(npy)).to(torch.float64)
-    r = tanh_projection(conic_filter(rho, fr, dx), 64.0).numpy()
+    r = tanh_projection(conic_filter(rho, fr, dx), 64.0).cpu().numpy()
     design_to_gds((r, (0, r.shape[0] * px, 0, r.shape[1] * px)), name, _out(ddir))

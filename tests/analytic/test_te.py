@@ -21,8 +21,8 @@ def test_te_state_shapes():
 def test_te_tm_vacuum_duality():
     # In vacuum the discrete TE Hz update graph is isomorphic to the TM Ez graph.
     g = Grid(nx=160, ny=160, dx=0.02)
-    x = torch.arange(g.nx, dtype=g.dtype)[:, None]
-    y = torch.arange(g.ny, dtype=g.dtype)[None, :]
+    x = torch.arange(g.nx, dtype=g.dtype, device=g.device)[:, None]
+    y = torch.arange(g.ny, dtype=g.dtype, device=g.device)[None, :]
     G = torch.exp(-((x - 80.0) ** 2 + (y - 80.0) ** 2) / (2 * 5.0**2))
 
     mtm = build_tm_coeffs(g, npml=0)
@@ -47,8 +47,8 @@ def test_te_energy_bounded():
     # gain/loss) of the naive metric.
     g = Grid(nx=100, ny=100, dx=0.02)
     m = build_te_coeffs(g, npml=0)
-    x = torch.arange(g.nx - 1, dtype=g.dtype)[:, None]
-    y = torch.arange(g.ny - 1, dtype=g.dtype)[None, :]
+    x = torch.arange(g.nx - 1, dtype=g.dtype, device=g.device)[:, None]
+    y = torch.arange(g.ny - 1, dtype=g.dtype, device=g.device)[None, :]
     G = torch.exp(-((x - 50.0) ** 2 + (y - 50.0) ** 2) / (2 * 5.0**2))
     s = init_te_state(g)._replace(Hz=G)
 
@@ -72,8 +72,8 @@ def test_te_energy_bounded():
         if i % 50 == 0:
             invariants.append(invariant(s_prev, s))
             energies.append(naive_energy(s))
-    u = torch.tensor(invariants, dtype=torch.float64)
-    e = torch.tensor(energies, dtype=torch.float64)
+    u = torch.tensor(invariants, dtype=torch.float64, device=g.device)
+    e = torch.tensor(energies, dtype=torch.float64, device=g.device)
     assert (u.max() - u.min()) / u.mean() < 1e-12
     assert (e.max() - e.min()) / e.mean() < 5e-2
     assert torch.isfinite(u).all() and torch.isfinite(e).all()

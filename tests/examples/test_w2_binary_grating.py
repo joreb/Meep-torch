@@ -42,7 +42,7 @@ def _run(diel_teeth, n_steps):
     g = Grid(nx=nx, ny=ny, dx=DX, courant=courant)
     npml = int(round(DPML / DX))
     # eps: glass substrate (x in [0, DPML+DSUB]) + optional grating teeth
-    eps = torch.ones(g.nx, g.ny, dtype=torch.float64)
+    eps = torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device)
     sub_x1 = int(round((DPML + DSUB) / DX))
     eps[:sub_x1, :] = NG * NG
     if diel_teeth:

@@ -33,9 +33,9 @@ def _write(sim, tag, datasets):
         for k, v in datasets.items():
             store.setdefault(k, []).append(np.asarray(v))
         datasets = {k: np.stack(v) for k, v in store.items()}
-        base = f"{_prefix(sim)}-{fname}"
+        base = _outdir(sim, f"{_prefix(sim)}-{fname}")
     else:
-        base = f"{_prefix(sim)}-{tag}-{sim.meep_time():09.2f}"
+        base = _outdir(sim, f"{_prefix(sim)}-{tag}-{sim.meep_time():09.2f}")
     out = {}
     for k, v in datasets.items():
         v = np.asarray(v)
@@ -62,7 +62,30 @@ def _write(sim, tag, datasets):
 
 
 def _prefix(sim):
-    return getattr(sim, "filename_prefix", None) or "meep_torch"
+    """meep's filename prefix: filename_prefix, else the script name.
+
+    This used to return a literal "meep_torch", so output files were named
+    nothing like meep's -- the ring tutorial writes ring-ez-*.h5, not
+    meep_torch-ez-*.h5, and a tutorial that reads its own output back by
+    name would not find it.
+    """
+    get = getattr(sim, "get_filename_prefix", None)
+    return get() if callable(get) else (
+        getattr(sim, "filename_prefix", None) or "meep_torch")
+
+
+def _outdir(sim, base: str) -> str:
+    """Prepend Simulation.use_output_directory()'s directory, if one is set.
+
+    Without this every output_* call writes to the process working
+    directory, which for a script run from the repo root means the repo
+    root: one run of the ring tutorial drops 21 .h5 files there.
+    """
+    d = getattr(sim, "_output_directory", None)
+    if not d:
+        return base
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, base)
 
 
 def _volume_slice(sim, arr):

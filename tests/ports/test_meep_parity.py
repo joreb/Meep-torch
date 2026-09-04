@@ -13,7 +13,7 @@ FCEN, FWIDTH = 0.15, 0.1
 def test_straight_matches_meep():
     ref = DATA["straight"]
     grid = Grid(nx=200, ny=80, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:, 35:45] = 12.0
     ports = [Port(axis="x", index=40, lo=20, hi=60, direction=+1),
              Port(axis="x", index=160, lo=20, hi=60, direction=-1)]
@@ -27,7 +27,7 @@ def test_straight_matches_meep():
 def test_taper_matches_meep():
     ref = DATA["taper"]
     grid = Grid(nx=240, ny=100, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     for ix in range(grid.nx):
         # straight w=10 cells for x<10um, taper 10->20 cells over [10,14]um, then 20
         if ix < 100:

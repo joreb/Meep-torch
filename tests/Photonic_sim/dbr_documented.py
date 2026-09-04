@@ -65,7 +65,7 @@ def _strip_solve(w, lam):
     rm = rasterize_scene([(core, n_sin ** 2)], g, background=n_sio2 ** 2)
     ms = solve_2d(rm.eps_tm, DX, f, k=1)
     # Modes2D Ex, Ey are (Nx, Ny, k); mode 0 -> (Nx, Ny)
-    Ex = ms.Ex[..., 0].numpy(); Ey = ms.Ey[..., 0].numpy()
+    Ex = ms.Ex[..., 0].cpu().numpy(); Ey = ms.Ey[..., 0].cpu().numpy()
     e2 = np.abs(Ex) ** 2 + np.abs(Ey) ** 2
     return float(ms.neff[0].real), e2, nx, ny
 

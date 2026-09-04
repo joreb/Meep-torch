@@ -140,7 +140,7 @@ def torch_ratio(polys, ox, oy, sx, sy, x_src, x_in, x_out, y_lo, y_hi):
     steps = int(round(T_TOTAL / (grid.courant * DX)))
     state = init_tm_state(grid)
     _, (a, b) = run_tm(state, coeffs, steps, source=src, monitors=[mon_in, mon_out])
-    return (mon_out.flux(b, DX) / mon_in.flux(a, DX)).numpy()
+    return (mon_out.flux(b, DX) / mon_in.flux(a, DX)).cpu().numpy()
 
 
 def meep_ratio(gds, ox, oy, sx, sy, x_src, x_in, x_out, y_lo, y_hi, tmp_path):

@@ -13,7 +13,7 @@ FCEN, FWIDTH = 0.15, 0.1
 def _waveguide():
     # straight waveguide eps=12, width 1um, along x; dx=0.1 -> 10 cells wide
     grid = Grid(nx=160, ny=80, dx=0.1)
-    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64)
+    eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:, 35:45] = 12.0
     coeffs = build_tm_coeffs(grid, eps_inf=eps, npml=10)
     return grid, coeffs

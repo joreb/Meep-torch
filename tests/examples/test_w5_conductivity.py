@@ -46,7 +46,7 @@ def _slab_T(sigma_val, freqs=(FCEN,)):
     n_steps = int(round(60.0 / grid.dt))
     _, (series,) = run_tm(init_tm_state(grid, y_pmc=True), coeffs, n_steps,
                           source=src, monitors=[probe])
-    s = series.detach().numpy()
+    s = series.detach().cpu().numpy()
     t = np.arange(len(s)) * grid.dt
     return np.array([abs(np.trapezoid(s * np.exp(-2j * math.pi * f * t), t))
                      for f in freqs])
@@ -105,7 +105,7 @@ def _slab_T_te(sigma_val):
     n_steps = int(round(60.0 / grid.dt))
     _, (series,) = run_te(init_te_state(grid), coeffs, n_steps,
                           source=src, monitors=[_EyProbe()])
-    s = series.detach().numpy()
+    s = series.detach().cpu().numpy()
     t = np.arange(len(s)) * grid.dt
     return abs(np.trapezoid(s * np.exp(-2j * math.pi * FCEN * t), t))
 

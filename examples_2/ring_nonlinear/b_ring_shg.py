@@ -204,7 +204,7 @@ def build_half(n_core, n_clad, gap):
     ny_h = j_center + int(2.0 * RES) + NPML
     nx_h = grid_f.nx
     grid = Grid(nx=nx_h, ny=ny_h, dx=dx, device=DEV)
-    eps = torch.full((nx_h, ny_h), n_clad ** 2, dtype=grid.dtype)
+    eps = torch.full((nx_h, ny_h), n_clad ** 2, dtype=grid.dtype, device=grid.device)
     eps[:, :j_center] = eps_f[:, :j_center]
     eps[:, j_center:] = eps[:, j_center - 1: j_center]   # guides straight up
     return grid, eps.to(DEV), (o1x, o1y, o2x, o2y), nx_h, ny_h
@@ -294,11 +294,11 @@ def extract(label, lam, n_core, n_clad, gap, coupler):
 
     r1 = run_ports(p_in, [p_in, p_thru, p_arcR])
     a_in = r1[0][0][:, 0]
-    t = (r1[1][0][:, 0] / a_in).numpy()
-    kap = (r1[2][0][:, 0] / a_in).numpy()
+    t = (r1[1][0][:, 0] / a_in).cpu().numpy()
+    kap = (r1[2][0][:, 0] / a_in).cpu().numpy()
     r2 = run_ports(p_arcR, [p_arcR, p_arcL])
     a_inR = r2[0][1][:, 0]
-    A = (r2[1][0][:, 0] / a_inR).numpy()
+    A = (r2[1][0][:, 0] / a_inR).cpu().numpy()
     # a_half = A / |t|, NOT A / t (peer 0a2eaf0). A is the arc-to-arc amplitude;
     # dividing by the COMPLEX t strips a bus propagation phase that the arc
     # path never travelled, which shows up as a tripled apparent FSR. Only the

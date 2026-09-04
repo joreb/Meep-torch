@@ -107,7 +107,7 @@ def torch_snapshots(polys, ox, oy, sx, sy, x_src, y_lo, y_hi):
             state = step_tm(state, coeffs, src.amplitude(t_idx), src.mask)
             t_idx += 1
         snaps.append(state.Ez.detach().cpu().numpy().copy())
-    return np.stack(snaps), eps.numpy()
+    return np.stack(snaps), eps.cpu().numpy()
 
 
 def meep_snapshots(clean_gds, ox, oy, sx, sy, x_src, y_lo, y_hi, out_npz):

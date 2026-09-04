@@ -63,7 +63,7 @@ def test_absorber_1d_vs_oracle():
         _, (s,) = run_tm(init_tm_state(grid, y_pmc=True), coeffs,
                          int(round(240.0 / grid.dt)), source=src,
                          monitors=[PointProbe(200, 4)])
-        a = np.abs(s.detach().numpy())
+        a = np.abs(s.detach().cpu().numpy())
         return float(a[2 * len(a) // 3:].max() / a.max())
 
     for mode, key in ((True, "absorber"), (False, "pml")):

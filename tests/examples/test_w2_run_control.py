@@ -17,7 +17,7 @@ from meep_torch.ports.smatrix import compute_smatrix
 
 def test_run_until_decayed_stops_on_decay():
     g = Grid(nx=200, ny=20, dx=0.1)
-    eps = torch.ones(g.nx, g.ny, dtype=torch.float64)
+    eps = torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device)
     eps[:, 8:12] = 12.0
     c = build_tm_coeffs(g, eps_inf=eps, npml=5)
     src = LineSource(g, 20, 8, 12, profile=GaussianPulse(0.15, 0.1))

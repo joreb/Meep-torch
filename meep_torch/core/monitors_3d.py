@@ -23,10 +23,13 @@ class PlaneSource:
     source (defaults fill the full cross-section)."""
 
     def __init__(self, nx, ny, nz, dt, comp, axis, idx, profile,
-                 lo=None, hi=None):
+                 lo=None, hi=None, device=None):
         shape = {"Ex": (nx - 1, ny, nz), "Ey": (nx, ny - 1, nz),
                  "Ez": (nx, ny, nz - 1)}[comp]
-        mask = torch.zeros(shape, dtype=torch.float64)
+        # The mask multiplies the live field in _inject_src, so it has to sit
+        # on the engine device; defaulting it to CPU crashed the 3D source
+        # path the moment the default device became CUDA.
+        mask = torch.zeros(shape, dtype=torch.float64, device=device)
         sl = [slice(None)] * 3
         sl[axis] = idx
         mask[tuple(sl)] = 1.0

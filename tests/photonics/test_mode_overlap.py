@@ -48,7 +48,7 @@ def _coupling(w):
         np.full(int(w / DX), n_v ** 2),
         np.full(int(PAD / DX), n_sio2 ** 2),
     ])
-    E = solve_1d(eps_line, DX, f, "tm", k=1).profiles[0].numpy()
+    E = solve_1d(eps_line, DX, f, "tm", k=1).profiles[0].cpu().numpy()
     y = (np.arange(len(E)) + 0.5) * DX - len(E) * DX / 2
     y = y - y[int(np.argmax(np.abs(E)))]  # center on the mode peak
     Eg = np.exp(-y ** 2 / W0 ** 2)
