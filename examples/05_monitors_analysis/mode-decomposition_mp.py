@@ -59,8 +59,8 @@ def taper_reflectance(L):
     m_out = sim.add_mode_monitor(FCEN, 0, 1, mp.FluxRegion(center=mp.Vector3(8, 0),
                                                           size=mp.Vector3(0, 5, 0), direction=-1))
     sim.run(n_steps=3000)
-    R = abs(sim.get_eigenmode_coefficients(m_in)[0]) ** 2
-    T = abs(sim.get_eigenmode_coefficients(m_out)[0]) ** 2
+    R = abs(sim.get_eigenmode_coefficients(m_in, [1]).alpha[0, 0, 0]) ** 2
+    T = abs(sim.get_eigenmode_coefficients(m_out, [1]).alpha[0, 0, 0]) ** 2
     return float(R), float(T)
 
 # %% [markdown]

@@ -32,6 +32,15 @@ def _resolve(medium: Medium | float | None):
         return 1.0, 0.0
     if isinstance(medium, Medium):
         return medium.resolve()
+    if callable(medium):
+        raise NotImplementedError(
+            "per-object material functions (material=callable(p) -> Medium) "
+            "are not supported: the rasterizer fills polygons with uniform "
+            "media (meep_torch/geometry/scene.py). Per-voxel sampling would "
+            "cover an isotropic material function; the tutorial case "
+            "(polarization_grating: a twisted-nematic tensor with "
+            "epsilon_offdiag) additionally needs an anisotropic raster, which "
+            "the scalar eps_tm/eps_te grids cannot hold")
     return float(medium), 0.0
 
 

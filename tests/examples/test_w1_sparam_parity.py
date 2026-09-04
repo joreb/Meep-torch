@@ -55,7 +55,7 @@ def test_mode_decomposition_sparam_parity():
     sim.add_mode_monitor(FCEN, 0, 1, mp.FluxRegion(center=mp.Vector3(8, 0),
                                                    size=mp.Vector3(0, 5, 0), direction=-1))
     sim.run(n_steps=3000)
-    R_shim = float(abs(sim.get_eigenmode_coefficients(m_in)[0]) ** 2)
+    R_shim = float(abs(sim.get_eigenmode_coefficients(m_in, [1]).alpha[0, 0, 0]) ** 2)
     assert abs(R_shim - R_raw) < RTOL, f"taper R: shim {R_shim:.3e} vs raw {R_raw:.3e}"
 
 
@@ -95,7 +95,7 @@ def test_bend_flux_sparam_parity():
                                  mp.FluxRegion(center=mp.Vector3(3.5, 12, 0),
                                                size=mp.Vector3(4, 0, 0), direction=-1))
     sim.run(n_steps=7000)
-    R_shim = float(np.abs(sim.get_eigenmode_coefficients(m_in)[i]) ** 2)
-    T_shim = float(np.abs(sim.get_eigenmode_coefficients(m_out)[i]) ** 2)
+    R_shim = float(np.abs(sim.get_eigenmode_coefficients(m_in, [1]).alpha[0, i, 0]) ** 2)
+    T_shim = float(np.abs(sim.get_eigenmode_coefficients(m_out, [1]).alpha[0, i, 0]) ** 2)
     assert abs(R_shim - R_raw) < RTOL, f"bend R: shim {R_shim:.4f} vs raw {R_raw:.4f}"
     assert abs(T_shim - T_raw) < RTOL, f"bend T: shim {T_shim:.4f} vs raw {T_raw:.4f}"

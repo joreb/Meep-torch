@@ -31,13 +31,14 @@ from .coords import (GridSpec, box3d, cell_index, cell_index_y, cell_index_z, gr
 from .geometry import Block, build_scene_items
 from .material import ALL, Absorber, Low, Medium, PML
 from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
-                          DftNear2Far, DftObj, FluxData, _eval_step_func,
-                          chunk_size, dft_name, fire_per_step, fire_scheduled,
-                          plan_hooks)
-from .sources import (AUTOMATIC, Dielectric, DiffractedPlanewave,
-                      EigenModeSource, Ez, GaussianBeam3DSource, Hz,
-                      IndexedSource, Source, _Quadrature, _point_or_span,
-                      build_line_source, build_mode_source, pol_for)
+                          DftNear2Far, DftObj, EigCoeffsResult, FluxData,
+                          _eval_step_func, chunk_size, dft_name, fire_per_step,
+                          fire_scheduled, plan_hooks)
+from .sources import (AUTOMATIC, EVEN_Z, NO_PARITY, ODD_Z, Dielectric,
+                      DiffractedPlanewave, EigenModeSource, Ez,
+                      GaussianBeam3DSource, Hz, IndexedSource, Source,
+                      _Quadrature, _point_or_span, build_line_source,
+                      build_mode_source, pol_for)
 from .vec import Vector3
 from ..ports.mode_monitor import decompose
 
@@ -1673,20 +1674,108 @@ class Simulation:
         *subtracts* them (meep's reflection-normalization workflow)."""
         self.load_flux_data(flux, fdata, _scale=-1.0)
 
-    def get_eigenmode_coefficients(self, name, n_modes=1):
-        """S[:, port_index(name), 0] -- the coefficient at monitor `name` when
-        the EigenModeSource (port 0) is excited (power-normalized S-param; see
-        the _run_modes docstring for the normalization mapping)."""
-        if isinstance(n_modes, DiffractedPlanewave):
+    def get_eigenmode_coefficients(self, flux, bands, eig_parity=NO_PARITY,
+                                   eig_vol=None, eig_resolution=0,
+                                   eig_tolerance=1e-12, kpoint_func=None,
+                                   direction=AUTOMATIC):
+        """meep get_eigenmode_coefficients -> EigCoeffsResult; ``alpha`` is
+        (len(bands), nfreq, 2) with [..., 0] forward and [..., 1] backward.
+
+        Two paths, picked by the monitor: a mode port of an EigenModeSource
+        run reports the S-parameter column (see the _run_modes docstring); a
+        flux monitor on a Bloch-periodic plane with uniform transverse eps is
+        decomposed into the 0th diffraction order (mp/eig_coeffs.py).
+        `eig_resolution`/`eig_tolerance` are accepted and ignored (there is no
+        iterative mode solver on this path)."""
+        if isinstance(bands, DiffractedPlanewave):
             raise NotImplementedError(
                 "get_eigenmode_coefficients(bands=DiffractedPlanewave): the "
                 "diffraction-order machinery (meep_torch/ports/orders.py) "
                 "needs a Bloch-periodic core run; Simulation has no k_point "
                 "path to drive it")
-        if self._S is None:
-            raise RuntimeError("run() with an EigenModeSource before get_eigenmode_coefficients")
-        j = self._port_index[dft_name(name)]
-        return self._S[:, j, 0].detach().cpu().numpy()
+        if not isinstance(bands, (list, tuple, range)):
+            raise TypeError("get_eigenmode_coefficients: bands must be either "
+                            "a list or DiffractedPlanewave object")
+        if kpoint_func is not None:
+            raise NotImplementedError(
+                "get_eigenmode_coefficients kpoint_func: modes are solved "
+                "along the monitor normal only (no oblique eigenmode solver)")
+        if direction not in (AUTOMATIC, None):
+            raise NotImplementedError(
+                "get_eigenmode_coefficients direction: the mode is decomposed "
+                "along the monitor normal only (direction=AUTOMATIC)")
+        if eig_vol is not None:
+            raise NotImplementedError(
+                "get_eigenmode_coefficients eig_vol: the mode is solved on "
+                "the monitor line itself")
+        bands = list(bands)
+        name = dft_name(flux)
+        if self._S is not None and name in self._port_index:
+            alpha = self._mode_port_alpha(name, bands)
+        else:
+            alpha = self._planewave_alpha(flux, name, bands, eig_parity)
+        nb, nf, _ = alpha.shape
+        return EigCoeffsResult(alpha, np.zeros(nb * nf), [], [],
+                               np.zeros(nb * nf))
+
+    def _mode_port_alpha(self, name, bands):
+        """S-parameter path: S[:, port_index(name), 0] as the forward
+        coefficient of band 1. The S-matrix carries one mode per port, so the
+        backward column stays zero (the reflection port already reports the
+        backward wave as its forward coefficient)."""
+        if bands != [1]:
+            raise NotImplementedError(
+                f"get_eigenmode_coefficients(bands={bands}) on a mode port: "
+                "compute_smatrix carries one mode per port (band 1)")
+        col = self._S[:, self._port_index[name], 0].detach().cpu().numpy()
+        alpha = np.zeros((1, col.shape[0], 2), dtype=np.complex128)
+        alpha[0, :, 0] = col
+        return alpha
+
+    def _planewave_alpha(self, flux, name, bands, eig_parity):
+        """Flux-monitor path: 0th diffraction order on a Bloch-periodic plane
+        with uniform transverse eps (mp/eig_coeffs.py)."""
+        from .eig_coeffs import planewave_alpha
+        if self._S is not None or self._eig_source is not None:
+            raise RuntimeError(
+                f"get_eigenmode_coefficients({name!r}): not a mode port of "
+                "this EigenModeSource run (use add_mode_monitor)")
+        if self.dimensions == 3:
+            raise NotImplementedError(
+                "get_eigenmode_coefficients: 3D flux monitors have no "
+                "decomposition path here (meep_torch/ports/mode_monitor.py "
+                "decompose_3d)")
+        want = "tm" if eig_parity & ODD_Z else ("te" if eig_parity & EVEN_Z else None)
+        if want is not None and want != self._pol:
+            raise ValueError(
+                f"eig_parity implies a {want.upper()} mode but the run is "
+                f"{self._pol.upper()} (ODD_Z = Ez/TM, EVEN_Z = Hz/TE)")
+        if bands != [1]:
+            raise NotImplementedError(
+                f"get_eigenmode_coefficients(bands={bands}) on a flux "
+                "monitor: only band 1 (the 0th/specular diffraction order) is "
+                "implemented; the band -> order map for higher bands is "
+                "parity- and degeneracy-dependent (meep_torch/ports/orders.py)")
+        k = self.k_point
+        if k not in (False, None) and (abs(k.y) > 1e-12 or abs(k.x) > 1e-12):
+            raise NotImplementedError(
+                f"get_eigenmode_coefficients at oblique incidence (k_point="
+                f"{k}): the planewave basis is built at k_transverse = 0")
+        if name not in self._last_acc:
+            raise RuntimeError(
+                f"get_eigenmode_coefficients({name!r}): no accumulated fields "
+                "-- run() first")
+        acc, mon, meta = self._last_acc[name]
+        if not getattr(mon, "x_normal", True):
+            raise NotImplementedError(
+                "get_eigenmode_coefficients on a y-normal flux monitor is not "
+                "implemented (x-normal monitor planes only)")
+        eps = (self._rm.eps_tm if self._pol == "tm" else self._rm.eps_te_yy)
+        eps_line = eps[meta["idx"], meta["lo"]:meta["hi"]].detach().cpu().numpy()
+        a_p, a_m = planewave_alpha(acc, eps_line, self.gs.dx, self._pol)
+        alpha = np.zeros((1, a_p.shape[0], 2), dtype=np.complex128)
+        alpha[0, :, 0], alpha[0, :, 1] = a_p, a_m
+        return alpha
 
     def get_array(self, component=Dielectric, center=None, size=None):
         if self.dimensions == 3:

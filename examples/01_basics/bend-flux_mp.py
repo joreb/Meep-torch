@@ -64,8 +64,8 @@ m_out = sim.add_mode_monitor(fcen, freqs[1] - freqs[0], len(freqs),
                             mp.FluxRegion(center=mp.Vector3(3.5, 12, 0),
                                           size=mp.Vector3(4, 0, 0), direction=-1))
 sim.run(n_steps=7000)
-R = np.abs(sim.get_eigenmode_coefficients(m_in)) ** 2
-T = np.abs(sim.get_eigenmode_coefficients(m_out)) ** 2
+R = np.abs(sim.get_eigenmode_coefficients(m_in, [1]).alpha[0, :, 0]) ** 2
+T = np.abs(sim.get_eigenmode_coefficients(m_out, [1]).alpha[0, :, 0]) ** 2
 wl = 1.0 / freqs
 
 # %% [markdown]

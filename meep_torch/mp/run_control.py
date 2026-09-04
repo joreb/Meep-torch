@@ -190,6 +190,10 @@ def dft_name(f):
 # (Simulation.get_flux_data / load_flux_data / load_minus_flux_data).
 FluxData = namedtuple("FluxData", ["E", "H"])
 
+# meep get_eigenmode_coefficients return type (simulation.py, verbatim).
+EigCoeffsResult = namedtuple(
+    "EigCoeffsResult", ["alpha", "vgrp", "kpoints", "kdom", "cscale"])
+
 
 # --- step-function calling convention (meep _eval_step_func) ---
 def _num_args(func):
