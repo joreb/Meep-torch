@@ -22,7 +22,7 @@ from typing import NamedTuple
 import torch
 
 from .coeffs import _pole_recurrence
-from .pml import absorber_sigma, cpml_profiles
+from .pml import absorber_sigma, cpml_profiles, side_counts
 
 
 class Coeffs3D(NamedTuple):
@@ -139,8 +139,16 @@ def _ident(n, ax, dtype, device):
     return z, z.clone(), torch.ones(sh, dtype=dtype, device=device)
 
 
+def _axis_sides3(v):
+    """Per-axis (lo, hi) cell counts: an int means the same layer on all
+    six faces, a 3-sequence of int-or-(lo, hi) sets each axis (0 = PEC)."""
+    if isinstance(v, (tuple, list)):
+        return tuple(side_counts(p) for p in v)
+    return (side_counts(v),) * 3
+
+
 def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
-                    npml: int = 0, n_abs: int = 0, absorber_axes=(),
+                    npml=0, n_abs=0, absorber_axes=(),
                     sigma_d=None, sigma_b=None, poles=(), pole_masks=None,
                     dtype=torch.float64, device="cpu", absorber_m: int = 2,
                     absorber_R0: float = 1e-15, pmc_axes=()) -> Coeffs3D:
@@ -154,16 +162,24 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
     CPML is inert for the uniform transverse field). ``pmc_axes`` swaps the
     PEC walls on those axes for PMC (tangential E live at the wall, identity
     CPML profile -- see ``_term_pmc``), keeping a transverse-uniform
-    planewave exactly uniform on a tiny transverse grid."""
+    planewave exactly uniform on a tiny transverse grid.
+
+    ``npml`` / ``n_abs``: an int puts the same layer on every face; a
+    3-sequence of int-or-(lo, hi) pairs sets each axis end independently
+    (0 = plain PEC wall there, mp.PML direction/side semantics)."""
     dt = 0.5 * dx / math.sqrt(3.0)
     e = (eps if isinstance(eps, torch.Tensor)
          else torch.ones(nx, ny, nz, dtype=dtype, device=device))
     dims = (nx, ny, nz)
-    mixed = npml > 0 and n_abs > 0
+    npml_ax = _axis_sides3(npml)
+    nabs_ax = _axis_sides3(n_abs)
+    has_pml = any(l or h for l, h in npml_ax)
+    has_abs = any(l or h for l, h in nabs_ax)
+    mixed = has_pml and has_abs
     ax_set = set(absorber_axes) if mixed else set()
 
     # --- boundary profiles / sigma ---
-    if npml > 0:
+    if has_pml:
         cpml = {}
         for ax, kh, ke in ((0, "hx", "ex"), (1, "hy", "ey"), (2, "hz", "ez")):
             n = dims[ax]
@@ -171,28 +187,26 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
                 bH, aH, kH = _ident(n - 1, ax, dtype, device)
                 bE, aE, kE = _ident(n - 2, ax, dtype, device)
             else:                                  # CPML axis
-                b, a, k = _prof(n - 1, npml, 0.5, dt, dx, dtype, device)
+                b, a, k = _prof(n - 1, npml_ax[ax], 0.5, dt, dx, dtype, device)
                 bH, aH, kH = _bc(b, ax), _bc(a, ax), _bc(k, ax)
-                b, a, k = _prof(n, npml, 0.0, dt, dx, dtype, device)
+                b, a, k = _prof(n, npml_ax[ax], 0.0, dt, dx, dtype, device)
                 bE, aE, kE = _bc(b[1:-1], ax), _bc(a[1:-1], ax), _bc(k[1:-1], ax)
             cpml[kh] = (bH, aH, kH)
             cpml[ke] = (bE, aE, kE)
+        sig_bound = torch.zeros(nx, ny, nz, dtype=dtype, device=device)
         if mixed:                                  # absorber sigma on absorber axes
-            sig_bound = torch.zeros(nx, ny, nz, dtype=dtype, device=device)
             for ax in absorber_axes:
-                s = absorber_sigma(dims[ax], n_abs, dx, m=absorber_m,
+                s = absorber_sigma(dims[ax], nabs_ax[ax], dx, m=absorber_m,
                                    R0=absorber_R0, dtype=dtype, device=device)
                 sig_bound = torch.maximum(sig_bound, _bc(s, ax).expand(nx, ny, nz))
-        else:
-            sig_bound = torch.zeros(nx, ny, nz, dtype=dtype, device=device)
     else:
         cpml = None
-        if n_abs > 0:
-            sx = absorber_sigma(nx, n_abs, dx, m=absorber_m, R0=absorber_R0,
+        if has_abs:
+            sx = absorber_sigma(nx, nabs_ax[0], dx, m=absorber_m, R0=absorber_R0,
                                 dtype=dtype, device=device)
-            sy = absorber_sigma(ny, n_abs, dx, m=absorber_m, R0=absorber_R0,
+            sy = absorber_sigma(ny, nabs_ax[1], dx, m=absorber_m, R0=absorber_R0,
                                 dtype=dtype, device=device)
-            sz = absorber_sigma(nz, n_abs, dx, m=absorber_m, R0=absorber_R0,
+            sz = absorber_sigma(nz, nabs_ax[2], dx, m=absorber_m, R0=absorber_R0,
                                 dtype=dtype, device=device)
             sig_bound = torch.maximum(torch.maximum(sx[:, None, None],
                                                     sy[None, :, None]),

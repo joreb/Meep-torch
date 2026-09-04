@@ -6,7 +6,16 @@ from typing import NamedTuple, Sequence
 import torch
 
 from .grid import Grid
-from .pml import cpml_profiles
+from .pml import cpml_profiles, side_counts
+
+
+def _axis_sides(npml):
+    """npml as ((x_lo, x_hi), (y_lo, y_hi)) cell counts; an int means the
+    same layer on every edge, a pair of pairs sets each edge (0 = PEC)."""
+    if isinstance(npml, (tuple, list)):
+        px, py = npml
+        return side_counts(px), side_counts(py)
+    return (int(npml), int(npml)), (int(npml), int(npml))
 
 
 class TMCoeffs(NamedTuple):
@@ -119,7 +128,7 @@ def build_tm_coeffs(
     pole_masks: Sequence[torch.Tensor] | None = None,
     chi3=None,
     chi2=None,
-    npml: int = 0,
+    npml=0,          # int (all edges) or ((x_lo, x_hi), (y_lo, y_hi)) cells
     y_pmc: bool = False,
     sigma_d=None,
     sigma_b=None,
@@ -185,12 +194,13 @@ def build_tm_coeffs(
         c2[k] = cv2 * torch.ones_like(eps)
         c3[k] = cv3 * mask.to(eps)
 
-    if npml * 2 >= grid.nx or (npml * 2 >= grid.ny and not y_pmc):
+    px, py = _axis_sides(npml)
+    if sum(px) >= grid.nx or (sum(py) >= grid.ny and not y_pmc):
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
 
-    def prof(n, offset, use_pml=True):
+    def prof(n, offset, pair, use_pml=True):
         return cpml_profiles(
-            n, npml if use_pml else 0, offset, dt, dx, dtype=grid.dtype, device=grid.device
+            n, pair if use_pml else 0, offset, dt, dx, dtype=grid.dtype, device=grid.device
         )
 
     if y_mirror not in (0, +1, -1) or x_mirror not in (0, +1, -1):
@@ -202,37 +212,37 @@ def build_tm_coeffs(
             "odd mirror with sigma_b/mu/m_poles: the on-plane H row has no "
             "conductivity/mu coefficients (standard H-grid shapes only)")
 
-    def kill_lo(b, a, k):
+    def kill_lo(b, a, k, nlo):
         # a mirror wall replaces the low-side PML: identity profile there
-        b[:npml] = 0.0
-        a[:npml] = 0.0
-        k[:npml] = 1.0
+        b[:nlo] = 0.0
+        a[:nlo] = 0.0
+        k[:nlo] = 1.0
 
     # H updates: dEz/dy at half-y (ny-1); dEz/dx at half-x (nx-1). The odd
     # mirror's on-plane H row lives in TMState.Hx0/Hy0 (no PML at the cut),
     # so the interior profiles are the same for both parities.
-    b_hy, a_hy, k_hy = prof(grid.ny - 1, 0.5, use_pml=not y_pmc)
-    b_hx, a_hx, k_hx = prof(grid.nx - 1, 0.5)
+    b_hy, a_hy, k_hy = prof(grid.ny - 1, 0.5, py, use_pml=not y_pmc)
+    b_hx, a_hx, k_hx = prof(grid.nx - 1, 0.5, px)
     if y_mirror:
-        kill_lo(b_hy, a_hy, k_hy)
+        kill_lo(b_hy, a_hy, k_hy, py[0])
     if x_mirror:
-        kill_lo(b_hx, a_hx, k_hx)
+        kill_lo(b_hx, a_hx, k_hx, px[0])
     # D update: dHy/dx at integer x -- interior (PEC walls) or, with an
     # x mirror, cols 0..nx-2 (cut col live, far col PEC behind its PML)
-    b_ex_f, a_ex_f, k_ex_f = prof(grid.nx, 0.0)
+    b_ex_f, a_ex_f, k_ex_f = prof(grid.nx, 0.0, px)
     if x_mirror:
-        kill_lo(b_ex_f, a_ex_f, k_ex_f)
+        kill_lo(b_ex_f, a_ex_f, k_ex_f, px[0])
         b_ex, a_ex, k_ex = b_ex_f[:-1], a_ex_f[:-1], k_ex_f[:-1]
     else:
         b_ex, a_ex, k_ex = b_ex_f[1:-1], a_ex_f[1:-1], k_ex_f[1:-1]
     # dHx/dy at integer y: interior (PEC) or full (PMC)
-    b_ey_f, a_ey_f, k_ey_f = prof(grid.ny, 0.0, use_pml=not y_pmc)
+    b_ey_f, a_ey_f, k_ey_f = prof(grid.ny, 0.0, py, use_pml=not y_pmc)
     if y_pmc:
         b_ey, a_ey, k_ey = b_ey_f, a_ey_f, k_ey_f
     elif y_mirror:
         # fdtdx-style mirror: wall at the LOW-y cut, PML high-y only; the D
         # update keeps rows 0..ny-2 (cut row live, top row PEC behind PML)
-        kill_lo(b_ey_f, a_ey_f, k_ey_f)
+        kill_lo(b_ey_f, a_ey_f, k_ey_f, py[0])
         b_ey, a_ey, k_ey = b_ey_f[:-1], a_ey_f[:-1], k_ey_f[:-1]
     else:
         b_ey, a_ey, k_ey = b_ey_f[1:-1], a_ey_f[1:-1], k_ey_f[1:-1]
@@ -315,7 +325,7 @@ def build_te_coeffs(
     pole_masks: Sequence[torch.Tensor] | None = None,
     chi3=None,
     chi2=None,
-    npml: int = 0,
+    npml=0,          # int (all edges) or ((x_lo, x_hi), (y_lo, y_hi)) cells
     sigma_d=None,
     sigma_b=None,
     mu=None,
@@ -406,20 +416,21 @@ def build_te_coeffs(
         c3yx = torch.cat([grid.zeros(npy0, grid.nx, grid.ny - 1), tc3yx])
         cond["c3xy"], cond["c3yx"] = c3xy, c3yx
 
-    if npml * 2 >= grid.nx or npml * 2 >= grid.ny:
+    px, py = _axis_sides(npml)
+    if sum(px) >= grid.nx or sum(py) >= grid.ny:
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
 
-    def prof(n, offset):
-        return cpml_profiles(n, npml, offset, dt, dx, dtype=grid.dtype, device=grid.device)
+    def prof(n, offset, pair):
+        return cpml_profiles(n, pair, offset, dt, dx, dtype=grid.dtype, device=grid.device)
 
     # Hz update: dEy/dx at half-x (nx-1); dEx/dy at half-y (ny-1)
-    b_hx, a_hx, k_hx = prof(grid.nx - 1, 0.5)
-    b_hy, a_hy, k_hy = prof(grid.ny - 1, 0.5)
+    b_hx, a_hx, k_hx = prof(grid.nx - 1, 0.5, px)
+    b_hy, a_hy, k_hy = prof(grid.ny - 1, 0.5, py)
     # Dx update: dHz/dy at interior integer y (positions 1..ny-2)
-    b_ey_f, a_ey_f, k_ey_f = prof(grid.ny, 0.0)
+    b_ey_f, a_ey_f, k_ey_f = prof(grid.ny, 0.0, py)
     b_ey, a_ey, k_ey = b_ey_f[1:-1], a_ey_f[1:-1], k_ey_f[1:-1]
     # Dy update: dHz/dx at interior integer x (positions 1..nx-2)
-    b_ex_f, a_ex_f, k_ex_f = prof(grid.nx, 0.0)
+    b_ex_f, a_ex_f, k_ex_f = prof(grid.nx, 0.0, px)
     b_ex, a_ex, k_ex = b_ex_f[1:-1], a_ex_f[1:-1], k_ex_f[1:-1]
 
     return TECoeffs(

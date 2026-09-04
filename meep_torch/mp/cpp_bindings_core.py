@@ -32,6 +32,7 @@ from ..core import stepper_te as _te_phases
 from ..core.stepper import init_tm_state, step_tm
 from ..core.stepper_te import init_te_state, step_te
 from .coords import GridSpec, cell_index, cell_index_y, pml_npml, span_index_range
+from .material import ALL, Low
 from .run_control import Volume
 from .simulation import Simulation, X, Y
 from .vec import Vector3
@@ -79,9 +80,8 @@ def _plane_spec(d: int, where: Volume, gs: GridSpec) -> tuple[bool, int, int, in
 
 class boundary_region:
     """meep::boundary_region -- one PML (or absorber) band spec. `direction`
-    / `side` of None mean all directions/sides (the engine applies a uniform
-    band on every wall; per-wall bands are not supported and raise when a
-    structure is built with a direction-restricted region)."""
+    / `side` of None (or mp.ALL) mean all directions/sides; a restricted
+    region applies its band only on the named edges (others stay PEC)."""
 
     NOTHING_SPECIAL, PML = 0, 1
 
@@ -169,6 +169,8 @@ class structure:
         self._chi3 = None
         self._poles, self._pole_masks = [], []
         self.npml = 0
+        self._npml_sides = [[0, 0], [0, 0]]      # per-axis [lo, hi] cells
+        self._nabs_sides = [[0, 0], [0, 0]]
         self._y_pmc = False
         self._y_mirror = 0
         self._x_mirror = 0
@@ -203,6 +205,8 @@ class structure:
         st._pole_masks = list(sim._rm.pole_masks)
         st._sd, st._sb, st._mu = sim._cond if sim._cond is not None else (None,) * 3
         st.npml = sim._npml
+        st._npml_sides = [list(p) for p in sim._npml_sides[:2]]
+        st._nabs_sides = [[0, 0], [0, 0]]        # sim folded its ramp already
         st._y_pmc = sim._y_pmc
         st._y_mirror = sim._sym_py if sim._sym_cy else 0
         st._x_mirror = sim._sym_px if sim._sym_cx else 0
@@ -227,15 +231,23 @@ class structure:
         return t
 
     def _apply_boundary(self, region: boundary_region):
-        if region.direction is not None or region.side is not None:
-            raise NotImplementedError(
-                "per-direction/per-side boundary bands: the engine applies a "
-                "uniform band on every wall")
         n = pml_npml(region.thickness, self.gs)
-        if isinstance(region, absorber) or region.kind != boundary_region.PML:
-            self._nabs = max(self._nabs, n)
+        is_abs = isinstance(region, absorber) or region.kind != boundary_region.PML
+        sides = self._nabs_sides if is_abs else self._npml_sides
+        d, sd = region.direction, region.side
+        if d in (None, ALL):
+            axes = (0, 1)
+        elif d in (X, Y):
+            axes = (d,)
         else:
-            self.npml = max(self.npml, n)
+            raise ValueError(
+                f"boundary_region direction {d} has no extent in a 2D cell")
+        for ax in axes:
+            for s in ((0, 1) if sd in (None, ALL) else
+                      ((0,) if sd == Low else (1,))):
+                sides[ax][s] = max(sides[ax][s], n)
+        self.npml = max(max(p) for p in self._npml_sides)
+        self._nabs = max(max(p) for p in self._nabs_sides)
         self._coeffs = self._coeffs_tm = self._coeffs_te = None
 
     @property
@@ -260,25 +272,28 @@ class structure:
         if self._nabs:
             g = self.grid
             kw = dict(dtype=g.dtype, device=g.device)
-            ramp = absorber_sigma(g.nx, self._nabs, g.dx, **kw)[:, None].expand(g.nx, g.ny).clone()
+            ramp = absorber_sigma(g.nx, tuple(self._nabs_sides[0]), g.dx,
+                                  **kw)[:, None].expand(g.nx, g.ny).clone()
             if not self._y_pmc:
                 ramp = torch.maximum(
-                    ramp, absorber_sigma(g.ny, self._nabs, g.dx, **kw)[None, :].expand(g.nx, g.ny))
+                    ramp, absorber_sigma(g.ny, tuple(self._nabs_sides[1]), g.dx,
+                                         **kw)[None, :].expand(g.nx, g.ny))
             sd = ramp if sd is None else sd + ramp
             sb = ramp if sb is None else sb + ramp
         if sd is not None or sb is not None or mu is not None:
             extra = dict(sigma_d=sd, sigma_b=sb, mu=mu)
+        npml_arg = (tuple(self._npml_sides[0]), tuple(self._npml_sides[1]))
         if te:
             eps = self._eps_te if self._eps_te is not None else self._eps
             built = build_te_coeffs(
                 self.grid, eps_inf=eps, poles=self._poles,
                 pole_masks=self._pole_masks or None, chi3=self._chi3,
-                npml=self.npml, **extra)
+                npml=npml_arg, **extra)
         else:
             built = build_tm_coeffs(
                 self.grid, eps_inf=self._eps, poles=self._poles,
                 pole_masks=self._pole_masks or None, chi2=self._chi2,
-                chi3=self._chi3, npml=self.npml, y_pmc=self._y_pmc,
+                chi3=self._chi3, npml=npml_arg, y_pmc=self._y_pmc,
                 y_mirror=self._y_mirror, x_mirror=self._x_mirror, **extra)
         setattr(self, slot, built)
         return built

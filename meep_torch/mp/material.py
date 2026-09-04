@@ -19,8 +19,10 @@ from ..adjoint.problem import MaterialGrid as _EngineMaterialGrid
 from ..core.materials import LorentzPole, Material
 from .vec import Vector3
 
-# side constants (meep mp.Low/High, mp.ALL); X/Y/Z live in mp/simulation.py
-Low, High = 0, 1
+# side constants (meep mp.Low/High, mp.ALL); X/Y/Z live in mp/simulation.py.
+# meep's C++ boundary_side enum is {High, Low}: High=0, Low=1 (matches
+# cpp_bindings_geom and real pymeep).
+High, Low = 0, 1
 ALL = -1
 
 FreqRange = namedtuple("FreqRange", ["min", "max"])
@@ -460,9 +462,10 @@ class _PMLMeta(type):
 
 class PML(metaclass=_PMLMeta):
     """meep mp.PML boundary layer. The engine applies CPML with a fixed
-    profile on every cell edge: only the meep defaults (direction=ALL,
-    side=ALL, R_asymptotic=1e-15, mean_stretch=1, quadratic profile) are
-    accepted; anything else raises ValueError naming the limitation."""
+    profile on the edges the layer names (direction=mp.X/Y/Z or ALL,
+    side=mp.Low/High or ALL; other edges stay plain PEC walls). Only the
+    meep-default numerics (R_asymptotic=1e-15, mean_stretch=1, quadratic
+    profile) are accepted; anything else raises ValueError."""
 
     def __init__(self, thickness=None, direction=ALL, side=ALL,
                  R_asymptotic=1e-15, mean_stretch=1.0,
@@ -480,10 +483,12 @@ class PML(metaclass=_PMLMeta):
         self.mean_stretch = mean_stretch
         self.pml_profile = pml_profile
         name = type(self).__name__
-        if direction != ALL or side != ALL:
-            raise ValueError(
-                f"{name} with direction/side is not supported: the engine "
-                f"applies boundary layers on all cell edges (direction=ALL, side=ALL)")
+        if direction not in (ALL, 0, 1, 2):     # mp.X/Y/Z (R needs cylindrical)
+            raise ValueError(f"{name}.direction must be mp.X/Y/Z or mp.ALL, "
+                             f"got {direction}")
+        if side not in (ALL, Low, High):
+            raise ValueError(f"{name}.side must be mp.Low/High or mp.ALL, "
+                             f"got {side}")
         if mean_stretch != 1.0:
             raise ValueError(f"{name}.mean_stretch != 1 is not supported by the engine")
         if pml_profile is not DefaultPMLProfile:
@@ -497,7 +502,7 @@ class PML(metaclass=_PMLMeta):
 class Absorber(PML):
     """meep mp.Absorber: drop-in for PML using a matched sigma_d = sigma_b
     quadratic conductivity ramp instead of coordinate stretching. Same
-    signature as PML; applied on all cell edges."""
+    signature as PML, including direction/side edge selection."""
 
 
 class MaterialGrid(_EngineMaterialGrid):

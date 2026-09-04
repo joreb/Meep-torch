@@ -28,16 +28,23 @@ from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
 from .simulation import (EnergyRegion, FluxRegion, ForceRegion, Identity, Mirror,
                          ModeRegion, Near2FarRegion, P, R, Rotate2, Rotate4,
                          Simulation, Symmetry, X, Y, Z)
-from .sources import (ALL_COMPONENTS, AUTOMATIC, ContinuousSource, CustomSource,
-                      Dielectric, DiffractedPlanewave, EVEN_Y, EVEN_Z,
-                      EigenModeSource, Ex, Ey, Ez, GaussianBeam2DSource,
-                      GaussianBeam3DSource, GaussianBeamSource, GaussianSource,
-                      Hz, Hy, IndexedSource, NO_PARITY, ODD_Y, ODD_Z, Source,
-                      pol_for)
+from .sources import (ALL_COMPONENTS, AUTOMATIC, Bx, By, Bz, ContinuousSource,
+                      CustomSource, Dielectric, DiffractedPlanewave, Dx, Dy, Dz,
+                      EVEN_Y, EVEN_Z, EigenModeSource, Ex, Ey, Ez,
+                      GaussianBeam2DSource, GaussianBeam3DSource,
+                      GaussianBeamSource, GaussianSource, Hx, Hy, Hz,
+                      IndexedSource, NO_PARITY, ODD_Y, ODD_Z, Source, pol_for)
 from .vec import Vector3, interpolate
 from .verbosity_mgr import Verbosity, verbosity
 
 inf = math.inf
+
+# predefined media (meep geom.py definitions, verbatim)
+vacuum = Medium(epsilon=1)
+air = Medium(epsilon=1)
+metal = Medium(epsilon=-inf)
+perfect_electric_conductor = Medium(epsilon=-inf)
+perfect_magnetic_conductor = Medium(mu=-inf)
 
 
 # meep module-level retrieval functions: operate on the Dft objects the add_*

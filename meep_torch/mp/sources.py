@@ -22,6 +22,13 @@ Ex = "Ex"
 Ey = "Ey"
 Hz = "Hz"
 Hy = "Hy"
+Hx = "Hx"
+Dx = "Dx"
+Dy = "Dy"
+Dz = "Dz"
+Bx = "Bx"
+By = "By"
+Bz = "Bz"
 Dielectric = "Dielectric"
 ALL_COMPONENTS = "ALL_COMPONENTS"
 
@@ -54,6 +61,27 @@ class _Shifted:
         if t < self.start_time:
             return 0.0
         return self._inner.amplitude(t - self.start_time)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class _Quadrature:
+    """The 90-degree-shifted carrier of a real cos-phase profile (env*sin
+    instead of env*cos), for injecting the imaginary part of a complex
+    spatial amplitude into the real-field engine: Re[a * env * e^{-iwt}] =
+    Re(a)*env*cos(wt) + Im(a)*env*sin(wt)."""
+    # ponytail: quarter-period carrier delay also shifts the envelope by
+    # 1/(4 fcen) -- negligible for narrowband pulses (envelope width 1/fwidth
+    # >> period); evaluate env and carrier separately if broadband complex
+    # sources ever matter
+
+    def __init__(self, inner, fcen: float):
+        self._inner = inner
+        self._delay = 1.0 / (4.0 * float(fcen))
+
+    def amplitude(self, t: float) -> float:
+        return self._inner.amplitude(t - self._delay)
 
     def __getattr__(self, name):
         return getattr(self._inner, name)

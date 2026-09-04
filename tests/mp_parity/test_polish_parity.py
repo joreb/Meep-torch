@@ -249,7 +249,8 @@ def test_geometric_object_info_prints_properties(capsys):
 
 # ------------------------------------------- Simulation params + new methods
 def test_simulation_unsupported_params_raise():
-    for kw in ({"k_point": mp.Vector3(0.5, 0)}, {"force_complex_fields": True},
+    # k_point no longer raises: the Bloch shim (mp/bloch_shim.py) drives it
+    for kw in ({"force_complex_fields": True},
                {"m": 1}, {"epsilon_func": lambda p: 1.0},
                {"epsilon_input_file": "eps.h5"}, {"force_all_components": True},
                {"output_volume": mp.Volume(center=mp.Vector3())},
@@ -301,3 +302,88 @@ def test_field_getters_after_tm_run():
     assert sim.get_hfield_y().shape == (39, 40)
     with pytest.raises(NotImplementedError):
         sim.get_efield_x()                       # TE-only component on a TM run
+
+
+def test_predefined_media_and_materials_module():
+    """meep geom.py constants + the meep materials library port."""
+    assert mp.air.epsilon_diag.x == 1.0 and mp.vacuum.epsilon_diag.x == 1.0
+    assert mp.metal.epsilon_diag.x == -np.inf
+    assert mp.perfect_electric_conductor.epsilon_diag.x == -np.inf
+    assert mp.perfect_magnetic_conductor.mu_diag.x == -np.inf
+    from meep_torch.mp import materials
+    assert isinstance(materials.Au, mp.Medium)
+    assert isinstance(materials.fused_quartz, mp.Medium)
+
+
+def test_sources_and_symmetries_mutable_after_construction():
+    """meep sim.sources / sim.symmetries are appendable lists; polarization
+    and mirror state settle when the fields are built (holey-wvg flow)."""
+    sim = _sim(sources=[])
+    sim.sources.append(mp.Source(mp.GaussianSource(1.0, fwidth=0.2),
+                                 component=mp.Ez, center=mp.Vector3()))
+    sim.symmetries.append(mp.Mirror(mp.Y, phase=1))
+    f = sim.add_flux(1.0, 0.2, 2, mp.FluxRegion(center=mp.Vector3(1, 0),
+                                                size=mp.Vector3(0, 2)))
+    assert sim._pol == "tm" and sim._sym_cy > 0
+    sim.run(until=5)
+    assert np.all(np.isfinite(mp.get_fluxes(f)))
+
+
+def test_run_sources_until_and_run_index():
+    sim = _sim(sources=[mp.Source(mp.GaussianSource(1.0, fwidth=0.2),
+                                  component=mp.Ez, center=mp.Vector3())])
+    sim._run_sources_until(1.0, [])
+    cut = sim._sources[0].src.profile().t_end
+    assert abs(sim.round_time() - (cut + 1.0)) <= sim.grid.dt + 1e-9
+    assert sim.run_index == 1
+
+
+def test_add_dft_fields_region_slices_array():
+    sim = _sim(sources=[mp.Source(mp.GaussianSource(1.0, fwidth=0.2),
+                                  component=mp.Ez, center=mp.Vector3())])
+    d = sim.add_dft_fields([mp.Ez], 1.0, 0, 1, center=mp.Vector3(0, 0),
+                           size=mp.Vector3(2, 1))
+    sim.run(until=10)
+    arr = sim.get_dft_array(d, mp.Ez, 0)
+    assert arr.shape == (20, 10)                # 2x1 region at resolution 10
+    x, y, z, w = sim.get_array_metadata(dft_cell=d)
+    assert len(x) == arr.shape[0] and len(y) == arr.shape[1]
+
+
+def test_run_k_points_dispersion_branches():
+    """0D homogeneous Bloch run: eps(w) = (k/w)^2 matches the Lorentz medium
+    (the material-dispersion tutorial physics)."""
+    susc = [mp.LorentzianSusceptibility(frequency=1.1, gamma=1e-5, sigma=0.5)]
+    dm = mp.Medium(epsilon=2.25, E_susceptibilities=susc)
+    sim = mp.Simulation(cell_size=mp.Vector3(), resolution=20, geometry=[],
+                        sources=[mp.Source(mp.GaussianSource(1.0, fwidth=2.0),
+                                           component=mp.Ez,
+                                           center=mp.Vector3())],
+                        default_material=dm)
+    (freqs,) = sim.run_k_points(150, [mp.Vector3(1.25)])
+    eps = sorted((1.25 / f.real) ** 2 for f in freqs if f.real > 0.1)
+    ref = [2.25 + 0.5 * 1.1**2 / (1.1**2 - w**2)
+           for w in sorted(f.real for f in freqs if f.real > 0.1)]
+    np.testing.assert_allclose(eps, sorted(ref, reverse=False), rtol=0.05)
+
+
+def test_complex_amp_func_launches_oblique_planewave():
+    """pw-source: complex amp_func e^{ik.y} on the real-field engine (the
+    imaginary part rides the quadrature carrier)."""
+    import cmath
+    k = mp.Vector3(1.0, 0.4).unit().scale(2 * np.pi * 1.0)
+
+    def pw_amp(k0, x0):
+        def _amp(x):
+            return cmath.exp(1j * k0.dot(x + x0))
+        return _amp
+
+    sim = _sim(cell_size=mp.Vector3(6, 6), boundary_layers=[mp.PML(1.0)],
+               sources=[mp.Source(mp.ContinuousSource(frequency=1.0, fwidth=100),
+                                  component=mp.Ez,
+                                  center=mp.Vector3(-2, 0),
+                                  size=mp.Vector3(0, 6),
+                                  amp_func=pw_amp(k, mp.Vector3(x=-2)))])
+    sim.run(until=15)
+    ez = sim.get_efield_z()
+    assert np.all(np.isfinite(ez)) and np.abs(ez).max() > 1e-3

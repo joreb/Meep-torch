@@ -361,6 +361,7 @@ class Harminv:
         self.fcen = float(fcen)
         self.df = float(df)
         self.mxbands = mxbands
+        self.Q_thresh = 50.0        # meep default: drop |Q| < 50 junk modes
         self.data = []
         self._dt = None
         self._modes = None
@@ -380,7 +381,7 @@ class Harminv:
             self._modes = [
                 Mode(freq=m.freq, Q=m.Q, amp=m.amp, err=0.0,
                      decay=(math.pi * abs(m.freq) / m.Q if math.isfinite(m.Q) else 0.0))
-                for m in ms]
+                for m in ms if abs(m.Q) >= self.Q_thresh]
         return self._modes
 
 

@@ -159,10 +159,14 @@ def test_pml_full_signature_and_defaults():
     assert p.pml_profile(0.5) == 0.25
     with pytest.raises(ValueError, match="thickness must be specified"):
         mp.PML()
-    with pytest.raises(ValueError, match="all cell edges"):
-        mp.PML(1.0, direction=mp.X)
-    with pytest.raises(ValueError, match="all cell edges"):
-        mp.Absorber(1.0, side=mp.Low)
+    # per-direction/per-side layers are accepted (meep semantics: the layer
+    # applies only on its edges; unnamed edges stay PEC)
+    px = mp.PML(1.0, direction=mp.X)
+    assert (px.direction, px.side) == (mp.X, mp.ALL)
+    alo = mp.Absorber(1.0, side=mp.Low)
+    assert (alo.direction, alo.side) == (mp.ALL, mp.Low)
+    with pytest.raises(ValueError, match="direction"):
+        mp.PML(1.0, direction=7)
     with pytest.raises(ValueError, match="mean_stretch"):
         mp.PML(1.0, mean_stretch=0.5)
     with pytest.raises(ValueError, match="pml_profile"):

@@ -29,15 +29,15 @@ from ..geometry.scene import rasterize_scene
 from .coords import (GridSpec, box3d, cell_index, cell_index_y, cell_index_z, grid_spec,
                      pml_npml, rect_corners, span_index_range, to_corner)
 from .geometry import Block, build_scene_items
-from .material import Absorber, Medium, PML
+from .material import ALL, Absorber, Low, Medium, PML
 from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
                           DftNear2Far, DftObj, FluxData, _eval_step_func,
                           chunk_size, dft_name, fire_per_step, fire_scheduled,
                           plan_hooks)
 from .sources import (AUTOMATIC, Dielectric, DiffractedPlanewave,
                       EigenModeSource, Ez, GaussianBeam3DSource, Hz,
-                      IndexedSource, Source, _point_or_span, build_line_source,
-                      build_mode_source, pol_for)
+                      IndexedSource, Source, _Quadrature, _point_or_span,
+                      build_line_source, build_mode_source, pol_for)
 from .vec import Vector3
 from ..ports.mode_monitor import decompose
 
@@ -81,6 +81,25 @@ class Mirror(Symmetry):
 
 class Identity(Symmetry):
     """The identity symmetry (a no-op)."""
+
+
+def _layer_axes(direction, dimensions) -> tuple[int, ...]:
+    """Grid axes a boundary layer's meep ``direction`` covers. A 1D cell
+    lies along z but the engine grid puts it on x (see _grid_for)."""
+    if dimensions == 1:
+        if direction in (ALL, Z):
+            return (0,)
+        raise ValueError(
+            f"boundary layer direction {direction}: a 1D cell extends along "
+            f"z only (use direction=mp.Z or mp.ALL)")
+    naxes = 3 if dimensions == 3 else 2
+    if direction == ALL:
+        return tuple(range(naxes))
+    if 0 <= direction < naxes:                    # mp.X/Y(/Z)
+        return (direction,)
+    raise ValueError(
+        f"boundary layer direction {direction} has no extent in a "
+        f"{dimensions}D cell")
 
 
 def _grid_for(cell: Vector3, resolution: float, dimensions: int, dtype,
@@ -167,8 +186,9 @@ class Simulation:
     progress_interval, subpixel_tol/subpixel_maxeval, loop_tile_base_db/eh,
     ensure_periodicity, num_chunks / split_chunks_evenly / chunk_layout /
     collect_stats (whole-domain tensors, no chunking), filename_prefix,
-    output_single_precision, accurate_fields_near_cylorigin. Raise on
-    non-default: k_point (Bloch runs live in meep_torch/ports/orders.py),
+    output_single_precision, accurate_fields_near_cylorigin. k_point runs the
+    Bloch-periodic path (mp/bloch_shim.py; unsupported combos raise at run
+    time). Raise on non-default:
     m (no cylindrical engine), force_complex_fields (real-field engine),
     force_all_components, bfast_scaled_k, material_function / epsilon_func /
     epsilon_input_file (no pointwise material sampling), output_volume."""
@@ -187,16 +207,25 @@ class Simulation:
                  output_single_precision=False, geometry_center=Vector3(),
                  force_all_components=False, split_chunks_evenly=True,
                  chunk_layout=None, collect_stats=False, dtype=torch.float64):
+        cs = Vector3(*cell_size)
+        if dimensions in (2, 3) and cs.z and not cs.x and not cs.y:
+            # meep's grid_volume infers a z-only cell as 1D whatever the
+            # dimensions argument says (faraday-rotation runs it with the
+            # default 2, refl-angular passes 3 for its oblique k)
+            dimensions = 1
         self.dimensions = dimensions
         self.dtype = dtype
+        self.cell_size = cell_size
+        self.resolution = resolution
+        self.run_index = 0           # meep: bumped after each run()
         if force_complex_fields:
             raise NotImplementedError(
                 "force_complex_fields: the engine steps real fields only "
                 "(using_real_fields() is always True)")
-        if k_point not in (False, None):
-            raise NotImplementedError(
-                "k_point (Bloch-periodic run) has no Simulation path; drive "
-                "the Bloch core machinery directly (meep_torch/ports/orders.py)")
+        # k_point: Bloch-periodic run (mp/bloch_shim.py drives
+        # core/stepper_bloch); unsupported combos raise there at run time
+        self._bloch = k_point not in (False, None)
+        self._bloch_state = None
         if m:
             raise NotImplementedError(
                 "m != 0 needs the cylindrical engine, which is not ported")
@@ -248,24 +277,7 @@ class Simulation:
             # the cell (geometry_center names the coordinate of the cell
             # center); sources/monitors are NOT shifted, matching meep
             geometry = [obj.shift(-gc) for obj in geometry]
-        # mirror halving: _sym_cx/_sym_cy = full-cell cols/rows below the cut
-        # plane (0 = off); _sym_px/_sym_py = mirror phase (+1 even / -1 odd)
-        self._sym_cx = self._sym_cy = 0
-        self._sym_px = self._sym_py = 1
-        mirrors = {}
-        for s in symmetries or []:
-            if isinstance(s, Identity):
-                continue
-            if (isinstance(s, Mirror) and not isinstance(s, (Rotate2, Rotate4))
-                    and s.direction in (X, Y) and s.phase in (1 + 0j, -1 + 0j)):
-                mirrors[s.direction] = int(s.phase.real)
-                continue
-            raise NotImplementedError(
-                f"{type(s).__name__}(direction={getattr(s, 'direction', None)}, "
-                f"phase={getattr(s, 'phase', None)}) not supported: "
-                f"Mirror(X/Y, phase=+-1) only ({_SYM_TODO})")
-        if mirrors and dimensions != 2:
-            raise NotImplementedError(f"Mirror(X/Y) is 2D-only ({_SYM_TODO})")
+        self.symmetries = list(symmetries or [])   # meep-mutable, like sources
         # meep flow: __init__ stores the spec only; init_sim (or the lazy
         # accessors) builds self.structure and self.fields.
         self._sources = list(sources or [])
@@ -297,19 +309,56 @@ class Simulation:
             # S-param path: an EigenModeSource + mode monitors -> compute_smatrix.
             self._eig_source = next((s for s in self._sources
                                      if isinstance(s, EigenModeSource)), None)
-        self._npml = 0
-        self._nabs = 0
-        for bl in boundary_layers or []:
+        # per-grid-axis [lo, hi] cell counts (meep direction/side semantics;
+        # edges with no layer stay PEC). _npml/_nabs keep the max for the
+        # placement margins and 3D psi allocation.
+        self.boundary_layers = list(boundary_layers or [])
+        self._npml_sides = [[0, 0], [0, 0], [0, 0]]
+        self._nabs_sides = [[0, 0], [0, 0], [0, 0]]
+        for bl in self.boundary_layers:
             if isinstance(bl, PML):
-                self._npml = max(self._npml, pml_npml(bl.thickness, self.gs))
+                sides = self._npml_sides
             elif isinstance(bl, Absorber):
-                self._nabs = max(self._nabs, pml_npml(bl.thickness, self.gs))
+                sides = self._nabs_sides
+            else:
+                continue
+            n = pml_npml(bl.thickness, self.gs)
+            for ax in _layer_axes(bl.direction, dimensions):
+                for s in ((0, 1) if bl.side == ALL else
+                          ((0,) if bl.side == Low else (1,))):
+                    sides[ax][s] = max(sides[ax][s], n)
+        self._npml = max(max(p) for p in self._npml_sides)
+        self._nabs = max(max(p) for p in self._nabs_sides)
         self._default = default_material if isinstance(default_material, Medium) else Medium(epsilon=float(default_material))
-        if mirrors and self._pol != "tm":
+        self._apply_symmetries()
+
+    def _apply_symmetries(self):
+        """Derive the mirror-halving state (_sym_cx/_sym_cy = full-cell
+        cols/rows below the cut plane, 0 = off; _sym_px/_sym_py = mirror
+        phase +1 even / -1 odd) from ``self.symmetries``. Re-run by init_sim
+        while the fields are unbuilt: meep's sim.symmetries is mutable."""
+        self._sym_cx = self._sym_cy = 0
+        self._sym_px = self._sym_py = 1
+        mirrors = {}
+        for s in self.symmetries:
+            if isinstance(s, Identity):
+                continue
+            if (isinstance(s, Mirror) and not isinstance(s, (Rotate2, Rotate4))
+                    and s.direction in (X, Y) and s.phase in (1 + 0j, -1 + 0j)):
+                mirrors[s.direction] = int(s.phase.real)
+                continue
+            raise NotImplementedError(
+                f"{type(s).__name__}(direction={getattr(s, 'direction', None)}, "
+                f"phase={getattr(s, 'phase', None)}) not supported: "
+                f"Mirror(X/Y, phase=+-1) only ({_SYM_TODO})")
+        if mirrors and self.dimensions != 2:
+            raise NotImplementedError(f"Mirror(X/Y) is 2D-only ({_SYM_TODO})")
+        if mirrors and (self._pol != "tm" or self._bloch):
             # meep treats symmetries as an optimization hint; the TE engine
-            # has no half-domain path, so keep the full cell (same physics)
-            warnings.warn("Mirror symmetries on a TE run do not reduce the "
-                          f"domain (full-cell run; {_SYM_TODO})")
+            # and the Bloch (k_point) path have no half-domain machinery, so
+            # keep the full cell (same physics)
+            warnings.warn("Mirror symmetries on a TE or k_point run do not "
+                          f"reduce the domain (full-cell run; {_SYM_TODO})")
             mirrors = {}
         if Y in mirrors:
             if self.gs.ny % 2:
@@ -416,9 +465,20 @@ class Simulation:
     @property
     def _state(self):
         """Live engine field state: ``self.fields`` owns it (meep); the 3D
-        path keeps its tensor state behind the same facade."""
+        and Bloch paths keep their tensor state behind the same facade
+        (Bloch quadratures surface as complex tensors, meep complex fields)."""
         if self.dimensions == 3:
             return self._state3
+        st = self._bloch_state
+        if st is not None:
+            from types import SimpleNamespace
+            if hasattr(st, "Ez_c"):
+                return SimpleNamespace(Ez=st.Ez_c + 1j * st.Ez_s,
+                                       Hx=st.Hx_c + 1j * st.Hx_s,
+                                       Hy=st.Hy_c + 1j * st.Hy_s)
+            return SimpleNamespace(Hz=st.Hz_c + 1j * st.Hz_s,
+                                   Ex=st.Ex_c + 1j * st.Ex_s,
+                                   Ey=st.Ey_c + 1j * st.Ey_s)
         return None if self.fields is None else self.fields._state
 
     def _absorber_ramp(self):
@@ -426,10 +486,12 @@ class Simulation:
         from ..core.pml import absorber_sigma
         nx, ny, dx = self.grid.nx, self.grid.ny, self.grid.dx
         kw = dict(dtype=self.grid.dtype, device=self.grid.device)
-        ramp = absorber_sigma(nx, self._nabs, dx, **kw)[:, None].expand(nx, ny).clone()
+        ramp = absorber_sigma(nx, tuple(self._nabs_sides[0]), dx,
+                              **kw)[:, None].expand(nx, ny).clone()
         if not self._y_pmc:
             ramp = torch.maximum(
-                ramp, absorber_sigma(ny, self._nabs, dx, **kw)[None, :].expand(nx, ny))
+                ramp, absorber_sigma(ny, tuple(self._nabs_sides[1]), dx,
+                                     **kw)[None, :].expand(nx, ny))
         return ramp
 
     # ----------------------------------------------------------------------
@@ -475,7 +537,9 @@ class Simulation:
         has_cond = bool((sd.abs().sum() + sb.abs().sum()).item())
         self._eps3d = eps
         self._coeffs3d = build_3d_coeffs(
-            nx, ny, nz, g.dx, eps=eps, npml=self._npml, n_abs=self._nabs,
+            nx, ny, nz, g.dx, eps=eps,
+            npml=tuple(tuple(p) for p in self._npml_sides),
+            n_abs=tuple(tuple(p) for p in self._nabs_sides),
             sigma_d=(sd if has_cond else None), sigma_b=(sb if has_cond else None),
             dtype=dtype)
 
@@ -634,10 +698,27 @@ class Simulation:
                 # overwrite the uniform span mask with the spatial profile across y
                 c = center or Vector3()
                 ys = [c.y - gs.sy / 2 + (j + 0.5) * gs.dx for j in range(j0, j1)]
-                w = [float(amp_func(Vector3(c.x, y, 0.0))) for y in ys]
+                w = np.array([complex(amp_func(Vector3(c.x, y, 0.0))) for y in ys])
                 src.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
-                row = torch.tensor(w, dtype=self.grid.dtype)
-                src.mask[ix, j0:j1] = row
+                src.mask[ix, j0:j1] = torch.tensor(w.real, dtype=self.grid.dtype)
+                if np.abs(w.imag).max() > 0.0:
+                    # complex amplitude on real fields (meep: inject
+                    # Re[a * s(t)]): the imaginary part rides the
+                    # quadrature-shifted carrier as a second soft source
+                    fcen = getattr(spec.src, "frequency", None)
+                    if not fcen:
+                        raise NotImplementedError(
+                            "complex amp_func needs a source with a carrier "
+                            "frequency (GaussianSource/ContinuousSource)")
+                    imsrc = LineSource(self.grid, ix, j0, j1,
+                                       profile=_Quadrature(prof, fcen))
+                    imsrc.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
+                    imsrc.mask[ix, j0:j1] = torch.tensor(w.imag,
+                                                         dtype=self.grid.dtype)
+                    imsrc.mask = imsrc.mask * amp
+                    if self._pol == "te":
+                        imsrc.mask = imsrc.mask[:, :-1]
+                    out.append(imsrc)
             src.mask = src.mask * amp
             if self._pol == "te":
                 # step_te injects into Dy (Ey grid, (nx, ny-1))
@@ -695,9 +776,11 @@ class Simulation:
         return self._t_step * (self._coeffs.dt if self.dimensions == 3 else self.grid.dt)
 
     def get_field_point(self, c, pt):
-        """Field value at the cell containing meep point ``pt`` (component per
-        the run polarization: Ez for TM, Hz for TE)."""
-        if self._state is None:
+        """Field value of component ``c`` at the cell containing meep point
+        ``pt``. D components map to eps_inf * E at that cell; a component the
+        state does not carry falls back to the run polarization's primary
+        field (Ez for TM, Hz for TE -- the old behavior)."""
+        if self._bloch_state is None and self._state is None:
             return 0.0
         gs = self.gs
         if self.dimensions == 1:
@@ -708,14 +791,113 @@ class Simulation:
             iy, miry = self._foldpt(max(0, min(gs.ny - 1, cell_index_y(pt.y, gs))), "y")
             px, py = self._comp_parity("Ez")
             sgn = (px if mirx else 1.0) * (py if miry else 1.0)
-        f = self._state.Hz if self._pol == "te" else self._state.Ez
-        return sgn * float(f[ix, iy])
+        name, scale = (c if isinstance(c, str) else ""), 1.0
+        if name.startswith("D") and name != "Dielectric":
+            name = "E" + name[1:]
+            scale = float(np.asarray(self.get_epsilon())[ix, iy])
+        elif name.startswith("B"):
+            name = "H" + name[1:]        # mu = 1 engine: B == H
+        st = self._bloch_state
+        if st is not None:
+            # per-point probe on the quadrature pair; decay stop conditions
+            # call this every step, so skip the complex _state facade
+            fc = getattr(st, name + "_c", None)
+            if fc is None:
+                fc, fs = ((st.Hz_c, st.Hz_s) if self._pol == "te"
+                          else (st.Ez_c, st.Ez_s))
+            else:
+                fs = getattr(st, name + "_s")
+            i, j = min(ix, fc.shape[0] - 1), min(iy, fc.shape[1] - 1)
+            return sgn * scale * complex(float(fc[i, j]), float(fs[i, j]))
+        f = getattr(self._state, name, None)
+        if f is None:
+            f = self._state.Hz if self._pol == "te" else self._state.Ez
+        v = f[min(ix, f.shape[0] - 1), min(iy, f.shape[1] - 1)]
+        return sgn * scale * (complex(v) if v.is_complex() else float(v))
+
+    def _box_indices(self, box, center, size):
+        """(i0, i1, j0, j1) cell-index bounds of a Volume/center+size box
+        (whole cell when none given); shared by the *_in_box integrals."""
+        if box is not None:
+            center, size = box.center, box.size
+        gs = self.gs
+        if center is None and size is None:
+            return 0, gs.nx, 0, gs.ny
+        x0, y0, x1, y1 = rect_corners(center or Vector3(), size or Vector3(), gs)
+        i0, i1 = span_index_range(x0, x1, gs, "x")
+        j0, j1 = span_index_range(y0, y1, gs, "y")
+        return i0, max(i1, i0 + 1), j0, max(j1, j0 + 1)
+
+    def electric_energy_in_box(self, box=None, center=None, size=None):
+        """meep electric_energy_in_box: integral of eps |E|^2 / 2 over the
+        box (2D; whole cell when no box is given)."""
+        from .output import _epwr
+        i0, i1, j0, j1 = self._box_indices(box, center, size)
+        return float(np.sum(_epwr(self)[i0:i1, j0:j1]) * self.gs.dx ** 2)
+
+    def magnetic_energy_in_box(self, box=None, center=None, size=None):
+        """meep magnetic_energy_in_box: integral of |H|^2 / 2 over the box."""
+        from .output import _hpwr
+        i0, i1, j0, j1 = self._box_indices(box, center, size)
+        return float(np.sum(_hpwr(self)[i0:i1, j0:j1]) * self.gs.dx ** 2)
+
+    def field_energy_in_box(self, box=None, center=None, size=None):
+        """meep field_energy_in_box: total (electric + magnetic) energy."""
+        return (self.electric_energy_in_box(box, center, size)
+                + self.magnetic_energy_in_box(box, center, size))
+
+    def integrate_field_function(self, cs, func, where=None, center=None,
+                                 size=None):
+        """meep integrate_field_function: integral over the cell (or box) of
+        func(r, *component values) sampled per Yee cell (midpoint rule)."""
+        return self.integrate2_field_function(self.fields, cs, [], func,
+                                              where, center, size)
+
+    def integrate2_field_function(self, fields2, cs1, cs2, func, where=None,
+                                  center=None, size=None):
+        """meep integrate2_field_function: as integrate_field_function, with
+        the ``cs2`` components read from another fields object ``fields2``
+        (the two-run mode-overlap workflow)."""
+        # ponytail: per-point Python loop (N^2 func calls); vectorize over
+        # numpy arrays if overlap integrals on big cells ever get hot
+        self.init_sim()
+        i0, i1, j0, j1 = self._box_indices(where, center, size)
+        dx, gs = self.gs.dx, self.gs
+
+        def comps(fobj, cs):
+            out = []
+            for c in cs:
+                a = getattr(fobj._state, c, None)
+                if a is None:
+                    raise NotImplementedError(
+                        f"component {c!r} is not in the field state")
+                out.append(a.detach().cpu().numpy())
+            return out
+        a1 = comps(self.fields, cs1)
+        a2 = comps(fields2, cs2)
+        total = 0.0
+        for i in range(i0, i1):
+            for j in range(j0, j1):
+                r = Vector3((i + 0.5) * dx - gs.sx / 2.0,
+                            (j + 0.5) * dx - gs.sy / 2.0)
+                vals = [a[min(i, a.shape[0] - 1), min(j, a.shape[1] - 1)]
+                        for a in a1 + a2]
+                total += func(r, *vals)
+        return total * dx * dx
 
     def run(self, *step_funcs, until=None, until_after_sources=None, n_steps=None):
+        self.run_index += 1          # meep numbers runs for display_* prefixes
         if (self._sym_cy or self._sym_cx) and self._eig_source is not None:
             raise NotImplementedError(
                 f"EigenModeSource with Mirror symmetry not supported: "
                 f"compute_smatrix has no mirror path yet ({_SYM_TODO})")
+        if self._bloch and self.dimensions != 3:
+            from .bloch_shim import needs_bloch, run_bloch
+            if needs_bloch(self):
+                return run_bloch(self, step_funcs, until, until_after_sources,
+                                 n_steps)
+            # every axis carries boundary layers: no periodic wrap -- meep
+            # only switches to complex fields, fluxes match the real run
         stepped = bool(step_funcs) or callable(until) or callable(until_after_sources) \
             or isinstance(until, (list, tuple)) or isinstance(until_after_sources, (list, tuple))
         if stepped:
@@ -742,6 +924,101 @@ class Simulation:
             self._run_modes(n_steps)
             return
         self._run_until((), None, None, n_steps)
+
+    def run_k_points(self, t=None, k_points=None):
+        """meep run_k_points: run one Bloch-periodic simulation per k in
+        ``k_points`` (until the sources turn off plus ``t``), extract the
+        eigenfrequencies via Harminv, return a list (one per k) of complex
+        frequencies (freq, decay). Prints meep's freqs:/freqs-im: rows."""
+        from .verbosity_mgr import verbosity
+        all_freqs = []
+        for k_index, k in enumerate(k_points, 1):
+            h = self.run_k_point(t, k)
+            freqs = [complex(m.freq, m.decay) for m in h.modes]
+            if verbosity.meep > 0:
+                print(f"freqs:, {k_index}, {k.x}, {k.y}, {k.z}, "
+                      + ", ".join(str(f.real) for f in freqs))
+                print(f"freqs-im:, {k_index}, {k.x}, {k.y}, {k.z}, "
+                      + ", ".join(str(f.imag) for f in freqs))
+            all_freqs.append(freqs)
+        return all_freqs
+
+    def run_k_point(self, t=None, k=None):
+        """meep run_k_point: one Bloch run at ``k``; returns the Harminv.
+
+        Engine scope: the homogeneous 0D case (zero cell_size, no geometry) --
+        a uniform (possibly Lorentz-dispersive) medium at Bloch wavevector k,
+        stepped as a single Yee cell with the Bloch phase folded into the
+        curls (the material-dispersion tutorial). Spatially-structured Bloch
+        runs stay with the core machinery (meep_torch/core/stepper_bloch*)."""
+        from .material import DrudeSusceptibility, LorentzianSusceptibility
+        from .run_control import Harminv
+        from .sources import GaussianSource
+        cs = self.cell_size or Vector3()
+        if self._geometry or cs.x or cs.y or cs.z:
+            raise NotImplementedError(
+                "run_k_points: only the homogeneous zero-size-cell case is "
+                "supported (Bloch runs with geometry: core/stepper_bloch*)")
+        gaussians = [s for s in self._sources
+                     if isinstance(s.src, GaussianSource)]
+        if not gaussians:
+            raise ValueError(
+                "Running with k_points requires a 'GaussianSource' source")
+        fmin = max(0.0, min(s.src.frequency - 0.5 / s.src.width for s in gaussians))
+        fmax = max(s.src.frequency + 0.5 / s.src.width for s in gaussians)
+        spec = gaussians[0]
+        prof = spec.src.profile()
+
+        # medium: eps_inf + Lorentz poles of the (uniform) default material
+        eps_inf = float(self._default.epsilon_diag.x)
+        poles = []
+        for su in (self._default.E_susceptibilities or []):
+            if isinstance(su, DrudeSusceptibility) or not isinstance(
+                    su, LorentzianSusceptibility):
+                raise NotImplementedError(
+                    "run_k_points: LorentzianSusceptibility media only")
+            poles.append((float(su.frequency), float(su.gamma),
+                          float(su.sigma_diag.x)))
+
+        # single Yee cell, complex phasors, Bloch phase in the curls:
+        # dHy/dt = dEz/dx -> Hy += (dt/dx)(bp - 1) Ez ; dD/dt = dHy/dx ->
+        # D += (dt/dx)(1 - 1/bp) Hy ; E = (D - sum P) / eps_inf
+        dx = 1.0 / self.resolution if getattr(self, "resolution", 0) else 0.05
+        dt = self.Courant * dx
+        bp = complex(math.cos(2 * math.pi * k.x * dx),
+                     math.sin(2 * math.pi * k.x * dx))
+        pc = []
+        for (fn, gn, sn) in poles:      # meep Lorentz ADE coefficients
+            wn, gam = 2 * math.pi * fn, 2 * math.pi * gn
+            den = 1.0 + gam * dt / 2.0
+            pc.append(((2.0 - wn * wn * dt * dt) / den,
+                       -(1.0 - gam * dt / 2.0) / den,
+                       sn * wn * wn * dt * dt / den))
+        cutoff = prof.t_end
+        n_steps = int(round((cutoff + float(t or 0.0)) / dt))
+        h = Harminv(spec.component, spec.center or Vector3(),
+                    0.5 * (fmin + fmax), fmax - fmin)
+        # ponytail: record every m-th sample (Nyquist of the decimated series
+        # stays >= 2 fmax) so the Harminv matrix pencil stays small; drop the
+        # decimation if closely-spaced modes ever need the full series
+        m = max(1, int(1.0 / (4.0 * fmax * dt)))
+        h._dt = m * dt
+        Ez = Hy = D = 0j
+        P = [0j] * len(poles)
+        Pp = [0j] * len(poles)
+        for n in range(n_steps):
+            Hy += (dt / dx) * (bp - 1.0) * Ez
+            for i, (c1, c2, c3) in enumerate(pc):
+                P[i], Pp[i] = c1 * P[i] + c2 * Pp[i] + c3 * Ez, P[i]
+            tt = n * dt
+            D += (dt / dx) * (1.0 - 1.0 / bp) * Hy
+            if tt < cutoff:
+                D += dt * prof.amplitude(tt)
+            Ez = (D - sum(P)) / eps_inf
+            if tt >= cutoff and n % m == 0:
+                h.data.append(Ez)
+        h._modes = None
+        return h
 
     def _run_until(self, step_funcs, until, until_after_sources, n_steps=None):
         """meep run protocol (Simulation._run_until): fire step functions,
@@ -846,6 +1123,10 @@ class Simulation:
         S-param paths keep list-only bookkeeping (no fields object)."""
         self._monitors.append((name, kind, mon, meta))
         if self.dimensions != 3 and self._eig_source is None:
+            if self._bloch:
+                from .bloch_shim import needs_bloch
+                if needs_bloch(self):
+                    return       # the Bloch driver samples from its own loop
             self.init_sim()
             self.fields._register(name, mon)
 
@@ -1065,14 +1346,32 @@ class Simulation:
         j = np.array([prof.amplitude((t + 0.5) * self.grid.dt) for t in range(n)])
         return meta["freqs"], ldos_spectrum(e, j, self.grid.dt, meta["freqs"])
 
-    def add_dft_fields(self, components, fcen, df, nfreq, name=None):
-        """Full-cell area DFT of field components (meep add_dft_fields, no
-        `where` region: whole cell only). Returns a handle for get_dft_array."""
+    def add_dft_fields(self, components, fcen, df, nfreq, where=None,
+                       center=None, size=None, yee_grid=False,
+                       decimation_factor=0, name=None):
+        """Area DFT of field components (meep add_dft_fields). The monitor
+        accumulates the whole cell; a where/center/size region restricts
+        get_dft_array / get_array_metadata(dft_cell=...) to that sub-volume."""
         freqs = np.linspace(fcen - df / 2.0, fcen + df / 2.0, nfreq).tolist()
-        return DftFields(self._add_dft_fields, [freqs, list(components), name])
+        if where is not None:
+            center, size = where.center, where.size
+        return DftFields(self._add_dft_fields,
+                         [freqs, list(components), name, (center, size)])
 
-    def _add_dft_fields(self, freqs, components, name):
+    def _add_dft_fields(self, freqs, components, name, region=(None, None)):
         name = name or f"dft{len(self._monitors)}"
+        center, size = region
+        box = None
+        if center is not None or size is not None:
+            if self.dimensions == 3:
+                raise NotImplementedError(
+                    "add_dft_fields with a region: 2D runs only")
+            gs = self.gs
+            x0, y0, x1, y1 = rect_corners(center or Vector3(),
+                                          size or Vector3(), gs)
+            i0, i1 = span_index_range(x0, x1, gs, "x")
+            j0, j1 = span_index_range(y0, y1, gs, "y")
+            box = (i0, i1, j0, j1)
         for c in components:
             if (self._sym_cy or self._sym_cx) and c not in ("Ez", "Dz"):
                 raise NotImplementedError(
@@ -1083,14 +1382,20 @@ class Simulation:
                 self._monitors.append((f"{name}:{c}", "dft", mon, {"freqs": freqs}))
             else:
                 mon = DFTFieldsMonitor(self.grid, freqs, component=c)
-                self._register_monitor(f"{name}:{c}", "dft", mon, {"freqs": freqs})
+                self._register_monitor(f"{name}:{c}", "dft", mon,
+                                       {"freqs": freqs, "box": box})
         return self, name, freqs
 
     def get_dft_array(self, name, component, num_freq):
         """Complex (nx, ny) DFT plane of `component` at frequency index."""
         acc, mon, meta = self._last_acc[f"{dft_name(name)}:{component}"]
         a = acc[num_freq].detach().cpu().numpy()
-        return self._demirror(a[0] + 1j * a[1], self._comp_parity(component))
+        out = self._demirror(a[0] + 1j * a[1], self._comp_parity(component))
+        box = meta.get("box")
+        if box is not None:
+            i0, i1, j0, j1 = box
+            out = out[i0:i1, j0:j1]
+        return out
 
     # --- MST force + field-energy monitors (2D TM; core.forces machinery) ---
     def _region_box(self, region):
@@ -1253,6 +1558,8 @@ class Simulation:
         return "y", idx, lo, hi
 
     def _line_monitor(self, region: FluxRegion, freqs, kind):
+        if self.dimensions != 3 and self._eig_source is None:
+            self.init_sim()   # meep add_flux flow: polarization settles first
         c = region.center or Vector3()
         s = region.size or Vector3(0, 0, 0)
         gs = self.gs
@@ -1309,6 +1616,16 @@ class Simulation:
         name = dft_name(name)
         parts = getattr(self, "_flux_parts", {}).get(name)
         return mon_freqs(self, parts[0] if parts else name)
+
+    def display_fluxes(self, *fluxes):
+        """meep display_fluxes: comma-separated rows 'flux<run_index>:,
+        freq, flux...' for the given flux objects."""
+        from .verbosity_mgr import verbosity
+        if verbosity.meep > 0:
+            for row in zip(self.get_flux_freqs(fluxes[0]),
+                           *[self.get_fluxes(f) for f in fluxes]):
+                print(f"flux{self.run_index}:, "
+                      + ", ".join(str(v) for v in row))
 
     def get_flux_data(self, flux):
         """Accumulated Fourier-transformed fields of a flux monitor as an
@@ -1440,7 +1757,7 @@ class Simulation:
         if self.dimensions == 3:
             raise NotImplementedError("3D get_array_metadata not supported (W9 wave 3)")
         if dft_cell is not None:
-            raise NotImplementedError("dft_cell regions are not tracked; pass vol/center/size")
+            center, size = dft_cell.args[3] if len(dft_cell.args) > 3 else (None, None)
         gs = self.gs
         if vol is not None:
             center, size = vol.center, vol.size
@@ -1469,6 +1786,20 @@ class Simulation:
         Idempotent; run() and the monitor adders call it lazily, meep style.
         The 3D path keeps its tensor state behind this facade (no fields
         object; the 3D engine is driven by core.monitors_3d.run_3d)."""
+        if self.dimensions != 3 and self.fields is None:
+            # meep's sim.sources / sim.symmetries are mutable (append after
+            # construction): re-derive polarization, eigenmode source, and
+            # mirror state before compiling the structure
+            self._eig_source = next((s for s in self._sources
+                                     if isinstance(s, EigenModeSource)), None)
+            pol = pol_for(self._sources[0].component) if self._sources else "tm"
+            if pol != self._pol:
+                self._pol = pol
+                self.structure = None
+            sym = (self._sym_cx, self._sym_cy, self._sym_px, self._sym_py)
+            self._apply_symmetries()
+            if sym != (self._sym_cx, self._sym_cy, self._sym_px, self._sym_py):
+                self.structure = None
         self._init_structure()
         if self.dimensions == 3:
             if self._state3 is None:
@@ -1507,6 +1838,7 @@ class Simulation:
         self.fields = None
         if self.dimensions == 3:
             self._state3 = None
+        self._bloch_state = None
         self._t_step = 0
         self._monitors = []
         self._last_acc = {}
@@ -1563,6 +1895,21 @@ class Simulation:
             self._pol = pol
             self.structure = None
             self.fields = None
+
+    @property
+    def sources(self):
+        """meep Simulation.sources: the live source list (mutable; appends
+        are picked up when the fields are next built)."""
+        return self._sources
+
+    @sources.setter
+    def sources(self, new_sources):
+        self.change_sources(new_sources)
+
+    def _run_sources_until(self, cond, step_funcs):
+        """meep _run_sources_until: run with step_funcs until the sources
+        have turned off plus ``cond`` (a duration or stop condition)."""
+        self.run(*step_funcs, until_after_sources=cond)
 
     def add_sources(self):
         """meep add_sources: register self.sources with the fields (init_sim

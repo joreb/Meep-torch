@@ -40,9 +40,10 @@ from .run_control import Volume
 from .sources import Dielectric
 from .vec import Vector3
 
-# Direction / side / dimension constants (meep SWIG enum values).
+# Direction / side / dimension constants (meep SWIG enum values;
+# boundary_side is {High, Low} so High=0, Low=1, matching mp/material.py).
 X, Y, Z, R, P = 0, 1, 2, 3, 4
-Low, High = 0, 1
+High, Low = 0, 1
 ALL = -1
 CYLINDRICAL = -2
 

@@ -82,8 +82,12 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
     # --- H update (envelope y-derivative + i k_y coupling) ---
     dec_dy = _dy_periodic(state.Ez_c, dx)
     des_dy = _dy_periodic(state.Ez_s, dx)
-    Dc_y = dec_dy - ky * state.Ez_s
-    Ds_y = des_dy + ky * state.Ez_c
+    # i k_y coupling evaluated AT Hx's stagger position (j+1/2): midpoint
+    # average of Ez -- same O(k_y dx) bias fix as the TE stepper below
+    Ezm_c = 0.5 * (state.Ez_c + torch.roll(state.Ez_c, -1, dims=1))
+    Ezm_s = 0.5 * (state.Ez_s + torch.roll(state.Ez_s, -1, dims=1))
+    Dc_y = dec_dy - ky * Ezm_s
+    Ds_y = des_dy + ky * Ezm_c
     Hx_c = state.Hx_c - dt * Dc_y
     Hx_s = state.Hx_s - dt * Ds_y
 
@@ -103,16 +107,17 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
     # -> growth at any dt at structured-eps interfaces).
     dhxc_dy = (Hx_c - torch.roll(Hx_c, 1, dims=1)) / dx    # backward, cell node
     dhxs_dy = (Hx_s - torch.roll(Hx_s, 1, dims=1)) / dx
-    curlY_c = dhxc_dy - ky * Hx_s
-    curlY_s = dhxs_dy + ky * Hx_c
+    # i k_y coupling at Dz's position (j): midpoint average of Hx back from j+1/2
+    Hxm_c = 0.5 * (Hx_c + torch.roll(Hx_c, 1, dims=1))
+    Hxm_s = 0.5 * (Hx_s + torch.roll(Hx_s, 1, dims=1))
     dHy_dx_c = (Hy_c[1:, :] - Hy_c[:-1, :]) / dx
     dHy_dx_s = (Hy_s[1:, :] - Hy_s[:-1, :]) / dx
     psi_Hyx_c = m.b_ex * state.psi_Hyx_c + m.a_ex * dHy_dx_c
     psi_Hyx_s = m.b_ex * state.psi_Hyx_s + m.a_ex * dHy_dx_s
     # x-CPML on the x-curl (interior x); y is full-periodic -> take the y-curl
     # at interior x too, pad x only (y_pmc-style).
-    curlY_c_int = (dhxc_dy - ky * Hx_s)[1:-1, :]
-    curlY_s_int = (dhxs_dy + ky * Hx_c)[1:-1, :]
+    curlY_c_int = (dhxc_dy - ky * Hxm_s)[1:-1, :]
+    curlY_s_int = (dhxs_dy + ky * Hxm_c)[1:-1, :]
     curl_c = dHy_dx_c / m.k_ex + psi_Hyx_c - curlY_c_int
     curl_s = dHy_dx_s / m.k_ex + psi_Hyx_s - curlY_s_int
     Dz_c = state.Dz_c + dt * F.pad(curl_c, (0, 0, 1, 1))
@@ -218,7 +223,8 @@ def init_bloch_te_state(grid: Grid) -> BlochTEState:
 
 def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
                   eps_y: torch.Tensor, ky: float, src_c=0.0, src_s=0.0,
-                  src_mask: torch.Tensor | None = None) -> BlochTEState:
+                  src_mask: torch.Tensor | None = None,
+                  src_mask_s: torch.Tensor | None = None) -> BlochTEState:
     """TE dual of step_bloch_tm (Hz envelope, two quadratures, x-CPML,
     periodic y). m supplies dt/dx and the x-CPML profiles (build_tm_coeffs
     with y_pmc=True); eps_x (nx, ny)/eps_y (nx-1, ny) at the E positions.
@@ -267,8 +273,13 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     Hz_c = state.Hz_c - dt * F.pad(curl_c, (0, 0, 1, 1))
     Hz_s = state.Hz_s - dt * F.pad(curl_s, (0, 0, 1, 1))
     if src_mask is not None:
-        Hz_c = Hz_c + dt * src_c * src_mask
-        Hz_s = Hz_s + dt * src_s * src_mask
+        if src_mask_s is not None:
+            # complex spatial mask, full complex product (mirrors step_bloch_tm)
+            Hz_c = Hz_c + dt * (src_c * src_mask - src_s * src_mask_s)
+            Hz_s = Hz_s + dt * (src_c * src_mask_s + src_s * src_mask)
+        else:
+            Hz_c = Hz_c + dt * src_c * src_mask
+            Hz_s = Hz_s + dt * src_s * src_mask
 
     return BlochTEState(Hz_c, Hz_s, Ex_c, Ex_s, Ey_c, Ey_s,
                         Dx_c, Dx_s, Dy_c, Dy_s,
