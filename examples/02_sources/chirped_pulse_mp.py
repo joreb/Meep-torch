@@ -72,16 +72,21 @@ def main():
     v0, a, b, t0 = 1.0, 0.2, -0.5, 15.0
     profile = ChirpedPulse(v0, a, b, t0)
 
-    resolution = 20
+    # Identical to chirped_pulse.py so the two are directly comparable: same
+    # resolution, same cell, PML on x only, same source plane and stop time.
+    # The ONLY difference left is the one this twin exists to isolate --
+    # no k_point/Mirror(Y), so the transverse edges are PEC rather than
+    # Bloch-periodic.
+    resolution = 40
     sx, sy = 40.0, 6.0
     dpml = 2.0
 
     sim = mp.Simulation(
-        cell_size=mp.Vector3(sx, sy, 0),
+        cell_size=mp.Vector3(sx + 2 * dpml, sy),
         resolution=resolution,
-        sources=[mp.Source(profile, mp.Ez, mp.Vector3(-sx / 2 + dpml, 0),
-                           size=mp.Vector3(0, sy, 0))],
-        boundary_layers=[mp.PML(dpml)],
+        sources=[mp.Source(profile, mp.Ez, mp.Vector3(-0.5 * sx),
+                           size=mp.Vector3(y=sy))],
+        boundary_layers=[mp.PML(thickness=dpml, direction=mp.X)],
         default_material=mp.Medium(epsilon=1.0),
         device=DEVICE,
     )
@@ -96,7 +101,10 @@ def main():
     ez_slice = ez[:, ez.shape[1] // 2]              # centre row
     # x from the returned array and the cell, not sim.grid -- meep exposes no
     # .grid, so reaching for one is a shim-ism that would not run upstream.
-    x = (np.arange(ez.shape[0]) + 0.5) * (sx / ez.shape[0])
+    # Span the FULL cell (sx + 2*dpml), not sx -- get_array returns the whole
+    # grid including the PML, so dividing by sx compresses x by 10% here.
+    cell_x = sx + 2 * dpml
+    x = (np.arange(ez.shape[0]) + 0.5) * (cell_x / ez.shape[0])
 
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(x, ez_slice, lw=0.8)
@@ -107,6 +115,14 @@ def main():
     fig.tight_layout()
     fig.savefig(OUT / "chirped_pulse_mp.png", dpi=150)
     plt.close(fig)
+
+    data=np.hstack((x.reshape(len(x),1),
+                          ez_slice.reshape(len(x),1)))
+
+    np.savetxt(OUT / 'chirped_pulse_mp.csv',
+               data,
+               delimiter=',')
+    print(np.shape(data))
 
     peak = float(np.max(np.abs(ez_slice)))
     print(f"chirped_pulse_mp.png  [{DEVICE}]  max|Ez| in snapshot = {peak:.6e}")

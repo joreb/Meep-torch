@@ -181,6 +181,14 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
         st = init_bloch_te_state(g)
     else:
         st = init_bloch_tm_state(g, n_poles=n_poles)
+    # meep's run() continues the simulation it is called on; a second call
+    # must not wipe the fields. This built a fresh state every time, so
+    # sim.run(until=10) twice re-started from vacuum -- previously masked
+    # because the clock also reset, which re-fired the source and produced a
+    # plausible-looking (but 10 time units late) pulse. reset_meep() is what
+    # clears the state, exactly as in meep.
+    if sim._bloch_state is not None:
+        st = sim._bloch_state
     terms = _source_terms(sim)
     mons = _flux_mons(sim)
     accs = {name: [None, None] for name, _, _ in mons}
@@ -206,12 +214,19 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
     # envelope, which is what output_* ultimately reads.
     begin, per_step, scheduled = plan_hooks(step_funcs, cutoff)
 
-    sim._t_step = 0
+    # meep's clock accumulates across run() calls, and the source waveform is
+    # a function of ABSOLUTE time -- restarting t_idx re-fires the pulse from
+    # zero on every subsequent run(). _run_until was fixed for this; run_bloch
+    # had the same defect, which showed up as the pulse being 10 time units
+    # behind meep after a second run(until=...).
+    start = sim._t_step
     sim._bloch_state = st
     for gfn in begin:
         _eval_step_func(sim, gfn, "step")
-    fire_scheduled(sim, scheduled, 0.0)
-    t_idx = 0
+    fire_scheduled(sim, scheduled, start * dt)
+    t_idx = start
+    if n_total is not None:
+        n_total = start + n_total
     while n_total is None or t_idx < n_total:
         tt = (t_idx + 0.5) * dt
         inj_c = inj_s = None

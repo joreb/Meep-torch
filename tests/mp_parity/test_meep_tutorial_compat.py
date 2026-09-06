@@ -113,6 +113,11 @@ def test_to_appended_at_every_stacks_output(tmp_path, monkeypatch):
     to_appended("ez", at_every(dt, output_efield_z))."""
     monkeypatch.chdir(tmp_path)
     sim = _sim()
+    # Pin the prefix rather than assume one: meep derives it from the running
+    # script (sys.argv[0]), so under pytest it is the runner's name, not a
+    # fixed literal. This used to pass only because _prefix() returned a
+    # hardcoded "meep_torch" instead of get_filename_prefix().
+    sim.filename_prefix = "meep_torch"
     sim.run(mp.at_beginning(mp.output_epsilon),
             mp.to_appended("ez", mp.at_every(1.0, mp.output_efield_z)),
             until=4)
@@ -239,8 +244,11 @@ def test_tutorial_bent_waveguide(tmp_path):
                           cwd=tmp_path, capture_output=True, text=True,
                           timeout=1800)
     assert proc.returncode == 0, proc.stderr[-2000:]
-    assert list(tmp_path.glob("meep_torch-eps-*"))
-    assert list(tmp_path.glob("meep_torch-ez.*"))
+    # meep names output after the running script: bent_waveguide.py ->
+    # "bent_waveguide-eps-*". Asserting "meep_torch-*" only worked while
+    # _prefix() ignored get_filename_prefix().
+    assert list(tmp_path.glob("bent_waveguide-eps-*"))
+    assert list(tmp_path.glob("bent_waveguide-ez.*"))
 
 
 def test_tutorial_bend_flux(tmp_path):

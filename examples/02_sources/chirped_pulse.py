@@ -74,7 +74,10 @@ ez = sim.get_array(component=mp.Ez)
 ez_slice = ez[:, ez.shape[1] // 2]              # centre row
 # x from the returned array and the cell, not sim.grid -- meep exposes no
 # .grid, so reaching for one is a shim-ism that would not run upstream.
-x = (np.arange(ez.shape[0]) + 0.5) * (sx / ez.shape[0])
+# Span the FULL cell: cell_size is sx + 2*dpml and get_array returns the
+# whole grid including the PML, so dividing by sx alone compresses x by 10%.
+cell_x = sx + 2 * dpml
+x = (np.arange(ez.shape[0]) + 0.5) * (cell_x / ez.shape[0])
 
 fig, ax = plt.subplots(figsize=(8, 4))
 ax.plot(x, ez_slice, lw=0.8)
@@ -85,6 +88,14 @@ ax.grid(alpha=0.3)
 fig.tight_layout()
 fig.savefig(OUT / "chirped_pulse.png", dpi=150)
 plt.close(fig)
+
+data=np.hstack((x.reshape(len(x),1),
+                          ez_slice.reshape(len(x),1)))
+
+np.savetxt(OUT /'chirped_pulse.csv',
+            data,
+            delimiter=',')
+print(np.shape(data))
 
 peak = float(np.max(np.abs(ez_slice)))
 print(f"chirped_pulse.png  [{DEVICE}]  max|Ez| in snapshot = {peak:.6e}")
