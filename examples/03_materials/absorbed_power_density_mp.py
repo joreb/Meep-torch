@@ -8,6 +8,7 @@
 #
 # Run: uv run python examples/03_materials/absorbed_power_density_mp.py
 
+import os
 import pathlib
 
 import matplotlib
@@ -15,12 +16,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
 import meep_torch.mp as mp
 from meep_torch.mp import Block, FluxRegion, GaussianSource, Medium, PML, Simulation, Source, Vector3
 
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
+
+DEVICE = os.environ.get("MEEP_TORCH_DEVICE") or (
+    "cuda" if torch.cuda.is_available() else "cpu")
 
 # Parameters (reduced resolution for fast 3D smoke run)
 RES = 10                  # pixels/um
@@ -45,7 +50,8 @@ def _sim():
                         size=Vector3(mp.inf, mp.inf, 0))],
         geometry=[Block(material=Medium(epsilon=EPS, D_conductivity=SIGMA_D),
                         center=CUBE_CENTER, size=Vector3(CUBE, CUBE, CUBE))],
-        boundary_layers=[PML(thickness=DPML)])
+        boundary_layers=[PML(thickness=DPML)],
+        device=DEVICE)
 
 
 def _box_faces():
@@ -120,7 +126,7 @@ def main():
     fig.tight_layout()
     fig.savefig(OUT / "absorbed_power_density_mp.png", dpi=150)
     plt.close(fig)
-    print(f"absorbed_power_density_mp.png written")
+    print(f"absorbed_power_density_mp.png written  [{DEVICE}]")
 
 
 if __name__ == "__main__":

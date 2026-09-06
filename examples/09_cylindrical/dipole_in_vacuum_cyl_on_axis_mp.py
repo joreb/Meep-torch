@@ -24,7 +24,10 @@ import meep_torch.mp as mp
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 
-DEVICE = os.environ.get("MEEP_TORCH_DEVICE", "cpu")
+import torch
+
+DEVICE = os.environ.get("MEEP_TORCH_DEVICE") or (
+    "cuda" if torch.cuda.is_available() else "cpu")
 
 RESOLUTION_UM = 50
 WAVELENGTH_UM = 1.0
@@ -71,6 +74,7 @@ def plot_radiation_pattern(dipole_pol: str, radial_flux: np.ndarray):
 
     relative_error = np.linalg.norm(normalized_radial_flux - dipole_radial_flux) / np.linalg.norm(dipole_radial_flux)
     print(f"relative error in radiation pattern:, {relative_error}")
+    print(f"dipole_in_vacuum_cyl_on_axis_mp.png  [{DEVICE}]")
 
 
 def radiation_pattern(e_field: np.ndarray, h_field: np.ndarray) -> np.ndarray:

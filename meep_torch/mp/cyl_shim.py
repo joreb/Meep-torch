@@ -105,7 +105,11 @@ def cyl_eps(sim, g: CylGrid) -> torch.Tensor:
                            float(c.z) + g.dr / 2, 0),
             size=Vector3(s.x, s.z, 0), material=med))
     gs = GridSpec(nx=g.nr, ny=g.nz, dx=g.dr, sx=g.nr * g.dr, sy=g.nz * g.dr)
-    grid = Grid(nx=g.nr, ny=g.nz, dx=g.dr, dtype=torch.float64)
+    # rasterize_scene builds its background on grid.device, so a CPU grid
+    # here yields a CPU eps even for empty geometry -- which is why the
+    # vacuum test passed while a real example crashed.
+    grid = Grid(nx=g.nr, ny=g.nz, dx=g.dr, dtype=torch.float64,
+                device=getattr(sim, "device", "cpu") or "cpu")
     eps_items, chi3_items = build_scene_items(items, gs, 2)
     if chi3_items:
         raise _NIE("cylindrical runs with chi3 (Kerr) media are not supported")

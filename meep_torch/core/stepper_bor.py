@@ -57,7 +57,10 @@ def build_bor_coeffs(nr: int, nz: int, dr: float, m: int, eps=None,
                      n_abs_r: int = 0, n_abs_z: int = 0,
                      dtype=torch.float64, device="cpu") -> BORCoeffs:
     dt = 0.5 * dr / math.sqrt(2.0)
-    e = (eps if isinstance(eps, torch.Tensor)
+    # Coerce at the boundary: a caller-supplied eps may live anywhere, and
+    # every coefficient built below lands on `device`. Trusting the caller
+    # to have matched them makes each call site a place this can break.
+    e = (eps.to(device=device, dtype=dtype) if isinstance(eps, torch.Tensor)
          else torch.ones(nr, nz, dtype=dtype, device=device))
     ri = torch.arange(nr, dtype=dtype, device=device)[:, None] * dr
     rh = (torch.arange(nr - 1, dtype=dtype, device=device)[:, None] + 0.5) * dr

@@ -12,6 +12,7 @@
 #
 # Run: uv run python examples/01_basics/ring_mp.py
 
+import os
 import pathlib
 
 import matplotlib
@@ -21,10 +22,20 @@ import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 
+import torch
+
 import meep_torch.mp as mp
 
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
+
+# Examples default to the GPU: they are demonstrations, and the difference is
+# not marginal (this cell is 3 s on CUDA against >550 s on CPU). The engine
+# itself defaults to CPU -- a library should not pick a device for you -- so
+# the script asks explicitly. MEEP_TORCH_DEVICE overrides; falls back to CPU
+# on a machine without a card.
+DEVICE = os.environ.get("MEEP_TORCH_DEVICE") or (
+    "cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _load_field(path):
@@ -100,6 +111,7 @@ def main():
         resolution=10,
         symmetries=[mp.Mirror(mp.Y)],
         boundary_layers=[mp.PML(dpml)],
+        device=DEVICE,
     )
 
     # Every output_* file below goes here instead of the working directory.

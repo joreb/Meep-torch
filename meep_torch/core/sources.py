@@ -82,7 +82,13 @@ class CustomSource:
         self.fn = fn
 
     def amplitude(self, t: float) -> float:
-        return float(self.fn(t))
+        # meep's CustomSource src_func is routinely complex -- the chirped
+        # pulse tutorial writes exp(i.2.pi.v0.t) * exp(...) directly -- and a
+        # real-field run takes its real part. Doing that through float() on a
+        # complex raised a ComplexWarning on every timestep, which reads like
+        # a mistake rather than the intended convention.
+        v = self.fn(t)
+        return float(v.real) if isinstance(v, complex) else float(v)
 
 
 class SoftSource:

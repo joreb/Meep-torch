@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import meep_torch.mp as mp
-from meep_torch.core.materials import SiO2, analytic_eps
+from meep_torch.mp.materials import fused_quartz
 
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
@@ -53,13 +53,13 @@ def run_sim(geometry=None):
     )
     fr = mp.FluxRegion(center=mp.Vector3(z=-0.25 * sz))
     name = sim.add_flux(fcen, dfreq, nfreq, fr)
-    sim.run(n_steps=int(round(80.0 / sim.grid.dt)))
+    sim.run(until=80.0)
     return np.array(sim.get_fluxes(name))
 
 
 empty = run_sim()
 slab = run_sim([mp.Block(size=mp.Vector3(mp.inf, mp.inf, 0.5 * sz),
-                          center=mp.Vector3(z=0.25 * sz), material=mp.Medium(material=SiO2))])
+                          center=mp.Vector3(z=0.25 * sz), material=fused_quartz)])
 
 # %% [markdown]
 # ## Reflectance and plot
@@ -67,12 +67,21 @@ slab = run_sim([mp.Block(size=mp.Vector3(mp.inf, mp.inf, 0.5 * sz),
 # %%
 R = -(slab - empty) / empty
 wvls = 1.0 / freqs
-n_q = np.array([math.sqrt(analytic_eps(SiO2.eps_inf, SiO2.poles, f).real) for f in freqs])
+# Sellmeier for fused quartz, written inline exactly as upstream does it --
+# meep has no analytic_eps helper, and reaching into a Medium's poles to
+# rebuild epsilon is a shim-ism that would not run against real meep.
+eps_quartz = lambda l: (
+    1
+    + 0.6961663 * l ** 2 / (l ** 2 - 0.0684043 ** 2)
+    + 0.4079426 * l ** 2 / (l ** 2 - 0.1162414 ** 2)
+    + 0.8974794 * l ** 2 / (l ** 2 - 9.896161 ** 2)
+)
+n_q = np.array([math.sqrt(eps_quartz(l)) for l in wvls])
 R_analytic = np.abs((1.0 - n_q) / (1.0 + n_q)) ** 2
 
 fig, ax = plt.subplots(figsize=(7, 4))
 ax.plot(wvls, R, "bo-", label="meep-torch (mp shim)")
-ax.plot(wvls, R_analytic, "rs-", label="analytic (SiO2 Lorentzian)")
+ax.plot(wvls, R_analytic, "rs-", label="analytic (Sellmeier)")
 ax.set_xlabel("wavelength (um)"); ax.set_ylabel("reflectance")
 ax.set_title("Fused-quartz slab reflectance (mp shim)")
 ax.legend(); ax.grid(alpha=0.3)

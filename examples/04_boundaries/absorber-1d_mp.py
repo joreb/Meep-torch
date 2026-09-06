@@ -9,6 +9,7 @@
 #
 # Run: uv run python examples/04_boundaries/absorber-1d_mp.py
 
+import os
 import pathlib
 
 import matplotlib
@@ -16,12 +17,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
 import meep_torch.mp as mp
 from meep_torch.mp import Absorber, GaussianSource, PML, Simulation, Source, Vector3
 
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
+
+DEVICE = os.environ.get("MEEP_TORCH_DEVICE") or (
+    "cuda" if torch.cuda.is_available() else "cpu")
 
 RES = 40
 FCEN, DF = 1.0 / 0.803, 0.1
@@ -48,6 +53,7 @@ def run_sim(boundary_layers):
         default_material=mp.Medium(epsilon=1.0, D_conductivity=SIGMA_D),
         boundary_layers=boundary_layers,
         sources=sources,
+        device=DEVICE,
     )
 
     ex_series = []
@@ -81,7 +87,7 @@ def main():
     tail = slice(2 * len(s_abs) // 3, None)
     r_abs = float(np.abs(s_abs[tail]).max() / np.abs(s_abs).max())
     r_pml = float(np.abs(s_pml[tail]).max() / np.abs(s_pml).max())
-    print(f"absorber-1d_mp.png  residual/peak: absorber={r_abs:.2e}  pml={r_pml:.2e}")
+    print(f"absorber-1d_mp.png  [{DEVICE}]  residual/peak: absorber={r_abs:.2e}  pml={r_pml:.2e}")
 
 
 if __name__ == "__main__":
