@@ -1908,6 +1908,36 @@ class Simulation:
             out = np.squeeze(out, axis=ax)
         return out
 
+    def _bloch_array(self, component):
+        """Physical field of a Bloch run, from the stored envelope.
+
+        The Bloch steppers evolve a periodic envelope e(r) with
+        F(r) = e(r) * exp(i k.r), split into two real quadratures e_c, e_s.
+        The observable real field is therefore
+
+            Re[(e_c + i e_s) exp(i k_y y)] = e_c cos(k_y y) - e_s sin(k_y y)
+
+        Returning e_c alone would look plausible and be wrong by the Bloch
+        phase, which is exactly the kind of silently-wrong array this
+        codebase has been burned by, so reconstruct it properly.
+        """
+        from .bloch_shim import _bloch_ky
+
+        st = self._bloch_state
+        fc = getattr(st, component + "_c", None)
+        if fc is None:                       # fall back to the run's primary
+            fc, fs = ((st.Hz_c, st.Hz_s) if self._pol == "te"
+                      else (st.Ez_c, st.Ez_s))
+        else:
+            fs = getattr(st, component + "_s")
+        ky = _bloch_ky(self)
+        if not ky:
+            return fc.detach().cpu().numpy()
+        y = (torch.arange(fc.shape[1], dtype=fc.dtype, device=fc.device)
+             + 0.5) * self.gs.dx - self.gs.sy / 2.0
+        phase_c, phase_s = torch.cos(ky * y), torch.sin(ky * y)
+        return (fc * phase_c - fs * phase_s).detach().cpu().numpy()
+
     def get_array(self, component=Dielectric, center=None, size=None):
         if self.dimensions == 3:
             if component == Dielectric:
@@ -1922,8 +1952,10 @@ class Simulation:
             return self._subvolume(self._demirror(
                 self._rm.eps_tm.detach().cpu().numpy() if self._pol == "tm"
                 else self._rm.eps_te_xx.detach().cpu().numpy()), center, size)
-        if self._state is None:
+        if self._bloch_state is None and self._state is None:
             raise RuntimeError("run() before get_array(fields)")
+        if self._bloch_state is not None:
+            return self._subvolume(self._bloch_array(component), center, size)
         if component in ("Ez", "Ex"):
             return self._subvolume(
                 self._demirror(self._state.Ez.detach().cpu().numpy(),

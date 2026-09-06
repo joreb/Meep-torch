@@ -21,6 +21,9 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
+
+from .run_control import (_eval_step_func, fire_per_step,
+                          fire_scheduled, plan_hooks)
 import torch.nn.functional as F
 
 from ..core.stepper_bloch import (init_bloch_te_state, init_bloch_tm_state,
@@ -69,8 +72,6 @@ def _quadratures(prof, t):
 
 def _scope_check(sim, step_funcs):
     nie = NotImplementedError
-    if step_funcs:
-        raise nie("step functions under a k_point (Bloch) run are not supported")
     if sim.dimensions == 3:
         raise nie("k_point: 3D Bloch runs are not supported")
     if sim.dimensions != 1:
@@ -117,13 +118,12 @@ def _source_terms(sim):
             vals = vals * np.array([complex(amp_func(Vector3(c.x, y, 0.0)))
                                     for y in ys])
         mask_c = g.zeros(g.nx, g.ny)
-        mask_c[ix, j0:j1] = torch.tensor(vals.real, dtype=g.dtype, device=g.device,
+        mask_c[ix, j0:j1] = torch.tensor(vals.real, dtype=g.dtype,
                                          device=g.device)
         mask_s = None
         if np.abs(vals.imag).max() > 0.0:
             mask_s = g.zeros(g.nx, g.ny)
-            mask_s[ix, j0:j1] = torch.tensor(vals.imag, dtype=g.dtype, device=g.device,
-                                             device=g.device)
+            mask_s[ix, j0:j1] = torch.tensor(vals.imag, dtype=g.dtype, device=g.device)
         terms.append((prof, mask_c, mask_s))
     return terms
 
@@ -200,13 +200,26 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
         else:
             n_total = max(1, int(round((cutoff + (until_after_sources or 0)) / dt)))
 
+    # meep step functions: same plan/fire helpers the cartesian path uses, so
+    # at_beginning / at_every / at_end / to_appended behave identically under
+    # a Bloch run. get_array reconstructs the physical field from the
+    # envelope, which is what output_* ultimately reads.
+    begin, per_step, scheduled = plan_hooks(step_funcs, cutoff)
+
     sim._t_step = 0
     sim._bloch_state = st
+    for gfn in begin:
+        _eval_step_func(sim, gfn, "step")
+    fire_scheduled(sim, scheduled, 0.0)
     t_idx = 0
     while n_total is None or t_idx < n_total:
         tt = (t_idx + 0.5) * dt
         inj_c = inj_s = None
-        if tt < cutoff:
+        # cutoff == 0 means "no known turn-off" (CustomSource/ContinuousSource
+        # carry no t_end -- see Simulation._source_cutoff), NOT "already off".
+        # Gating on `tt < cutoff` alone therefore never injected for those, and
+        # the run produced a uniformly zero field with no error.
+        if cutoff <= 0.0 or tt < cutoff:
             for prof, mask_c, mask_s in terms:
                 qc, qs = _quadratures(prof, tt)
                 ic = qc * mask_c - (qs * mask_s if mask_s is not None else 0.0)
@@ -236,6 +249,9 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
             a[1] = ss if a[1] is None else a[1] + ss
         t_idx += 1
         sim._t_step = t_idx
+        t_now = t_idx * dt
+        fire_per_step(sim, per_step, t_now, dt)
+        fire_scheduled(sim, scheduled, t_now)
         if conds is not None:
             t = t_idx * dt
             flags = [bool(c(sim)) for c in conds]
