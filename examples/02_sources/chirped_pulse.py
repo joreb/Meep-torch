@@ -61,16 +61,32 @@ sim = mp.Simulation(
 # output_* files go to output/ instead of the working directory
 sim.use_output_directory(str(OUT))
 
+# Snapshot while the pulse is still inside the cell. until=t0+50 runs to
+# t=65; the pulse leaves the source at t~=15 and travels at c=1, so by the
+# end it has passed x=40um and been absorbed. The final state is therefore
+# PML residual, not the pulse -- comparing final states across engines
+# compares leftovers, which is why the earlier CSV diff looked catastrophic.
+# t=40 puts the envelope centre near x=25um in cell coordinates, clear of
+# both absorbers. The run length itself is unchanged from upstream.
+SNAP = 40.0
+_snap = {}
+
+
+def _grab(sim):
+    _snap["ez"] = sim.get_array(component=mp.Ez)
+
+
 sim.run(
     mp.in_volume(
         mp.Volume(center=mp.Vector3(), size=mp.Vector3(sx, sy)),
         mp.at_every(2.7, mp.output_efield_z),
     ),
+    mp.at_time(SNAP, _grab),
     until=t0 + 50,
 )
 
 
-ez = sim.get_array(component=mp.Ez)
+ez = _snap["ez"]
 ez_slice = ez[:, ez.shape[1] // 2]              # centre row
 # x from the returned array and the cell, not sim.grid -- meep exposes no
 # .grid, so reaching for one is a shim-ism that would not run upstream.
@@ -81,7 +97,7 @@ x = (np.arange(ez.shape[0]) + 0.5) * (cell_x / ez.shape[0])
 
 fig, ax = plt.subplots(figsize=(8, 4))
 ax.plot(x, ez_slice, lw=0.8)
-ax.set_title("Chirped pulse -- Ez(x) at final time (down-chirp)")
+ax.set_title(f"Chirped pulse -- Ez(x) at t = {SNAP:g} (down-chirp)")
 ax.set_xlabel("x (um)")
 ax.set_ylabel("Ez")
 ax.grid(alpha=0.3)
@@ -98,4 +114,4 @@ np.savetxt(OUT /'chirped_pulse.csv',
 print(np.shape(data))
 
 peak = float(np.max(np.abs(ez_slice)))
-print(f"chirped_pulse.png  [{DEVICE}]  max|Ez| in snapshot = {peak:.6e}")
+print(f"chirped_pulse.png  [{DEVICE}]  max|Ez| at t={SNAP:g} = {peak:.6e}")

@@ -21,13 +21,21 @@ from meep_torch.core.stepper_te import init_te_state
 from meep_torch.mp.cpp.core import fields as core_fields
 from meep_torch.mp.cpp.core import structure as core_structure
 
-# pre-rearchitecture golden fluxes: run(until=40) on the waveguide below
-GOLDEN_PLAIN = [2.767477618387303e-08, 7.415436970115532e-08,
-                4.268356285639863e-08]
+# pre-rearchitecture golden fluxes: run(until=40) on the waveguide below.
+#
+# Rebaselined 2026-09-07: exactly 100x the previous values, because the source
+# normalization was corrected. A meep current is a density integrated over its
+# extent, so its field is resolution-independent; we were injecting the bare
+# amplitude, which made the field scale as dx (measured 1/40 of meep at
+# resolution 40, 1/20 at 20). Flux goes as amplitude^2, and this cell is a
+# line source at resolution 10, hence 10^2. The shape of the spectrum is
+# unchanged -- only the absolute scale moved, and it moved onto meep's.
+GOLDEN_PLAIN = [2.7674774850386973e-06, 7.415436603754773e-06,
+                4.268356224067546e-06]
 # same sim through run(at_every(5.0, ...), until=40): chunked accumulation
 # differs from the single-chunk plain run only in summation grouping (1 ulp)
-GOLDEN_STEPPED = [2.767477618387302e-08, 7.415436970115532e-08,
-                  4.268356285639863e-08]
+GOLDEN_STEPPED = [2.7674774850386973e-06, 7.415436603754773e-06,
+                  4.268356224067546e-06]
 
 
 def _sim():

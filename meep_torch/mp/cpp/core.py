@@ -706,10 +706,18 @@ class fields:
             raise NotImplementedError(f"component {c!r}: TM Ez current sources only")
         g = self.s.grid
         mask = g.zeros(g.nx, g.ny)
-        mask[i0:(i1 if i1 is not None else i0 + 1),
-             j0:(j1 if j1 is not None else j0 + 1)] = 1.0
+        hi_i = i1 if i1 is not None else i0 + 1
+        hi_j = j1 if j1 is not None else j0 + 1
+        mask[i0:hi_i, j0:hi_j] = 1.0
         if amplitude != 1.0:
             mask = mask * float(amplitude)
+        # Same integral as core.sources.LineSource: each occupied cell carries
+        # the source measure it holds (dx per extended axis) over the cell
+        # area, so the field is resolution-independent as in meep. This path
+        # built its mask independently and skipped the normalization, which
+        # made it disagree with the LineSource path for the same source.
+        extended = int(hi_i - i0 > 1) + int(hi_j - j0 > 1)
+        mask = mask * (g.dx ** extended / g.dx ** 2)
         self._sources.append(SoftSource(g, mask, self._profile_of(src)))
 
     def add_source(self, src):

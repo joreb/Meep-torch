@@ -33,7 +33,8 @@ class CWRamp:
 class LineSource:
     """Soft current source on the vertical segment x=ix, y in [j0, j1)."""
 
-    def __init__(self, grid: Grid, ix: int, j0: int, j1: int, profile, amp_func=None):
+    def __init__(self, grid: Grid, ix: int, j0: int, j1: int, profile,
+                 amp_func=None, amps=None):
         if not 0 <= ix < grid.nx:
             raise ValueError(f"source ix={ix} outside grid nx={grid.nx}")
         if not 0 <= j0 < j1 <= grid.ny:
@@ -41,12 +42,34 @@ class LineSource:
         self.profile = profile
         self.dt = grid.dt
         mask = grid.zeros(grid.nx, grid.ny)
-        if amp_func is None:
+        if amps is not None:              # per-cell weights (IndexedSource)
+            mask[ix, j0:j1] = torch.as_tensor(amps, dtype=grid.dtype,
+                                              device=grid.device)
+        elif amp_func is None:
             mask[ix, j0:j1] = 1.0
         else:
             for j in range(j0, j1):
                 mask[ix, j] = float(amp_func((j + 0.5) * grid.dx))
-        self.mask = mask
+        # meep's source is a current DENSITY integrated over its extent, so
+        # the field it produces does not depend on the grid. The discrete
+        # injection adds amp*mask to D, which means mask carries one 1/dx for
+        # every axis the source is a delta in -- and that is derivable from
+        # the extent itself, not something a caller should have to declare:
+        # a segment spanning >1 cell is a line (1/dx), a single cell is a
+        # point (1/dx^2). Deriving it here keeps every construction path
+        # consistent by construction; passing it in as a flag let the indexed
+        # and plain paths disagree.
+        # Without any normalization the field scaled as dx: measured 1/40 of
+        # meep at resolution 40 and 1/20 at 20.
+        # One integral, not two cases: every occupied cell carries the
+        # source measure it holds, divided by the cell area.
+        #   extended (j1-j0 > 1): each cell holds dx of length -> dx / dx^2
+        #   point    (single cell): the measure is 1        ->  1 / dx^2
+        # A point and a line genuinely differ in dimension (A/m vs A/m^2 in
+        # 2D), so the extent has to enter -- but it enters once, here, and is
+        # read off the span rather than declared by a caller.
+        per_cell = grid.dx if (j1 - j0) > 1 else 1.0
+        self.mask = mask * (per_cell / grid.dx ** 2)
 
     def amplitude(self, t_idx: int) -> float:
         return self.profile.amplitude((t_idx + 0.5) * self.dt)

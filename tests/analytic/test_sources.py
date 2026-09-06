@@ -2,6 +2,8 @@
 # Copyright (C) 2026 meep-torch contributors (original code)
 import math
 
+import pytest
+
 import torch
 
 from meep_torch.core.grid import Grid
@@ -31,8 +33,15 @@ def test_line_source_mask():
     g = Grid(nx=20, ny=10, dx=0.02)
     src = LineSource(g, ix=5, j0=2, j1=8, profile=GaussianPulse(0.65, 0.1))
     assert src.mask.shape == (20, 10)
-    assert src.mask[5, 2:8].sum().item() == 6.0
-    assert src.mask.sum().item() == 6.0
+    # The mask is a current DENSITY: each of the 6 cells carries dx of length
+    # over the dx^2 cell area, i.e. 1/dx. Injecting a bare 1.0 per cell made
+    # the field scale as dx instead of being resolution-independent as in
+    # meep, so the weight is 1/dx = 50 here (dx = 0.02).
+    assert src.mask[5, 2:8].sum().item() == pytest.approx(6.0 / g.dx)
+    assert src.mask.sum().item() == pytest.approx(6.0 / g.dx)
+    # a single-cell (point) source is a delta in both axes: 1/dx^2
+    pt = LineSource(g, ix=5, j0=2, j1=3, profile=GaussianPulse(0.65, 0.1))
+    assert pt.mask.sum().item() == pytest.approx(1.0 / g.dx ** 2)
 
 
 def test_cw_ramp():

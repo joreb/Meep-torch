@@ -117,13 +117,20 @@ def _source_terms(sim):
         if amp_func is not None:
             vals = vals * np.array([complex(amp_func(Vector3(c.x, y, 0.0)))
                                     for y in ys])
+        # Same current-density integral as core.sources.LineSource: each
+        # occupied cell carries the source measure it holds (dx per extended
+        # axis) over the cell area. This path builds its own masks, so it
+        # needs the normalization too -- without it a k_point run produced a
+        # field a factor of 1/dx below the identical non-Bloch run.
+        norm = (g.dx if (j1 - j0) > 1 else 1.0) / g.dx ** 2
         mask_c = g.zeros(g.nx, g.ny)
         mask_c[ix, j0:j1] = torch.tensor(vals.real, dtype=g.dtype,
-                                         device=g.device)
+                                         device=g.device) * norm
         mask_s = None
         if np.abs(vals.imag).max() > 0.0:
             mask_s = g.zeros(g.nx, g.ny)
-            mask_s[ix, j0:j1] = torch.tensor(vals.imag, dtype=g.dtype, device=g.device)
+            mask_s[ix, j0:j1] = torch.tensor(vals.imag, dtype=g.dtype,
+                                             device=g.device) * norm
         terms.append((prof, mask_c, mask_s))
     return terms
 

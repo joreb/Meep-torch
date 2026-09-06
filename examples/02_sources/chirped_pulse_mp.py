@@ -6,10 +6,12 @@
 # Output: `output/chirped_pulse_mp.png`.
 #
 # CHANGED from upstream, and why:
-#   * 1D via a thin 2D strip with PMC on y, instead of upstream's 2D cell with
-#     mp.Mirror(mp.Y). The physics along x is the same; the mirror symmetry is
-#     a domain-halving optimisation, not part of the result.
-#   * resolution 40 -> 20 for runtime.
+#   * No k_point and no mp.Mirror(mp.Y), so the transverse walls are PEC.
+#     That is the whole point of this twin: it isolates the non-Bloch path.
+#     PEC clamps Ez at y = 0 and y = sy, so the launched planewave is clipped
+#     at the transverse edges and this run is NOT a clean planewave -- expect
+#     a visibly larger residual than chirped_pulse.py. Use chirped_pulse.py
+#     for the physics; use this one to exercise the plain stepper.
 # The source itself is NOT changed: it is an mp.CustomSource carrying meep's
 # own chirp expression, so this example exercises the real source API rather
 # than a shim-only substitute.
@@ -95,9 +97,15 @@ def main():
     # count -- dt = Courant/resolution, so n_steps would need rescaling on
     # every resolution change. (meep has no sim.dt; its timestep is
     # sim.fields.dt.)
-    sim.run(until=t0 + 50)
+    # Snapshot while the pulse is still inside the cell -- see
+    # chirped_pulse.py for why the final state is residual, not pulse.
+    SNAP = 40.0
+    snap = {}
 
-    ez = sim.get_array(component=mp.Ez)
+    sim.run(mp.at_time(SNAP, lambda s: snap.update(ez=s.get_array(component=mp.Ez))),
+            until=t0 + 50)
+
+    ez = snap["ez"]
     ez_slice = ez[:, ez.shape[1] // 2]              # centre row
     # x from the returned array and the cell, not sim.grid -- meep exposes no
     # .grid, so reaching for one is a shim-ism that would not run upstream.
@@ -108,7 +116,7 @@ def main():
 
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(x, ez_slice, lw=0.8)
-    ax.set_title("Chirped pulse -- Ez(x) at final time (down-chirp)")
+    ax.set_title(f"Chirped pulse -- Ez(x) at t = {SNAP:g} (down-chirp)")
     ax.set_xlabel("x (um)")
     ax.set_ylabel("Ez")
     ax.grid(alpha=0.3)
@@ -125,7 +133,7 @@ def main():
     print(np.shape(data))
 
     peak = float(np.max(np.abs(ez_slice)))
-    print(f"chirped_pulse_mp.png  [{DEVICE}]  max|Ez| in snapshot = {peak:.6e}")
+    print(f"chirped_pulse_mp.png  [{DEVICE}]  max|Ez| at t={SNAP:g} = {peak:.6e}")
 
 
 if __name__ == "__main__":

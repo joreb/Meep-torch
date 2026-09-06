@@ -694,10 +694,11 @@ class Simulation:
                     "per-point phase)")
             amps = amps.real
         from ..core.sources import LineSource
-        src = LineSource(self.grid, ix, j0, j1, profile=spec.src.profile())
-        src.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
-        src.mask[ix, j0:j1] = torch.tensor(amps, dtype=self.grid.dtype,
-                                           device=self.grid.device)
+        # Pass the per-cell weights in rather than overwriting src.mask
+        # afterwards: overwriting discarded LineSource's normalization, so an
+        # IndexedSource and an equivalent uniform line source disagreed.
+        src = LineSource(self.grid, ix, j0, j1, profile=spec.src.profile(),
+                         amps=amps)
         if self._pol == "te":
             src.mask = src.mask[:, :-1]
         return src
