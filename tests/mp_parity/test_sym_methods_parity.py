@@ -63,10 +63,15 @@ def test_symmetry_family():
 
 
 def test_unsupported_symmetries_raise_at_simulation():
-    for sym in (mp.Rotate4(mp.Z), mp.Mirror(mp.Z), mp.Rotate2(mp.X),
-                mp.Mirror(mp.Y, phase=1j), mp.Rotate2(mp.Z, phase=1j)):
+    for sym in (mp.Mirror(mp.Z), mp.Rotate2(mp.X), mp.Rotate4(mp.X),
+                mp.Mirror(mp.Y, phase=1j), mp.Rotate2(mp.Z, phase=1j),
+                mp.Rotate4(mp.Z, phase=1j)):
         with pytest.raises(NotImplementedError):
             _wg_sim([sym])
+    # Rotate4 folds onto a quadrant, so it needs a square cell; this one is
+    # 15 x 6 (the engine support itself is gated in test_symmetry_parity)
+    with pytest.raises(NotImplementedError, match="square cell"):
+        _wg_sim([mp.Rotate4(mp.Z)])
     # a C2 fold does not compose with a mirror cut in the half-domain engine
     with pytest.raises(NotImplementedError):
         _wg_sim([mp.Rotate2(mp.Z), mp.Mirror(mp.Y)])
@@ -76,6 +81,12 @@ def test_unsupported_symmetries_raise_at_simulation():
     _wg_sim([mp.Mirror(mp.Y, phase=-1)])
     _wg_sim([mp.Rotate2(mp.Z)])              # C2 halves in y (test_symmetry_parity)
     _wg_sim([mp.Rotate2(mp.Z, phase=-1)])
+    # C4 on a square cell is accepted (quadrant fold)
+    mp.Simulation(cell_size=mp.Vector3(8, 8), resolution=RES,
+                  boundary_layers=[mp.PML(1.0)],
+                  sources=[mp.Source(mp.GaussianSource(FCEN, fwidth=0.2 * FCEN),
+                                     component=mp.Ez, center=mp.Vector3(1, 1))],
+                  symmetries=[mp.Rotate4(mp.Z)]).init_sim()
 
 
 # --- Mirror(Y) half-domain physics gate ---

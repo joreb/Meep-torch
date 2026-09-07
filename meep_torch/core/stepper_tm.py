@@ -36,12 +36,13 @@ class TMState(NamedTuple):
 
 def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
                   n_mpoles: int = 0, y_mirror: int = 0,
-                  x_mirror: int = 0, y_rot2: int = 0) -> TMState:
+                  x_mirror: int = 0, y_rot2: int = 0,
+                  rot4: int = 0) -> TMState:
     nx, ny = grid.nx, grid.ny
-    # psi_Hxy rows: PEC interior ny-2; both-wall PMC ny; a low-y cut (mirror
-    # or Rotate2) ny-1
-    ny_e = ny if y_pmc else (ny - 1 if (y_mirror or y_rot2) else ny - 2)
-    nx_e = nx - 1 if x_mirror else nx - 2
+    # psi_Hxy rows: PEC interior ny-2; both-wall PMC ny; a low-y cut (mirror,
+    # Rotate2 or Rotate4) ny-1. Rotate4 cuts both low edges.
+    ny_e = ny if y_pmc else (ny - 1 if (y_mirror or y_rot2 or rot4) else ny - 2)
+    nx_e = nx - 1 if (x_mirror or rot4) else nx - 2
     mag = {}
     if n_mpoles:
         mag = dict(
@@ -64,8 +65,8 @@ def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
         psi_Hxy=grid.zeros(nx_e, ny_e),
         # the C2 fold keeps the on-plane Hx row live for BOTH parities: the
         # cut row maps onto itself reversed in x, it is not forced to zero
-        Hx0=grid.zeros(nx) if (y_mirror == -1 or y_rot2) else None,
-        Hy0=grid.zeros(ny) if x_mirror == -1 else None,
+        Hx0=grid.zeros(nx) if (y_mirror == -1 or y_rot2 or rot4) else None,
+        Hy0=grid.zeros(ny) if (x_mirror == -1 or rot4) else None,
         **mag,
     )
 
@@ -92,15 +93,26 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         # odd-mirror on-plane H nodes: odd ghost Ez[-1] = -Ez[0] across the
         # cut -> dEz/dn = 2 Ez[0]/dx there (no PML at the cut, no psi)
         mir = {}
+        # ghost Ez just beyond each cut, then dEz/dn = (Ez_cut - ghost)/dx.
+        #   odd mirror  ghost = -Ez_cut                 -> 2 Ez_cut/dx
+        #   Rotate2     ghost = phase * Ez_cut reversed in x (the C2 partner
+        #               of the cut row is the cut row itself)
+        #   Rotate4     ghost = phase * the OTHER cut's line, transposed: C4
+        #               carries the y cut onto the x cut, so the row below
+        #               the y cut is the first column and vice versa
         if state.Hx0 is not None:
             ez0 = state.Ez[:, 0]
-            # ghost Ez one row below the cut: odd mirror -> -Ez[0] (so
-            # dEz/dn = 2 Ez[0]/dx); C2 -> phase * Ez[0] reversed in x, the
-            # rotated partner of the cut row being the cut row itself
-            ghost = (m.y_rot2_lo * ez0.flip(0)) if m.y_rot2_lo else -ez0
+            if m.rot4_lo:
+                ghost = m.rot4_lo * state.Ez[0, :]
+            elif m.y_rot2_lo:
+                ghost = m.y_rot2_lo * ez0.flip(0)
+            else:
+                ghost = -ez0
             mir["Hx0"] = state.Hx0 - dt * (ez0 - ghost) / dx
         if state.Hy0 is not None:
-            mir["Hy0"] = state.Hy0 + dt * 2.0 * state.Ez[0, :] / dx
+            ez0x = state.Ez[0, :]
+            ghost_x = (m.rot4_lo * state.Ez[:, 0]) if m.rot4_lo else -ez0x
+            mir["Hy0"] = state.Hy0 + dt * (ez0x - ghost_x) / dx
         if m.mc1x is not None:
             # W5.5 mu-Lorentz: B integrates the curl; update_eh(H) forms H = B - sum M
             return state._replace(psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
@@ -126,7 +138,7 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
     elif m.y_mirror_lo == +1:
         Hx = F.pad(Hx, (1, 0))                                    # even: H=0 ghost at cut
         pad_y, ys = (0, 1), slice(None, -1)
-    elif m.y_mirror_lo == -1 or m.y_rot2_lo:
+    elif m.y_mirror_lo == -1 or m.y_rot2_lo or m.rot4_lo:
         Hx = torch.cat([state.Hx0[:, None], Hx], dim=1)           # odd/C2: plane node live
         pad_y, ys = (0, 1), slice(None, -1)
     else:
@@ -134,7 +146,7 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
     if m.x_mirror_lo == +1:
         Hy = F.pad(Hy, (0, 0, 1, 0))
         pad_x, xs = (0, 1), slice(None, -1)
-    elif m.x_mirror_lo == -1:
+    elif m.x_mirror_lo == -1 or m.rot4_lo:
         Hy = torch.cat([state.Hy0[None, :], Hy], dim=0)
         pad_x, xs = (0, 1), slice(None, -1)
     else:

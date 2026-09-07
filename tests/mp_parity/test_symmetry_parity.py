@@ -132,3 +132,59 @@ def test_rotate2_region_below_cut_raises():
         sim.add_flux(FCEN, 0, 1,
                      mp.FluxRegion(center=mp.Vector3(2.5, 0),
                                    size=mp.Vector3(0, 4)))
+
+
+# --- Rotate4(Z): C4 fold onto one quadrant ---------------------------------
+
+def _run_rot4(phase, quarter):
+    """C4 about z. With Ez(r) = p Ez(Rr) the source distribution obeys
+    S(r) = p S(Rr), so a dipole at r0 implies partners at R^-1 r0 (amp p),
+    R^-2 r0 = -r0 (amp p^2 = 1) and R^-3 r0 (amp p^3 = p); R is the quarter
+    turn (u, v) -> (-v, u). The full-cell reference lists all four."""
+    src_pos = [(mp.Vector3(OFF, OFF), 1.0)]
+    if not quarter:
+        src_pos += [(mp.Vector3(OFF, -OFF), phase),
+                    (mp.Vector3(-OFF, -OFF), 1.0),
+                    (mp.Vector3(-OFF, OFF), phase)]
+    sources = [mp.Source(mp.GaussianSource(FCEN, fwidth=0.2 * FCEN),
+                         component=mp.Ez, center=c, amplitude=a)
+               for c, a in src_pos]
+    sim = mp.Simulation(
+        cell_size=mp.Vector3(8, 8), resolution=RES,
+        boundary_layers=[mp.PML(1.0)],
+        sources=sources,
+        symmetries=[mp.Rotate4(mp.Z, phase=phase)] if quarter else None,
+    )
+    f = sim.add_flux(FCEN, 0, 1,
+                     mp.FluxRegion(center=mp.Vector3(2.5, 1.5),
+                                   size=mp.Vector3(0, 2)))
+    sim.run(until=25)
+    return sim.get_array(component=mp.Ez), mp.get_fluxes(f)[0]
+
+
+@pytest.mark.parametrize("phase", [+1, -1])
+def test_rotate4_quadrant_matches_full(phase):
+    ez_full, p_full = _run_rot4(phase, quarter=False)
+    ez_q, p_q = _run_rot4(phase, quarter=True)
+    assert ez_q.shape == ez_full.shape == (160, 160)
+    scale = np.abs(ez_full).max()
+    n = RES
+    rel_ez = np.abs(ez_q - ez_full)[n:-n, n:-n].max() / scale
+    rel_p = abs(p_q - p_full) / abs(p_full)
+    # The full-cell run does not obey C4 exactly: the cpml half-offset ramp
+    # is half a cell asymmetric edge to edge, and a quarter turn maps every
+    # edge onto the next, so all four disagree. Measure that self-asymmetry
+    # and require the quadrant run (which is C4-exact by construction) to sit
+    # inside it -- a tighter statement than a fixed tolerance, and it does
+    # not silently absorb a real fold error, which would show up AT the cut
+    # planes rather than decaying inward from the PML bands.
+    self_err = np.abs(ez_full - phase * ez_full[::-1, :].T)[n:-n, n:-n].max() / scale
+    print(f"Rotate4(Z, {phase:+d}): |dEz|/max={rel_ez:.2e} dP/P={rel_p:.2e} "
+          f"(full-cell self-C4 asymmetry {self_err:.2e})")
+    assert rel_ez < 1.2 * max(self_err, 1e-3), \
+        f"de-rotated Ez off by {rel_ez:.4f}, beyond the reference's own {self_err:.4f}"
+    assert rel_p < 0.01, f"flux off by {rel_p:.4f}"
+    # C4 invariance of the de-rotated array: a quarter turn is a transpose
+    # plus a flip on the grid
+    np.testing.assert_allclose(ez_q, phase * ez_q[::-1, :].T,
+                               atol=1e-12 * scale)

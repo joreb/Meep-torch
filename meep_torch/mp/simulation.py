@@ -381,10 +381,15 @@ class Simulation:
         self._sym_cx = self._sym_cy = 0
         self._sym_px = self._sym_py = 1
         self._sym_rot2 = 0
+        self._sym_rot4 = 0
         mirrors = {}
-        rot2 = 0
+        rot2 = rot4 = 0
         for s in self.symmetries:
             if isinstance(s, Identity):
+                continue
+            if (isinstance(s, Rotate4) and s.direction == Z
+                    and s.phase in (1 + 0j, -1 + 0j)):
+                rot4 = int(s.phase.real)
                 continue
             if (isinstance(s, Rotate2) and s.direction == Z
                     and s.phase in (1 + 0j, -1 + 0j)):
@@ -397,23 +402,28 @@ class Simulation:
             raise NotImplementedError(
                 f"{type(s).__name__}(direction={getattr(s, 'direction', None)}, "
                 f"phase={getattr(s, 'phase', None)}) not supported: "
-                f"Mirror(X/Y, phase=+-1) and Rotate2(Z, phase=+-1) only "
-                f"({_SYM_TODO})")
-        if rot2 and mirrors:
+                f"Mirror(X/Y, phase=+-1), Rotate2(Z, phase=+-1) and "
+                f"Rotate4(Z, phase=+-1) only ({_SYM_TODO})")
+        if (rot2 or rot4) and mirrors:
             raise NotImplementedError(
-                f"Rotate2 combined with Mirror not supported: the C2 fold and "
-                f"a mirror cut do not compose in the half-domain engine "
-                f"({_SYM_TODO})")
-        if (mirrors or rot2) and self.dimensions != 2:
+                f"Rotate2/Rotate4 combined with Mirror not supported: a "
+                f"rotation fold and a mirror cut do not compose in the "
+                f"half-domain engine ({_SYM_TODO})")
+        if rot2 and rot4:
             raise NotImplementedError(
-                f"Mirror(X/Y) / Rotate2(Z) is 2D-only ({_SYM_TODO})")
-        if (mirrors or rot2) and (self._pol != "tm" or self._bloch):
+                f"Rotate2 with Rotate4: C4 already contains C2, list Rotate4 "
+                f"alone ({_SYM_TODO})")
+        if (mirrors or rot2 or rot4) and self.dimensions != 2:
+            raise NotImplementedError(
+                f"Mirror(X/Y) / Rotate2(Z) / Rotate4(Z) is 2D-only "
+                f"({_SYM_TODO})")
+        if (mirrors or rot2 or rot4) and (self._pol != "tm" or self._bloch):
             # meep treats symmetries as an optimization hint; the TE engine
             # and the Bloch (k_point) path have no half-domain machinery, so
             # keep the full cell (same physics)
             warnings.warn("Symmetries on a TE or k_point run do not "
                           f"reduce the domain (full-cell run; {_SYM_TODO})")
-            mirrors, rot2 = {}, 0
+            mirrors, rot2, rot4 = {}, 0, 0
         if Y in mirrors:
             if self.gs.ny % 2:
                 raise NotImplementedError(
@@ -448,6 +458,27 @@ class Simulation:
             self._sym_cy = self.gs.ny // 2
             self._sym_py = rot2
             self._sym_rot2 = rot2
+        if rot4:
+            # C4 about z folds the cell onto one quadrant and carries the y
+            # cut onto the x cut, so the kept quadrant must be SQUARE and the
+            # absorber identical on all four edges.
+            if self.gs.nx % 2 or self.gs.ny % 2:
+                raise NotImplementedError(
+                    f"Rotate4(Z) needs even cell counts ({_SYM_TODO})")
+            if self.gs.nx != self.gs.ny:
+                raise NotImplementedError(
+                    f"Rotate4(Z) needs a square cell, got "
+                    f"{self.gs.nx}x{self.gs.ny} ({_SYM_TODO})")
+            four = lambda t: set(tuple(t[0]) + tuple(t[1]))
+            if len(four(self._npml_sides)) > 1 or len(four(self._nabs_sides)) > 1:
+                raise NotImplementedError(
+                    f"Rotate4(Z) needs the same absorber on all four edges: "
+                    f"the C4 fold carries every edge onto the next "
+                    f"({_SYM_TODO})")
+            self._sym_cx = self.gs.nx // 2
+            self._sym_cy = self.gs.ny // 2
+            self._sym_px = self._sym_py = rot4
+            self._sym_rot4 = rot4
 
     def __getattr__(self, name):
         # deferred-raster attributes: meep builds the structure in init_sim,
@@ -769,9 +800,21 @@ class Simulation:
                 # crossing the plane keeps its upper part -- the wall implies
                 # the mirrored image, so each physical source is listed once
                 ix, mirx = self._foldpt(ix, "x")
+                if self._sym_rot4 and mirx:
+                    raise NotImplementedError(
+                        f"a source outside the Rotate4(Z) quadrant is not "
+                        f"folded: which power of the quarter turn carries it "
+                        f"back depends on its quadrant. Place the source in "
+                        f"the kept quadrant ({_SYM_TODO})")
                 if mirx:
                     amp = amp * self._sym_px
-                j0, j1, _, miry = self._fold(j0, j1, "y")
+                j0, j1, crossed_y, miry = self._fold(j0, j1, "y")
+                if self._sym_rot4 and (miry or crossed_y):
+                    raise NotImplementedError(
+                        f"a source outside the Rotate4(Z) quadrant is not "
+                        f"folded: which power of the quarter turn carries it "
+                        f"back depends on its quadrant. Place the source in "
+                        f"the kept quadrant ({_SYM_TODO})")
                 if miry:
                     amp = amp * self._sym_py
                     if self._sym_rot2:
@@ -839,12 +882,13 @@ class Simulation:
         whole answer; a C2 image sits at nx-1-i, i.e. on a DIFFERENT line of
         the kept half, so folding a crossing region would need the partner
         line summed in as well. Regions wholly in the kept half are exact."""
-        if self._sym_rot2 and any(below_plane):
+        if (self._sym_rot2 or self._sym_rot4) and any(below_plane):
             raise NotImplementedError(
-                f"{what} reaching below the Rotate2(Z) cut plane is not "
+                f"{what} reaching beyond the rotation cut plane is not "
                 f"supported: the C2 image of a point is at (nx-1-i, ny-1-j), "
-                f"so the region maps onto a different line of the kept half. "
-                f"Place the region at y >= 0 (the kept half) ({_SYM_TODO})")
+                f"so the region maps onto a different line of the kept "
+                f"half. Place the region inside the kept half/quadrant "
+                f"({_SYM_TODO})")
 
     def _ypoint(self, j):
         """Full-cell y index -> half-grid row (mirrored below the plane)."""
@@ -854,6 +898,16 @@ class Simulation:
         """Half-grid array -> full-cell (nx, ny): mirrored half = phase *
         flip. ``parity`` = (px, py) of the stored component under the X/Y
         mirror (Dielectric/mu are even; Ez carries the mirror phases)."""
+        if self._sym_rot4:
+            # Quadrant -> full cell. With Ez(r) = p Ez(R r) and R = C4, the
+            # three missing quadrants are the kept one rotated: a quarter turn
+            # is a transpose plus a flip, and the half turn (p^2 = 1) is the
+            # plain double flip.
+            p = float(self._sym_py)
+            q = a
+            hi_x = np.concatenate([p * q[::-1, :].T, q], axis=1)   # j < cy | j >= cy
+            lo_x = np.concatenate([q[::-1, ::-1], p * q[:, ::-1].T], axis=1)
+            return np.concatenate([lo_x, hi_x], axis=0)
         if self._sym_cy:
             lower = a[:, ::-1] if not self._sym_rot2 else a[::-1, ::-1]
             a = np.concatenate([parity[1] * lower, a], axis=1)
@@ -865,6 +919,15 @@ class Simulation:
         """(px, py) mirror parity of a TM component (E vector / H pseudo-
         vector transform times the user phase)."""
         px, py = float(self._sym_px), float(self._sym_py)
+        if self._sym_rot4:
+            # C4 rotates Hx into Hy, so no per-component parity exists for
+            # the staggered pair; Ez/Dz are scalars and de-rotate cleanly.
+            if comp not in ("Ez", "Dz", "Dielectric", "Permittivity", None):
+                raise NotImplementedError(
+                    f"get {comp} under Rotate4(Z): a quarter turn maps Hx "
+                    f"onto Hy, so the component has no scalar parity to "
+                    f"de-rotate with ({_SYM_TODO})")
+            return (1.0, 1.0)
         if self._sym_rot2:
             # C2 about z: Ez is a scalar (unchanged), the in-plane H vector
             # reverses -- both components pick up -1 on top of the user phase
@@ -2120,10 +2183,10 @@ class Simulation:
                 self._pol = pol
                 self.structure = None
             sym = (self._sym_cx, self._sym_cy, self._sym_px, self._sym_py,
-                   self._sym_rot2)
+                   self._sym_rot2, self._sym_rot4)
             self._apply_symmetries()
             if sym != (self._sym_cx, self._sym_cy, self._sym_px, self._sym_py,
-                       self._sym_rot2):
+                       self._sym_rot2, self._sym_rot4):
                 self.structure = None
         self._init_structure()
         if self.dimensions == 3:
