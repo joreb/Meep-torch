@@ -50,6 +50,12 @@ X, Y, Z, R, P = 0, 1, 2, 3, 4
 
 _SYM_TODO = "see wiki/tasks/port_symmetry-system.md"
 
+# mirror fold sign per component: a folded image amplitude is
+# phi * (component parity about that cut). Ez is axial and carries the user
+# phase; in-plane E and the axial H pick up the reflection's determinant.
+_MIRROR_PARITY_X = {"Ex": -1, "Hz": -1, "Hy": -1}   # Ey, Ez, Hx: +1
+_MIRROR_PARITY_Y = {"Ey": -1, "Hz": -1, "Hx": -1}   # Ex, Ez, Hy: +1
+
 
 class Symmetry:
     """Symmetry of the structure *and* sources for the `symmetries` input
@@ -802,9 +808,13 @@ class Simulation:
                     raise NotImplementedError(
                         f"amp_func with Mirror symmetry not supported ({_SYM_TODO})")
                 # a source below a cut plane folds onto its image with the
-                # mirror phase (Ez transforms with the user phase); a span
+                # mirror phase times the component's parity about that cut
+                # (Ez is axial and carries the user phase; in-plane E and
+                # the axial H pick up the reflection's determinant); a span
                 # crossing the plane keeps its upper part -- the wall implies
                 # the mirrored image, so each physical source is listed once
+                px = self._sym_px * _MIRROR_PARITY_X.get(spec.component, 1)
+                py = self._sym_py * _MIRROR_PARITY_Y.get(spec.component, 1)
                 ix, mirx = self._foldpt(ix, "x")
                 if self._sym_rot4 and mirx:
                     raise NotImplementedError(
@@ -813,7 +823,7 @@ class Simulation:
                         f"back depends on its quadrant. Place the source in "
                         f"the kept quadrant ({_SYM_TODO})")
                 if mirx:
-                    amp = amp * self._sym_px
+                    amp = amp * px
                 j0, j1, crossed_y, miry = self._fold(j0, j1, "y")
                 if self._sym_rot4 and (miry or crossed_y):
                     raise NotImplementedError(
@@ -822,7 +832,7 @@ class Simulation:
                         f"back depends on its quadrant. Place the source in "
                         f"the kept quadrant ({_SYM_TODO})")
                 if miry:
-                    amp = amp * self._sym_py
+                    amp = amp * py
                     if self._sym_rot2:
                         # C2 image: the y fold above placed the span, the
                         # rotation also reverses x
@@ -919,6 +929,23 @@ class Simulation:
             a = np.concatenate([parity[1] * lower, a], axis=1)
         if self._sym_cx:
             a = np.concatenate([parity[0] * a[::-1, :], a], axis=0)
+        return a
+
+    def _demirror_te_hz(self, a):
+        """Half-grid TE Hz -> full-cell (nx-1, ny-1). TE grids are NOT
+        node-symmetric about a cut: the kept half maps to full rows/cols
+        cx..nx-2 / cy..ny-2, so the mirrored half fills rows/cols 1..cx-1 /
+        1..cy-1 and row/col 0 (the PML edge) is unreconstructable -- zeroed
+        (the output is then (nx-1, ny-1)). Hz carries -phi about both cuts,
+        so the mirror multiplier is -phase (unlike _demirror's TM parity)."""
+        if self._sym_cy:
+            hi = a
+            lo = -self._sym_py * a[:, ::-1]
+            a = np.concatenate([np.zeros((a.shape[0], 1)), lo, hi], axis=1)
+        if self._sym_cx:
+            hi = a
+            lo = -self._sym_px * a[::-1, :]
+            a = np.concatenate([np.zeros((1, a.shape[1])), lo, hi], axis=0)
         return a
 
     def _comp_parity(self, comp):
@@ -2094,8 +2121,11 @@ class Simulation:
                 self._demirror(self._state.Ez.detach().cpu().numpy(),
                                self._comp_parity("Ez")), center, size)
         if component in ("Hz", "Hy"):
-            return self._demirror(self._state.Hz.detach().cpu().numpy()) if self._pol == "te" \
-                else self._state.Hz if hasattr(self._state, "Hz") else None
+            if self._pol == "te":
+                return self._subvolume(
+                    self._demirror_te_hz(self._state.Hz.detach().cpu().numpy()),
+                    center, size)
+            return self._state.Hz if hasattr(self._state, "Hz") else None
         raise ValueError(f"unsupported component {component!r}")
 
     # --- meep Simulation utility methods ---

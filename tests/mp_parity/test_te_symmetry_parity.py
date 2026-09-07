@@ -144,3 +144,72 @@ def test_mirror_half_domain_matches_full(direction, phase):
     if cx:
         np.testing.assert_allclose(dem, -phase * dem[::-1, :],
                                    atol=1e-12 * scale)
+
+
+def test_te_offplane_ey_source_fold():
+    """An Ey source below a Y cut folds onto its image with -phi (Ey is
+    normal to the plane). The half run lists the source once and the fold
+    supplies the image; the full run lists both explicitly, the image
+    amplitude carrying -phi. A wrong fold sign flips the image amplitude
+    and the two sources cancel/double -- an O(1) mismatch, so a 1% gate is
+    decisive (the correct fold sits at the ~1e-3 CPML level)."""
+    for phase in (+1, -1):
+        def run(half):
+            src_pos = [(0.0, -OFF_Y)]            # below the cut: folds up
+            if not half:
+                src_pos.append((0.0, OFF_Y))     # explicit image, sign -phi
+            img_phase = -phase                   # Ey normal to a Y cut
+            sources = [mp.Source(mp.GaussianSource(FCEN, fwidth=0.2 * FCEN),
+                                 component=mp.Ey, center=mp.Vector3(x, y),
+                                 amplitude=(img_phase if i else 1.0))
+                       for i, (x, y) in enumerate(src_pos)]
+            sim = mp.Simulation(
+                cell_size=mp.Vector3(8, 8), resolution=RES,
+                boundary_layers=[mp.PML(1.0)],
+                sources=sources,
+                symmetries=[mp.Mirror(mp.Y, phase=phase)] if half else None,
+            )
+            f = sim.add_flux(FCEN, 0, 1,
+                             mp.FluxRegion(center=mp.Vector3(2.5, 0),
+                                           size=mp.Vector3(0, 4)))
+            sim.run(until=25)
+            hz = sim._state.Hz.detach().cpu().numpy()
+            return sim, hz, mp.get_fluxes(f)[0]
+        sim_half, hz_half, p_half = run(half=True)
+        _, hz_full, p_full = run(half=False)
+        assert sim_half.grid.ny == RES * 4, "Mirror(Y) did not halve the cell"
+        dem = _demirror(hz_half, 0, sim_half._sym_cy, -phase, -phase)
+        full = hz_full[:, 1:]
+        assert dem.shape == full.shape, f"{dem.shape} vs {full.shape}"
+        scale = np.abs(full).max()
+        n = RES
+        d = np.abs(dem - full)[n:-n, n:-n]
+        rel_hz = d.max() / scale
+        rel_p = abs(p_half - p_full) / abs(p_full)
+        print(f"TE off-plane Ey Mirror(Y, {phase:+d}): "
+              f"|dHz|/max={rel_hz:.2e} dP/P={rel_p:.2e}")
+        assert rel_hz < 0.01, \
+            f"de-mirrored Hz {rel_hz:.4e} off-plane fold (Ey sign wrong?)"
+        assert rel_p < 0.01, \
+            f"flux {rel_p:.4e} off-plane fold (Ey sign wrong?)"
+
+
+def test_te_get_array_hz_demirror():
+    """get_array(component=Hz) under a mirror uses the TE de-mirror (kept
+    half -> full rows/cols cx..nx-2, mirrored half -> 1..cx-1, row/col 0
+    zeroed, -phi parity) and matches the full-cell run over the interior.
+    The reconstructed plane is (nx-1, ny-1) = (159, 159) at RES=20."""
+    for direction, phase in [(mp.Y, +1), (mp.Y, -1), (mp.X, +1), (mp.X, -1)]:
+        sim_half, _, _, _ = _run(direction, phase, half=True)
+        sim_full, _, _, _ = _run(direction, phase, half=False)
+        a_half = sim_half.get_array(component=mp.Hz)
+        a_full = sim_full.get_array(component=mp.Hz)
+        assert a_half.shape == a_full.shape == (RES * 8 - 1, RES * 8 - 1), \
+            f"{a_half.shape} vs {a_full.shape}"
+        n = RES
+        d = np.abs(a_half - a_full)[n:-n, n:-n]
+        scale = np.abs(a_full).max()
+        rel = d.max() / scale
+        print(f"TE get_array(Hz) Mirror({'XY'[direction == mp.Y]}, {phase:+d}): "
+              f"|dHz|/max={rel:.2e}")
+        assert rel < 0.01, f"get_array(Hz) de-mirror {rel:.4e}"
