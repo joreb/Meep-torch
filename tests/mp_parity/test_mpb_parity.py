@@ -64,8 +64,21 @@ def test_unbacked_paths_raise():
                     geometry=[Cylinder(0.2, material=Medium(epsilon=4.0))])
     with pytest.raises(NotImplementedError):
         ms.run()                          # 2D no-parity: union of TM + TE
-    with pytest.raises(NotImplementedError):
-        ms.get_efield(1)                  # band fields not exported yet
+    # 2D DOES export fields now; the field getters raise on the 1D/3D
+    # harminv backend instead, which recovers frequencies from a time
+    # series and has no eigenvectors to hand out.
+    ms1 = ModeSolver(resolution=8, num_bands=1, k_points=[Vector3(0.1)],
+                     geometry_lattice=Lattice(size=Vector3(1, 0, 0)),
+                     geometry=[])
+    ms1.run_tm()
+    with pytest.raises(NotImplementedError, match="eigenvectors"):
+        ms1.get_efield(1)
+    for call in (lambda: ms.get_charge_density(1), lambda: ms.get_poynting(1),
+                 lambda: ms.get_eigenvectors(1, 1),
+                 lambda: ms.compute_group_velocities(),
+                 lambda: ms.randomize_fields()):
+        with pytest.raises(NotImplementedError):
+            call()
 
 
 def test_te_bands_vs_mpb_oracle():
@@ -367,3 +380,226 @@ def test_kottke_supersampled_matches_analytic_means():
     # uniform cells stay untouched on both components
     assert exx[0, 0].item() == pytest.approx(12.0)
     assert eyy[6, 0].item() == pytest.approx(1.0)
+
+
+# --- per-band mode fields (mpb/fields.py) ---------------------------------
+
+FIELD_RES = 16
+FIELD_K = Vector3(0.3)
+
+
+def _field_ms(parity="tm", **kw):
+    """Square lattice of eps-12 rods, one k-point, solved."""
+    ms = ModeSolver(num_bands=kw.pop("num_bands", 3), resolution=FIELD_RES,
+                    k_points=[kw.pop("k", FIELD_K)],
+                    geometry_lattice=Lattice(size=Vector3(1, 1)),
+                    geometry=[Cylinder(0.2, material=Medium(epsilon=12))],
+                    **kw)
+    (ms.run_tm if parity == "tm" else ms.run_te)()
+    return ms
+
+
+def _dA(ms):
+    _, d = ms._eps
+    return float(d) ** 2
+
+
+def test_tm_efield_shape_normalisation_and_faraday():
+    """The gate that actually proves the eigenvector is right.
+
+    Normalisation alone proves nothing -- any field scaled to 1 passes it,
+    including one recovered wrongly from the B = D^-1 A D^-1 transform.
+    The Faraday identity does: because H is built with the SAME difference
+    operators the eigensolve used, the eigen-equation forces
+    integral eps|E|^2 == integral |H|^2 exactly, so a mis-scaled or
+    mis-derived field breaks it immediately.
+    """
+    for differentiable in (False, True):
+        ms = ModeSolver(num_bands=3, resolution=FIELD_RES,
+                        k_points=[FIELD_K],
+                        geometry_lattice=Lattice(size=Vector3(1, 1)),
+                        geometry=[Cylinder(0.2, material=Medium(epsilon=12))])
+        ms.differentiable = differentiable       # class attribute, not a kwarg
+        ms.run_tm()
+        E = ms.get_efield(2)
+        assert E.shape == (FIELD_RES, FIELD_RES, 3)
+        assert E.dtype == np.complex128
+        assert np.abs(E[..., 0]).max() == 0.0    # TM carries Ez only
+        assert np.abs(E[..., 1]).max() == 0.0
+        eps = ms.get_epsilon()
+        e_energy = float((eps * np.abs(E[..., 2]) ** 2).sum()) * _dA(ms)
+        assert e_energy == pytest.approx(1.0, abs=1e-10)
+
+        H = ms.get_hfield(2)
+        assert np.abs(H[..., 2]).max() == 0.0    # ... and Hx, Hy only
+        h_energy = float((np.abs(H[..., 0]) ** 2
+                          + np.abs(H[..., 1]) ** 2).sum()) * _dA(ms)
+        assert h_energy == pytest.approx(e_energy, rel=1e-8), (
+            f"Faraday residual: eps|E|^2 {e_energy} vs |H|^2 {h_energy} "
+            f"(differentiable={differentiable})")
+
+
+def test_te_hfield_is_the_mirror_of_tm():
+    ms = _field_ms("te")
+    H = ms.get_hfield(2)
+    assert H.shape == (FIELD_RES, FIELD_RES, 3)
+    assert np.abs(H[..., 0]).max() == 0.0 and np.abs(H[..., 1]).max() == 0.0
+    assert float((np.abs(H[..., 2]) ** 2).sum()) * _dA(ms) == pytest.approx(
+        1.0, abs=1e-10)
+    E = ms.get_efield(2)
+    assert np.abs(E[..., 2]).max() == 0.0        # TE carries Ex, Ey only
+    assert np.abs(E[..., 0]).max() > 0.0
+
+
+def test_bloch_phase_flag_is_exactly_the_phase_factor():
+    ms = _field_ms("tm")
+    full = np.asarray(ms.get_efield(2, True))
+    env = np.asarray(ms.get_efield(2, False))
+    _, d = ms._eps
+    d = float(d)
+    x = (np.arange(FIELD_RES) + 0.5) * d - FIELD_RES * d / 2.0
+    ph = np.exp(1j * 2 * math.pi * FIELD_K.x * x)[:, None]
+    assert np.abs(full[..., 2] - env[..., 2] * ph).max() < 1e-12
+
+
+def test_compute_field_energy_totals_and_fractions():
+    ms = _field_ms("tm")
+    ms.get_dfield(2)
+    out = ms.compute_field_energy()
+    assert len(out) == 7
+    assert out[0] == pytest.approx(1.0, abs=1e-8)
+    assert sum(out[1:]) == pytest.approx(1.0, abs=1e-8)
+    # TM D is z-only, so all of it sits in the z pair
+    assert out[5] + out[6] == pytest.approx(1.0, abs=1e-8)
+    ms.get_bfield(2)
+    b = ms.compute_field_energy()
+    assert b[0] == pytest.approx(1.0, abs=1e-8)
+    assert b[5] + b[6] == pytest.approx(0.0, abs=1e-12)   # ... B is in-plane
+
+
+def test_compute_energy_in_objects():
+    ms = _field_ms("tm")
+    ms.get_dfield(1)
+    ms.compute_field_energy()
+    # band 1 is the dielectric band: most of its energy sits in the rod
+    inside = ms.compute_energy_in_objects([Cylinder(0.2, material=Medium(epsilon=12))])
+    assert 0.5 < inside < 1.0
+    # an object covering the whole cell collects all of it
+    whole = ms.compute_energy_in_objects([Cylinder(5.0, material=Medium(epsilon=12))])
+    assert whole == pytest.approx(1.0, abs=1e-8)
+    assert ms.compute_energy_in_objects([]) == 0.0
+
+
+def test_targeted_solver_finds_the_defect_band():
+    """MPB's targeted eigensolver: one band near a frequency, instead of
+    every band below it. The 5x5 supercell from the tutorial.
+
+    Gated against tests/examples/data/defect_mpb.json, generated in the
+    meep-oracle env by generate_defect_mpb.py (2026-09-07):
+    defect band 25 = 0.3773004164996916, energy in a radius-1 cylinder =
+    0.6227672211202755, targeted = 0.37730041137599807. This engine runs
+    ~0.6% below on both, which is the 2nd-order FDFD grid against MPB's
+    planewave basis, so the oracle gate is 1% and the EXACT gates are the
+    internal ones (targeted == band 25 of the full run, mode inside the
+    gap this same engine computes).
+
+    The fixture also pins the geometry-precedence rule: the defect is an
+    air rod APPENDED over a lattice duplicate, so it only exists if later
+    objects win. With the old reversed order this test would read
+    0.2792 -- 26% off, not 0.6%.
+    """
+    from meep_torch.mp.functions import geometric_objects_lattice_duplicates
+
+    air = Medium(epsilon=1.0)
+
+    def _defect(num_bands, target_freq):
+        lat = Lattice(size=Vector3(5, 5))
+        geom = geometric_objects_lattice_duplicates(
+            lat, [Cylinder(0.2, material=Medium(epsilon=12))])
+        geom.append(Cylinder(0.2, material=air))
+        ms = ModeSolver(num_bands=num_bands, resolution=FIELD_RES,
+                        k_points=[Vector3(0.5, 0.5)], geometry_lattice=lat,
+                        geometry=geom, target_freq=target_freq,
+                        tolerance=1e-8)
+        ms.run_tm()
+        return ms
+
+    full = _defect(50, 0.0)
+    targeted = _defect(1, (0.2812 + 0.4174) / 2)
+    f_defect = targeted.get_freqs()[0]
+    # the perfect lattice's TM gap, from the same engine
+    perfect = ModeSolver(num_bands=2, resolution=FIELD_RES,
+                         k_points=[Vector3(), Vector3(0.5), Vector3(0.5, 0.5)],
+                         geometry_lattice=Lattice(size=Vector3(1, 1)),
+                         geometry=[Cylinder(0.2, material=Medium(epsilon=12))])
+    perfect.run_tm()
+    lo = max(perfect.all_freqs[:, 0])
+    hi = min(perfect.all_freqs[:, 1])
+    assert lo < f_defect < hi, f"defect {f_defect} outside gap ({lo}, {hi})"
+    # and it is the same mode the full 50-band run puts in the gap
+    in_gap = [f for f in full.get_freqs() if lo < f < hi]
+    assert len(in_gap) == 1
+    assert f_defect == pytest.approx(in_gap[0], abs=1e-10)
+
+    targeted.get_dfield(1)
+    targeted.compute_field_energy()
+    energy = targeted.compute_energy_in_objects(
+        [Cylinder(1.0, material=Medium(epsilon=1.0))])
+
+    ref = json.load(open(DATA / "defect_mpb.json"))
+    assert f_defect == pytest.approx(ref["defect_freq"], rel=0.01)
+    assert energy == pytest.approx(ref["energy_in_cylinder_r1"], rel=0.01)
+    assert ref["gap_lo"] < f_defect < ref["gap_hi"]
+
+
+def test_output_files_match_meep_names(tmp_path, monkeypatch):
+    import h5py
+    monkeypatch.chdir(tmp_path)
+    ms = _field_ms("tm", num_bands=1)
+    ms.filename_prefix = "t"
+    from meep_torch import mpb as _mpb
+    _mpb.output_efield_z(ms, 1)
+    f = tmp_path / "t-e.k01.b01.z.tm.h5"
+    assert f.exists(), sorted(p.name for p in tmp_path.iterdir())
+    with h5py.File(f) as h:
+        assert h["z.r"].shape == (FIELD_RES, FIELD_RES)
+        assert h["z.i"].shape == (FIELD_RES, FIELD_RES)
+        assert h["lattice vectors"].shape == (3, 3)
+        assert "Bloch wavevector" in h and "description" in h
+    _mpb.output_dpwr(ms, 1)
+    g = tmp_path / "t-dpwr.k01.b01.tm.h5"
+    assert g.exists()
+    with h5py.File(g) as h:
+        assert h["data"].shape == (FIELD_RES, FIELD_RES)
+        assert float(np.asarray(h["data"]).sum()) * _dA(ms) == pytest.approx(
+            1.0, abs=1e-8)
+    ms.output_epsilon()
+    e = tmp_path / "t-epsilon.h5"          # no parity suffix on epsilon
+    assert e.exists()
+    with h5py.File(e) as h:
+        assert h["epsilon.xx"].shape == (FIELD_RES, FIELD_RES)
+        assert np.allclose(np.asarray(h["epsilon_inverse.zz"]),
+                           1.0 / np.asarray(h["data"]))
+
+
+def test_fix_field_phase_is_canonical():
+    ms = _field_ms("tm")
+    ms.get_efield(2, False)
+    a = ms.fix_field_phase().copy()
+    # re-fetching and re-fixing reproduces the same phase, and starting
+    # from an arbitrarily rotated field lands on the same answer
+    ms.get_efield(2, False)
+    ms._curfield = ms._curfield * np.exp(1j * 0.7)
+    b = ms.fix_field_phase()
+    assert np.abs(a - b).max() < 1e-10
+    # MPB picks the phase that maximises the sum of squares of the real
+    # parts. That does NOT make the field real -- a Bloch envelope at
+    # k != 0 cannot be -- but it does make the choice stationary, which is
+    # sum(2 Re Im) == 0. That is the invariant worth asserting.
+    f = a.reshape(-1)
+    scale = float((np.abs(f) ** 2).sum())
+    assert abs(float((2 * f.real * f.imag).sum())) < 1e-10 * scale
+    # and applying it again is a no-op
+    ms._curfield = a.copy()
+    ms._curfield_type = "e"
+    assert np.abs(ms.fix_field_phase() - a).max() < 1e-12
