@@ -108,11 +108,11 @@ def step_fv2d(st: FV2DState, c: FV2DCoeffs, src_amp=0.0, src_mask=None,
     for comp, mask, amp in ([(src_comp, src_mask, src_amp)] if src_mask is not None else []) \
             + ([src2] if src2 is not None else []):
         if comp == "Ey":
-            Dy = Dy + dt * amp * mask
+            Dy = Dy - dt * amp * mask
         elif comp == "Ez":
-            Dz = Dz + dt * amp * mask
+            Dz = Dz - dt * amp * mask
         else:
-            Dx = Dx + dt * amp * mask
+            Dx = Dx - dt * amp * mask
 
     ixx, ixy, ixz, iyy, iyz, izz = c.inv
     Ex = ixx * Dx + ixy * Dy + ixz * Dz

@@ -66,11 +66,11 @@ def test_faraday_profiles_vs_oracle():
     state = init_1d_state(grid)
     # meep ContinuousSource: cos(2 pi f t), abrupt turn-on (width=0); our
     # ContinuousSource is sin + ramped -- match meep's carrier exactly.
-    # Global minus: meep's unit-amplitude current produces the -1 polarity
-    # of our soft +J injection (source convention, not physics).
+    # This used to pass -cos to undo the steppers injecting +J where meep
+    # injects -J; the steppers now match meep, so the drive is meep's.
     src_ix = int(round((ref["src_z"] + ref["L"] / 2) / grid.dx))
     for t in range(int(round(ref["tmax"] / grid.dt))):
-        amp = -math.cos(2 * math.pi * ref["fsrc"] * (t + 0.5) * grid.dt)
+        amp = math.cos(2 * math.pi * ref["fsrc"] * (t + 0.5) * grid.dt)
         state = step_1d(state, coeffs, amp, src_ix)
     got_y = state.Ey.cpu().numpy()                     # meep Ex -> our Ey
     got_z = state.Ez.cpu().numpy()                     # meep Ey -> our Ez

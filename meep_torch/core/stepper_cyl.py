@@ -99,7 +99,7 @@ def step_cyl(state: CylState, c: CylCoeffs, src_amp: float = 0.0,
         * c.inv_r[1:-1] / c.dr - im * c.inv_r[1:-1] * Hr[1:-1]
     Dz = c.dz1 * state.Dz + c.dz2 * curl
     if src_ix is not None:
-        Dz[src_ix] = Dz[src_ix] + c.dt * src_amp
+        Dz[src_ix] = Dz[src_ix] - c.dt * src_amp
     Ez = Dz / c.eps
     Ez[: c.i_min] = 0.0                           # axis regularity, m != 0
     return CylState(Ez, Hr, Hphi, Dz)

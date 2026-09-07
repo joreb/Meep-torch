@@ -13,8 +13,7 @@
 #
 # SUBSTITUTIONS:
 # * meep z-axis -> meep-torch x-axis; meep (Ex, Ey) -> (Ey, Ez).
-# * Source matches meep's ContinuousSource carrier (cos, abrupt turn-on)
-#   with the -1 polarity of meep's current convention.
+# * Source matches meep's ContinuousSource carrier (cos, abrupt turn-on).
 #
 # Analytic overlay (meep tutorial): Ey ~ cos(kappa (x - x_src)),
 # Ez ~ sin(kappa (x - x_src)) modulating the carrier, kappa = (k- - k+)/2.
@@ -53,7 +52,7 @@ coeffs = build_1d_coeffs(grid, eps=EPSN, npml=RES, gyro=(F0, GAMMA, SN, B0))
 state = init_1d_state(grid)
 src_ix = int(round(SRC_X / grid.dx))
 for t in range(int(round(TMAX / grid.dt))):
-    amp = -math.cos(2 * math.pi * FSRC * (t + 0.5) * grid.dt)
+    amp = math.cos(2 * math.pi * FSRC * (t + 0.5) * grid.dt)
     state = step_1d(state, coeffs, amp, src_ix)
 
 # %% [markdown]

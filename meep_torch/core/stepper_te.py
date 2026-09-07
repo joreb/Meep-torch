@@ -117,11 +117,11 @@ def step_source(state: TEState, m, ft: str, amp=0.0,
     if ft == "B":
         if src_hz_mask is None:
             return state
-        return state._replace(Hz=state.Hz + dt * amp * src_hz_mask)
+        return state._replace(Hz=state.Hz - dt * amp * src_hz_mask)
     if src_mask is None:
         return state
     scale = m.d2y if m.d1x is not None else dt
-    return state._replace(Dy=state.Dy + scale * amp * src_mask)
+    return state._replace(Dy=state.Dy - scale * amp * src_mask)
 
 
 def update_pols(state: TEState, m) -> TEState:

@@ -127,11 +127,11 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
             # complex spatial mask (mask_c + i mask_s): full complex product
             # with the (src_c + i src_s) temporal envelope -- single-order
             # (DiffractedPlanewave) launches need the e^{i m G y} phase
-            Dz_c = Dz_c + dt * (src_c * src_mask - src_s * src_mask_s)
-            Dz_s = Dz_s + dt * (src_c * src_mask_s + src_s * src_mask)
+            Dz_c = Dz_c - dt * (src_c * src_mask - src_s * src_mask_s)
+            Dz_s = Dz_s - dt * (src_c * src_mask_s + src_s * src_mask)
         else:
-            Dz_c = Dz_c + dt * src_c * src_mask
-            Dz_s = Dz_s + dt * src_s * src_mask
+            Dz_c = Dz_c - dt * src_c * src_mask
+            Dz_s = Dz_s - dt * src_s * src_mask
 
     # --- Lorentz ADE (per quadrature) ---
     if m.c1.numel():
@@ -275,11 +275,11 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     if src_mask is not None:
         if src_mask_s is not None:
             # complex spatial mask, full complex product (mirrors step_bloch_tm)
-            Hz_c = Hz_c + dt * (src_c * src_mask - src_s * src_mask_s)
-            Hz_s = Hz_s + dt * (src_c * src_mask_s + src_s * src_mask)
+            Hz_c = Hz_c - dt * (src_c * src_mask - src_s * src_mask_s)
+            Hz_s = Hz_s - dt * (src_c * src_mask_s + src_s * src_mask)
         else:
-            Hz_c = Hz_c + dt * src_c * src_mask
-            Hz_s = Hz_s + dt * src_s * src_mask
+            Hz_c = Hz_c - dt * src_c * src_mask
+            Hz_s = Hz_s - dt * src_s * src_mask
 
     return BlochTEState(Hz_c, Hz_s, Ex_c, Ex_s, Ey_c, Ey_s,
                         Dx_c, Dx_s, Dy_c, Dy_s,

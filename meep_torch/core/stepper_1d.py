@@ -148,7 +148,7 @@ def step_1d(state: State1D, m: Coeffs1D, src_amp: float = 0.0,
     Dy = state.Dy.clone()
     Dy[1:-1] = state.Dy[1:-1] - dt * (dHz / m.k_e + psi_Hzx)
     if src_ix is not None:
-        Dy[src_ix] = Dy[src_ix] + dt * src_amp
+        Dy[src_ix] = Dy[src_ix] - dt * src_amp
 
     # --- multilevel-atom gain (two-level, Ey polarization) ---
     if m.mla is not None:

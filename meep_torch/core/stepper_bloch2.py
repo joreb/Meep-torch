@@ -82,8 +82,8 @@ def step_bloch2_tm(state: Bloch2State, eps: torch.Tensor, dt: float,
     Dz_c = state.Dz_c + dt * (cx_c - cy_c)
     Dz_s = state.Dz_s + dt * (cx_s - cy_s)
     if src_mask is not None:
-        Dz_c = Dz_c + dt * src_c * src_mask
-        Dz_s = Dz_s + dt * src_s * src_mask
+        Dz_c = Dz_c - dt * src_c * src_mask
+        Dz_s = Dz_s - dt * src_s * src_mask
     Ez_c = Dz_c / eps
     Ez_s = Dz_s / eps
     return Bloch2State(Ez_c, Ez_s, Hx_c, Hx_s, Hy_c, Hy_s, Dz_c, Dz_s)
@@ -139,8 +139,8 @@ def step_bloch2_te(state: Bloch2StateTE, eps_x: torch.Tensor,
     Dy_s = state.Dy_s - dt * (dHzs_x + kx * Hzm_c_x)
 
     if src_mask is not None:
-        Dy_c = Dy_c + dt * src_c * src_mask
-        Dy_s = Dy_s + dt * src_s * src_mask
+        Dy_c = Dy_c - dt * src_c * src_mask
+        Dy_s = Dy_s - dt * src_s * src_mask
 
     Ex_c, Ex_s = Dx_c / eps_x, Dx_s / eps_x
     Ey_c, Ey_s = Dy_c / eps_y, Dy_s / eps_y

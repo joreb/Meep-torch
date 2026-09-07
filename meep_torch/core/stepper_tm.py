@@ -152,23 +152,32 @@ def step_source(state: TMState, m: TMCoeffs, ft: str, amp=0.0,
                 src_hx_mask: torch.Tensor | None = None) -> TMState:
     """meep step_source(ft): soft current injection -- electric currents into
     D (ft="D"; scaled by d2 under sigma_d, like the fused kernel), magnetic
-    TFSF currents into B/H (ft="B")."""
+    TFSF currents into B/H (ft="B").
+
+    Sign: the current is SUBTRACTED. meep's step.cpp step_source does
+    ``f[c][0][i] -= real(current * dt)`` for magnetic B_stuff exactly as for
+    electric D_stuff, because Ampere's law is dD/dt = curl H - J. Injecting
+    with + instead gives a field of the right magnitude and the wrong
+    polarity, which every quadratic observable (flux, energy, |E|^2, harminv
+    frequency and Q) is blind to -- so the whole test suite passed with it
+    backwards until a signed field trace was compared against the oracle.
+    All steppers subtract; do not "fix" one to match a stale golden."""
     dt = m.dt
     if ft == "B":
         # into B when magnetic poles allocate it (meep injects into B);
         # otherwise straight into the folded H
         Hy, Hx = (state.By, state.Bx) if state.Bx is not None else (state.Hy, state.Hx)
         if src_hy_mask is not None:
-            Hy = Hy + dt * amp * src_hy_mask
+            Hy = Hy - dt * amp * src_hy_mask
         if src_hx_mask is not None:
-            Hx = Hx + dt * amp * src_hx_mask
+            Hx = Hx - dt * amp * src_hx_mask
         if state.Bx is not None:
             return state._replace(Bx=Hx, By=Hy)
         return state._replace(Hx=Hx, Hy=Hy)
     if src_mask is None:
         return state
     scale = m.d2 if m.d1 is not None else dt
-    return state._replace(Dz=state.Dz + scale * amp * src_mask)
+    return state._replace(Dz=state.Dz - scale * amp * src_mask)
 
 
 def update_pols(state: TMState, m: TMCoeffs) -> TMState:

@@ -133,7 +133,7 @@ def step_kz(state: KzState, c: KzCoeffs, src_amp: float = 0.0,
         curl[1:-1] = (Hy[1:] - Hy[:-1]) / dx
         Ez = (c.de1 * state.Ez * c.eps_z + c.de2 * curl) / c.eps_z
         if src_ix is not None:
-            Ez[src_ix] = Ez[src_ix] + dt * src_amp / c.eps_z[src_ix]
+            Ez[src_ix] = Ez[src_ix] - dt * src_amp / c.eps_z[src_ix]
         return KzState(Ex, Ez, Hy)
 
     # --- CFS-CPML path: stretch only the x-derivatives (ikz terms untouched) ---
@@ -156,5 +156,5 @@ def step_kz(state: KzState, c: KzCoeffs, src_amp: float = 0.0,
     curl[1:-1] = ch_x
     Ez = (c.de1 * state.Ez * c.eps_z + c.de2 * curl) / c.eps_z
     if src_ix is not None:
-        Ez[src_ix] = Ez[src_ix] + dt * src_amp / c.eps_z[src_ix]
+        Ez[src_ix] = Ez[src_ix] - dt * src_amp / c.eps_z[src_ix]
     return KzState(Ex, Ez, Hy, psi_dEz, psi_dHy)

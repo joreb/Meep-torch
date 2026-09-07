@@ -112,5 +112,5 @@ def step_bloch3(st: Bloch3State, c: Bloch3Coeffs, src_amp=0.0,
     if src is not None:
         comp, i, j, k = src
         f = {"Ex": Ex, "Ey": Ey, "Ez": Ez}[comp]
-        f[i, j, k] = f[i, j, k] + dt * src_amp / c.eps[i, j, k]
+        f[i, j, k] = f[i, j, k] - dt * src_amp / c.eps[i, j, k]
     return Bloch3State(Ex, Ey, Ez, Hx, Hy, Hz)

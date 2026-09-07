@@ -286,14 +286,14 @@ def step_lean(c: Lean3D, src_amp=0.0, src=None):
         comp = src[0]
         key = comp[1].lower()
         if len(src) == 2:
-            F[comp].add_(src[1] * (dt * src_amp) * c.inv_eps[key])
+            F[comp].sub_(src[1] * (dt * src_amp) * c.inv_eps[key])
         elif len(src) == 3:
             # plane-indexed: (comp, ix, plane) -- avoids a full-volume mask
             ix, plane = src[1], src[2]
-            F[comp][ix].add_(plane * (dt * src_amp) * c.inv_eps[key][ix])
+            F[comp][ix].sub_(plane * (dt * src_amp) * c.inv_eps[key][ix])
         else:
             i, j, k = src[1], src[2], src[3]
-            F[comp][i, j, k] += dt * src_amp * c.inv_eps[key][i, j, k]
+            F[comp][i, j, k] -= dt * src_amp * c.inv_eps[key][i, j, k]
 
 
 class _StateView:

@@ -166,11 +166,11 @@ def step_bor(state: BORState, c: BORCoeffs, src_amp: float = 0.0,
             comp, i, j = term[:3]
             fac = term[3] if len(term) > 3 else 1.0
             if comp == "Er":
-                Er[i, j] = Er[i, j] + dt * src_amp * fac / c.eps_r[i, j]
+                Er[i, j] = Er[i, j] - dt * src_amp * fac / c.eps_r[i, j]
             elif comp == "Ez":
-                Ez[i, j] = Ez[i, j] + dt * src_amp * fac / c.eps_z[i, j]
+                Ez[i, j] = Ez[i, j] - dt * src_amp * fac / c.eps_z[i, j]
             else:
-                Ephi[i, j] = Ephi[i, j] + dt * src_amp * fac / c.eps_p[i, j]
+                Ephi[i, j] = Ephi[i, j] - dt * src_amp * fac / c.eps_p[i, j]
     return BORState(Er, Ephi, Ez, Hr, Hphi, Hz)
 
 

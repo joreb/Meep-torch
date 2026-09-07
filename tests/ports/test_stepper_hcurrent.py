@@ -1,3 +1,6 @@
+# meep injects currents with a minus sign: step.cpp step_source does
+# f[c][0][i] -= real(current * dt), for magnetic B_stuff exactly as for
+# electric D_stuff. These goldens recorded the old + convention.
 import torch
 from meep_torch.core.grid import Grid
 from meep_torch.core.coeffs import build_tm_coeffs, build_te_coeffs
@@ -12,7 +15,7 @@ def test_tm_hy_current_injects():
     mask = grid.zeros(grid.nx - 1, grid.ny)
     mask[10, 10] = 1.0
     out = step_tm(state, m, src_h_amp=2.0, src_hy_mask=mask)
-    assert torch.isclose(out.Hy[10, 10], torch.tensor(2.0 * m.dt, dtype=torch.float64, device=grid.device))
+    assert torch.isclose(out.Hy[10, 10], torch.tensor(-2.0 * m.dt, dtype=torch.float64, device=grid.device))
     # no-current call unchanged (back-compat)
     out2 = step_tm(state, m)
     assert out2.Hy.abs().max() == 0.0
@@ -25,7 +28,7 @@ def test_tm_hx_current_injects():
     mask = grid.zeros(grid.nx, grid.ny - 1)
     mask[10, 10] = 1.0
     out = step_tm(state, m, src_h_amp=-1.5, src_hx_mask=mask)
-    assert torch.isclose(out.Hx[10, 10], torch.tensor(-1.5 * m.dt, dtype=torch.float64, device=grid.device))
+    assert torch.isclose(out.Hx[10, 10], torch.tensor(1.5 * m.dt, dtype=torch.float64, device=grid.device))
 
 
 def test_te_hz_current_injects():
@@ -35,7 +38,7 @@ def test_te_hz_current_injects():
     mask = grid.zeros(grid.nx - 1, grid.ny - 1)
     mask[10, 10] = 1.0
     out = step_te(state, m, src_h_amp=3.0, src_hz_mask=mask)
-    assert torch.isclose(out.Hz[10, 10], torch.tensor(3.0 * m.dt, dtype=torch.float64, device=grid.device))
+    assert torch.isclose(out.Hz[10, 10], torch.tensor(-3.0 * m.dt, dtype=torch.float64, device=grid.device))
 
 
 def test_h_current_seen_by_same_step_d_update():

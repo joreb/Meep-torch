@@ -452,12 +452,12 @@ def _inject_src(state, c, src_amp, src, eps_x, eps_y, eps_z):
     if isinstance(src[1], torch.Tensor):           # area/plane soft source
         mask = src[1]
         if comp == "Ez":
-            Ez = state.Ez + c.dt * src_amp * mask / eps_z
+            Ez = state.Ez - c.dt * src_amp * mask / eps_z
             return state._replace(Ez=Ez)
         if comp == "Ex":
-            Ex = state.Ex + c.dt * src_amp * mask / eps_x
+            Ex = state.Ex - c.dt * src_amp * mask / eps_x
             return state._replace(Ex=Ex)
-        Ey = state.Ey + c.dt * src_amp * mask / eps_y
+        Ey = state.Ey - c.dt * src_amp * mask / eps_y
         return state._replace(Ey=Ey)
     if len(src) == 3:                              # plane-indexed (comp, ix,
         ix, plane = src[1], src[2]                 # plane) -- lean-stepper
