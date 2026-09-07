@@ -105,19 +105,37 @@ class FieldsMixin:
         v = self._vecs[:, which_band - 1].reshape(eps.shape, order="F")
         return v, float(self._omegas[which_band - 1])
 
-    def _k_rad(self):
-        """Bloch vector in radians per unit length (the operator's units)."""
-        k = self._kc if self._kc is not None else Vector3()
-        return 2 * math.pi * float(k.x), 2 * math.pi * float(k.y)
+    def _lattice(self):
+        """(a1, a2) of the 2D cell; falls back to the rectangular box."""
+        a = getattr(self, "_a1", None)
+        if a is not None:
+            return self._a1, self._a2
+        eps, d = self._grid()
+        return (eps.shape[0] * d, 0.0), (0.0, eps.shape[1] * d)
+
+    def _measure(self):
+        """Cell area per grid point -- the quadrature weight of every
+        integral here. dx*dy on a rectangular cell, |a1 x a2|/(nu nv) in
+        general."""
+        from .eigensolver import cell_measure
+        eps, _ = self._grid()
+        a1, a2 = self._lattice()
+        return cell_measure(a1, a2, eps.shape[0], eps.shape[1])
 
     def _bloch_phase_grid(self):
-        """exp(+i k.r) on the cell centres the epsilon grid uses."""
-        eps, d = self._grid()
-        nx, ny = eps.shape
-        kx, ky = self._k_rad()
-        x = (np.arange(nx) + 0.5) * d - nx * d / 2.0
-        y = (np.arange(ny) + 0.5) * d - ny * d / 2.0
-        return np.exp(1j * (kx * x[:, None] + ky * y[None, :]))
+        """exp(+i k.r) on the cell-centre sample points.
+
+        In fractional coordinates this needs no basis at all: r = u a1 +
+        v a2 and kc . a_i = 2 pi k_i, so kc . r = 2 pi (k1 u + k2 v). The
+        k components are the ones the user passed in k_points.
+        """
+        eps, _ = self._grid()
+        nu, nv = eps.shape
+        k = self.current_k if self.current_k is not None else Vector3()
+        u = (np.arange(nu) + 0.5) / nu - 0.5
+        v = (np.arange(nv) + 0.5) / nv - 0.5
+        return np.exp(2j * np.pi * (float(k.x) * u[:, None]
+                                    + float(k.y) * v[None, :]))
 
     def _apply(self, op, v):
         """Difference operator on an (nx, ny) field, column-major like the
@@ -257,14 +275,13 @@ class FieldsMixin:
         density = sum(parts)
         total = float(density.sum())
         comp = [float(p.sum()) / (total if total else 1.0) for p in parts]
-        _, d = self._grid()
         self._set_curfield(density, self._curfield_type.upper(),
                            self._curfield_band)
         if verbosity.mpb > 0:
             fr = ", ".join(f"{comp[i] + comp[i - 1]}" for i in (1, 3, 5))
             print(f"{self._curfield_type}-energy-components:, "
                   f"{self.kpoint_index}, {self._curfield_band}, {fr}")
-        return [total * d * d] + comp
+        return [total * self._measure()] + comp
 
     def _object_mask(self, objs):
         """Cells whose centre lies in one of ``objs`` (min-image periodic).
@@ -284,32 +301,13 @@ class FieldsMixin:
         sits on the epsilon grid, so adopting MPB's offset would slide the
         mask half a cell off the very array it selects from.
         """
-        eps, d = self._grid()
-        nx, ny = eps.shape
-        L = [nx * d, ny * d]
-        x = (np.arange(nx) + 0.5) * d - L[0] / 2.0
-        y = (np.arange(ny) + 0.5) * d - L[1] / 2.0
-        X, Y = np.meshgrid(x, y, indexing="ij")
+        from .raster import cell_centres, object_mask_2d
+        eps, _ = self._grid()
+        a1, a2 = self._lattice()
+        X, Y = cell_centres(a1, a2, eps.shape[0], eps.shape[1])
         taken = np.zeros(eps.shape, dtype=bool)
         for obj in objs:
-            c = obj.center - self.geometry_center
-            dp = []
-            for a, (g, i) in enumerate(((X, 0), (Y, 1))):
-                v = g - c[i]
-                dp.append(v - L[a] * np.round(v / L[a]))
-            if isinstance(obj, (Cylinder, Sphere)):
-                inside = sum(v ** 2 for v in dp) < obj.radius ** 2
-            elif isinstance(obj, Block):
-                inside = np.ones(eps.shape, dtype=bool)
-                for a, i in enumerate((0, 1)):
-                    half = obj.size[i] / 2
-                    if not math.isinf(half):
-                        inside &= np.abs(dp[a]) < half
-            else:
-                raise NotImplementedError(
-                    f"{type(obj).__name__} is not supported by "
-                    "compute_energy_in_objects (Cylinder/Sphere/Block only)")
-            taken |= inside
+            taken |= object_mask_2d(obj, X, Y, a1, a2, self.geometry_center)
         return taken
 
     def compute_energy_in_objects(self, objs):
@@ -320,8 +318,8 @@ class FieldsMixin:
                 "first (get_dfield/get_bfield then compute_field_energy)")
         if not objs:
             return 0.0
-        _, d = self._grid()
-        return float(self._curfield[self._object_mask(objs)].sum()) * d * d
+        return float(self._curfield[self._object_mask(objs)].sum()) \
+            * self._measure()
 
     def get_dpwr(self, band):
         self.get_dfield(band, False)

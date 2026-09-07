@@ -44,7 +44,8 @@ import time
 import numpy as np
 import torch
 
-from .eigensolver import bloch_bands_2d, bloch_d_matrices
+from .eigensolver import (bloch_bands_2d, bloch_d_matrices,
+                          dual_vectors, lattice_gradients)
 from .fields import FieldsMixin
 
 from ..core.sources import GaussianPulse
@@ -309,8 +310,13 @@ class ModeSolver(FieldsMixin):
         axes = self._active_axes()
         if not axes:
             raise ValueError("geometry_lattice.size has no nonzero component")
-        self._check_basis_orthogonal()
         gs = self._adjust_grid_size()
+        if len(axes) == 2:
+            return self._rasterize_lattice_2d(gs)
+        # 1D/3D still rasterize on a cartesian box, which silently solves a
+        # sheared structure on an oblique basis. 2D goes through the
+        # lattice-coordinate path above and needs no such guard.
+        self._check_basis_orthogonal()
         size = self.geometry_lattice.size
         n = [int(gs[i]) for i in axes]
         L = [float(size[i]) for i in axes]
@@ -374,6 +380,44 @@ class ModeSolver(FieldsMixin):
         self._eps_te = (blend_te_supersampled(blocks)
                         if len(axes) == 2 else None)
         return torch.as_tensor(eps, dtype=torch.float64), d[0]
+
+    def _lattice_vectors(self):
+        """Cartesian a1, a2 of the 2D cell (rows of get_lattice)."""
+        lat = self.get_lattice()
+        return (float(lat[0][0]), float(lat[0][1])), \
+               (float(lat[1][0]), float(lat[1][1]))
+
+    def _rasterize_lattice_2d(self, gs):
+        """2D epsilon on the lattice cell, oblique or not (mpb/raster.py).
+
+        The grid is uniform in fractional coordinates, so a triangular cell
+        is sampled on its own rhombus. A rectangular basis reduces to the
+        cartesian per-axis form the 1D/3D path uses, bitwise, which is what
+        leaves the existing goldens unmoved.
+        """
+        from .raster import rasterize_2d
+        a1, a2 = self._lattice_vectors()
+        nu, nv = int(gs[0]), int(gs[1])
+        du = math.hypot(*a1) / nu
+        dv = math.hypot(*a2) / nv
+        if abs(du - dv) > 1e-9 * max(du, dv):
+            raise NotImplementedError(
+                f"anisotropic grid cells (|a1|/nu = {du:.6g} vs |a2|/nv = "
+                f"{dv:.6g}): resolution*size differs across the lattice "
+                f"axes, which the Bloch-FDTD backend does not support")
+        eps, blocks = rasterize_2d(a1, a2, nu, nv, self.geometry,
+                                   self.geometry_center,
+                                   self.default_material, _eps_of,
+                                   supersample=self.supersample)
+        b1, b2 = dual_vectors(a1, a2)
+        # Kottke blends an interface normal against the cartesian axes, so
+        # it is only meaningful when the cell axes ARE the cartesian ones.
+        # Oblique falls back to scalar eps for TE, which costs an order of
+        # convergence on a staircased boundary and is stated in the task.
+        self._eps_te = (blend_te_supersampled(blocks)
+                        if abs(float(b1 @ b2)) < 1e-12 else None)
+        self._a1, self._a2 = a1, a2
+        return torch.as_tensor(eps, dtype=torch.float64), du
 
     # -- band extraction backends ------------------------------------------
 
@@ -506,13 +550,19 @@ class ModeSolver(FieldsMixin):
             if abs(kc.z) > 1e-12:
                 raise NotImplementedError("2D lattice requires in-plane k")
             nx, ny = eps.shape
-            kx, ky = 2 * math.pi * kc.x, 2 * math.pi * kc.y
+            a1, a2 = self._a1, self._a2
+            # k as the user gave it: meep's k_points are in the RECIPROCAL
+            # basis, and kc . a_i == 2 pi k_i (checked), so the fractional
+            # components are the Bloch wrap phases directly and no
+            # cartesian round trip is needed.
+            k1, k2 = float(k[0]), float(k[1])
             freqs, vecs = bloch_bands_2d(
-                eps, dx, dx, kx, ky, self.num_bands,
+                eps, dx, dx, 0.0, 0.0, self.num_bands,
                 "te" if self._parity == EVEN_Z else "tm",
                 differentiable=self.differentiable,
                 eps_te=self._eps_te, return_vectors=True,
-                target_freq=self.target_freq)
+                target_freq=self.target_freq,
+                lattice=(a1, a2), k_frac=(k1, k2))
             # keep what the field getters need: the modes, their angular
             # frequencies, the k they belong to, and the very difference
             # operators the eigensolve used -- rebuilding those from k in
@@ -520,7 +570,8 @@ class ModeSolver(FieldsMixin):
             self._vecs = vecs
             self._omegas = np.array([2 * math.pi * float(f) for f in freqs])
             self._kc = kc
-            self._dxf, self._dyf = bloch_d_matrices(nx, ny, dx, dx, kx, ky)
+            gx, gy, _, _ = lattice_gradients(a1, a2, nx, ny, k1, k2)
+            self._dxf, self._dyf = gx, gy
             # keep the tensor under differentiable=True: ms.freqs is the
             # only handle a caller has on the bands, so listifying it here
             # silently severs autograd for every optimiser driving epsilon

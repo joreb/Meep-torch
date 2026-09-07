@@ -160,18 +160,110 @@ def test_differentiable_bands_match_finite_difference():
     assert np.allclose(sci, [float(v) for v in tor], atol=1e-12)
 
 
-def test_oblique_lattice_raises():
-    """An oblique basis is rasterized on a cartesian grid and would solve a
-    different structure (triangular K band 1 came back 27.75% off), so it
-    must raise rather than return plausible wrong bands."""
-    tri = Lattice(size=Vector3(1, 1),
-                  basis1=Vector3(math.sqrt(3) / 2, 0.5),
-                  basis2=Vector3(math.sqrt(3) / 2, -0.5))
-    ms = ModeSolver(num_bands=2, resolution=16, geometry_lattice=tri,
-                    k_points=[Vector3(0.2)],
-                    geometry=[Cylinder(0.2, material=Medium(epsilon=12))])
-    with pytest.raises(NotImplementedError, match="oblique lattice basis"):
-        ms.run_tm()
+TRI = Lattice(size=Vector3(1, 1),
+              basis1=Vector3(math.sqrt(3) / 2, 0.5),
+              basis2=Vector3(math.sqrt(3) / 2, -0.5))
+
+
+def test_oblique_triangular_bands_vs_mpb():
+    """Triangular lattice through the oblique basis, against meep.mpb.
+
+    This used to be test_oblique_lattice_raises: the cell was rasterized on
+    a cartesian box, which solves a SHEARED structure (K band 1 came back
+    27.75% off), so it refused rather than return plausible wrong numbers.
+    The operator now works in lattice coordinates and carries the metric
+    g_ij = b_i . b_j, whose off-diagonal term is exactly what a rectangular
+    cell does not have.
+
+    Gate is 2% like the sibling band tests; measured 0.54% worst case over
+    Gamma/M/K on 4 bands at resolution 32.
+    """
+    ref = json.load(open(DATA / "tri_rods_mpb.json"))
+    names = ["gamma", "M", "K"]
+    kpts = [Vector3(), Vector3(y=0.5), Vector3(-1 / 3, 1 / 3)]
+    ms = ModeSolver(num_bands=4, resolution=32, geometry_lattice=TRI,
+                    k_points=kpts,
+                    geometry=[Cylinder(ref["r"],
+                                       material=Medium(epsilon=ref["eps"]))])
+    ms.run_tm()
+    worst = 0.0
+    for i, name in enumerate(names):
+        for got, want in zip(ms.all_freqs[i], ref[name]):
+            if want == 0.0:
+                assert got == 0.0          # the Gamma zero mode
+                continue
+            worst = max(worst, abs(got - want) / want)
+    print(f"triangular TM vs mpb: worst {worst:.4%}")
+    assert worst < 0.02, f"triangular bands off by {worst:.2%}"
+
+
+def test_oblique_and_rectangular_supercell_agree():
+    """Same physics, two grids: the oblique primitive cell against the
+    sqrt(3) x 1 rectangular supercell that tests/examples/test_mpb_track.py
+    has always used.
+
+    The supercell holds two rods (corner and centre) and is a different
+    discretization of the same crystal, so agreement here is independent
+    evidence that the metric terms are right -- a wrong g12 would move the
+    oblique run and leave the supercell untouched.
+
+    The supercell contains TWO primitive cells, so its spectrum is a
+    FOLDED SUPERSET: supercell band n is not primitive band n, and every
+    primitive frequency must instead APPEAR somewhere in the supercell
+    list. tests/examples/test_mpb_track.py matches the same way, and
+    comparing index-wise here read 0.274 against 0.192 for band 1 purely
+    from that.
+    """
+    r, eps_rod, res = 0.2, 12.0, 32
+    obl = ModeSolver(num_bands=3, resolution=res, geometry_lattice=TRI,
+                     k_points=[Vector3(-1 / 3, 1 / 3)],
+                     geometry=[Cylinder(r, material=Medium(epsilon=eps_rod))])
+    obl.run_tm()
+
+    # K = (-1/3, 1/3) in the triangular reciprocal basis is ky = 2 pi/3
+    # in the rectangular supercell's cartesian frame (test_mpb_track).
+    from meep_torch.mpb.eigensolver import bloch_bands_2d
+    nx, ny = int(round(math.sqrt(3) * res)), res
+    Lx, dx = nx / res, 1.0 / res
+    xs = (np.arange(nx * 4) + 0.5) / (4 * res)
+    ys = (np.arange(ny * 4) + 0.5) / (4 * res)
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+    fine = np.ones((nx * 4, ny * 4))
+    for cx, cy in ((0.0, 0.0), (Lx / 2, 0.5)):
+        ddx = (X - cx) - Lx * np.round((X - cx) / Lx)
+        ddy = (Y - cy) - 1.0 * np.round((Y - cy) / 1.0)
+        fine[ddx ** 2 + ddy ** 2 < r ** 2] = eps_rod
+    eps = fine.reshape(nx, 4, ny, 4).mean(axis=(1, 3))
+    rect = bloch_bands_2d(eps, dx, dx, 0.0, 2 * math.pi / 3, 8, "tm")
+
+    for b, o in enumerate(obl.get_freqs()):
+        near = min(rect, key=lambda q: abs(q - o))
+        rel = abs(near - o) / o if o else abs(near - o)
+        print(f"K band {b + 1}: oblique {o:.6f}  nearest supercell "
+              f"{near:.6f}  rel {rel:.4%}")
+        # 1% covers the two grids being genuinely different: the supercell
+        # is sqrt(3)*res rounded to an integer, so its cell is 0.8% short
+        # of sqrt(3) at res=32, which shifts its bands on its own.
+        assert rel < 0.01, f"band {b + 1}: {o} vs nearest {near}"
+
+
+def test_oblique_rasterizer_coverage_fraction():
+    """A rod of radius r fills pi r^2 / |a1 x a2| of the triangular cell.
+
+    The rasterizer samples on the rhombus in fractional coordinates and
+    wraps min-image through the lattice; a cartesian box or a cartesian
+    wrap both get this wrong.
+    """
+    r, eps_rod = 0.2, 12.0
+    ms = ModeSolver(num_bands=1, resolution=32, geometry_lattice=TRI,
+                    k_points=[Vector3(0.1)],
+                    geometry=[Cylinder(r, material=Medium(epsilon=eps_rod))])
+    ms.init_params(ODD_Z, True)
+    eps = ms._eps[0].cpu().numpy()
+    frac = (eps.mean() - 1.0) / (eps_rod - 1.0)
+    want = math.pi * r ** 2 / (math.sqrt(3) / 2)
+    print(f"rod coverage {frac:.6f} vs pi r^2 / area {want:.6f}")
+    assert abs(frac - want) < 1e-3
 
 
 def test_gamma_tm_band1_is_zero():
@@ -799,3 +891,64 @@ def test_later_geometry_objects_win_in_1d_too():
     plain.init_params(ODD_Z, True)
     np.testing.assert_allclose(over._eps[0].cpu().numpy(),
                                plain._eps[0].cpu().numpy(), atol=1e-12)
+
+
+def test_oblique_triangular_te_bands_vs_mpb():
+    """TE on the triangular lattice -- the case that leans hardest on the
+    metric CROSS term.
+
+    TM only needs Gx^H Gx + Gy^H Gy, where the metric is already inside the
+    gradients. TE carries a 1/eps weight per edge family, and a mixed u-v
+    derivative whose weight lives on the cell CORNER; writing it as
+    Gx^H Wx Gx + Gy^H Wy Gy instead would be silently wrong off-rectangle,
+    because Gx mixes both edge families and one weight cannot sit on both.
+
+    Gate is 4%, looser than TM's 2%, for the reason the square-lattice TE
+    gate is already 2.6%: in-plane E is discontinuous across the rod
+    boundary, so the interface treatment dominates. Oblique cells also
+    fall back to SCALAR eps -- Kottke blends against the cartesian axes and
+    is not meaningful when the cell axes are not those. Measured 2.62%.
+    """
+    ref = json.load(open(DATA / "tri_te_mpb.json"))
+    kpts = [Vector3(), Vector3(y=0.5), Vector3(-1 / 3, 1 / 3)]
+    ms = ModeSolver(num_bands=ref["num_bands"], resolution=ref["resolution"],
+                    geometry_lattice=TRI, k_points=kpts,
+                    geometry=[Cylinder(ref["r"],
+                                       material=Medium(epsilon=ref["eps"]))])
+    ms.run_te()
+    worst = 0.0
+    for i, name in enumerate(("gamma", "M", "K")):
+        for got, want in zip(ms.all_freqs[i], ref[name]):
+            if want == 0.0:
+                continue
+            worst = max(worst, abs(got - want) / want)
+    print(f"triangular TE vs mpb: worst {worst:.4%}")
+    assert worst < 0.04, f"triangular TE bands off by {worst:.2%}"
+
+
+def test_oblique_fields_normalise_and_satisfy_faraday():
+    """The field machinery on an oblique cell: same identity as the
+    rectangular case, now with the cell-area measure and the metric
+    gradients. If the measure were still dx*dy the energies would come out
+    wrong by |a1 x a2| / (dx dy) = 0.866."""
+    ms = ModeSolver(num_bands=3, resolution=24, geometry_lattice=TRI,
+                    k_points=[Vector3(-1 / 3, 1 / 3)],
+                    geometry=[Cylinder(0.2, material=Medium(epsilon=12))])
+    ms.run_tm()
+    E = ms.get_efield(2)
+    assert E.shape == (24, 24, 1, 3)
+    ms.get_dfield(2)
+    d = ms.compute_field_energy()
+    assert d[0] == pytest.approx(1.0, abs=1e-8)
+    ms.get_bfield(2)
+    b = ms.compute_field_energy()
+    assert b[0] == pytest.approx(1.0, abs=1e-8), (
+        "Faraday identity broken on the oblique cell: eps|E|^2 and |H|^2 "
+        "must both integrate to 1 from the single normalisation")
+    # a rod covers pi r^2 / |a1 x a2| of the cell; the dielectric band
+    # concentrates in it
+    ms.get_dfield(1)
+    ms.compute_field_energy()
+    inside = ms.compute_energy_in_objects(
+        [Cylinder(0.2, material=Medium(epsilon=12))])
+    assert 0.5 < inside < 1.0, inside
