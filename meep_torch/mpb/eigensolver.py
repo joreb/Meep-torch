@@ -35,11 +35,12 @@ rather than golden equality (see wiki/tasks/port_mpb-eigensolver.md).
 from __future__ import annotations
 
 import numpy as np
+import scipy.linalg as sla
 import scipy.sparse as sp
 import scipy.sparse.linalg as spl
 import torch
 
-__all__ = ["bloch_bands_2d", "bloch_d_matrices"]
+__all__ = ["bloch_bands_2d", "bloch_d_matrices", "te_edge_inv_eps"]
 
 
 def _roll_matrix(n: int, phase: complex) -> sp.csr_matrix:
@@ -87,6 +88,30 @@ def _avg_forward(eps: np.ndarray, axis: int) -> np.ndarray:
     return 0.5 * (eps + np.roll(eps, -1, axis=axis))
 
 
+def te_edge_inv_eps(eps: np.ndarray, eps_te=None):
+    """Edge-averaged ``1/eps`` weights of the TE operator, keyed by the E
+    COMPONENT each one multiplies -- deliberately NOT by the derivative axis.
+
+    Returns ``(inv_for_ey, inv_for_ex)``.
+
+    The crossing is real and it looks like a bug every time: ``inv_for_ey``
+    carries **eps_yy** averaged along **x**. It has to, because d/dx Hz is
+    set by E_y and d/dy Hz by E_x, so the x-derivative's edge weight is the
+    one E_y sees. Naming these by axis (``inv_x``/``inv_y``) invites the
+    next reader to "fix" the apparent swap, and for scalar eps the swap is
+    numerically invisible -- it only shows up on a smoothed tensor, which is
+    exactly the case nobody tests by hand. Hence component names.
+
+    Shared by :func:`_assemble` and the field reconstruction in
+    ``mpb.fields`` so the two cannot drift: E = D/eps on the operator's own
+    edges, not on cell centres.
+    """
+    exx, eyy = (eps, eps) if eps_te is None else eps_te
+    exx = np.asarray(exx, dtype=float)
+    eyy = np.asarray(eyy, dtype=float)
+    return 1.0 / _avg_forward(eyy, axis=0), 1.0 / _avg_forward(exx, axis=1)
+
+
 def _assemble(eps: np.ndarray, dx: float, dy: float, kx: float, ky: float,
               polarization: str, eps_te=None):
     nx, ny = eps.shape
@@ -103,13 +128,9 @@ def _assemble(eps: np.ndarray, dx: float, dy: float, kx: float, ky: float,
     # wrong for a smoothed tensor.
     # 1/eps sits on the edge the derivative lands on, hence the forward
     # average along that same axis.
-    exx, eyy = (eps, eps) if eps_te is None else eps_te
-    exx = np.asarray(exx, dtype=float)
-    eyy = np.asarray(eyy, dtype=float)
-    inv_x = 1.0 / _avg_forward(eyy, axis=0)
-    inv_y = 1.0 / _avg_forward(exx, axis=1)
-    Wx = sp.diags(inv_x.reshape(-1, order="F"))
-    Wy = sp.diags(inv_y.reshape(-1, order="F"))
+    inv_for_ey, inv_for_ex = te_edge_inv_eps(eps, eps_te)
+    Wx = sp.diags(inv_for_ey.reshape(-1, order="F"))
+    Wy = sp.diags(inv_for_ex.reshape(-1, order="F"))
     A = (dxf.conj().T @ Wx @ dxf + dyf.conj().T @ Wy @ dyf).tocsr()
     return A.tocsr(), sp.identity(nx * ny, format="csr")
 
@@ -126,24 +147,64 @@ def _sorted_freqs(vals: np.ndarray, num_bands: int) -> list[float]:
     return [float(np.sqrt(v) / (2 * np.pi)) for v in vals[:num_bands]]
 
 
-def _solve_scipy(A, M, num_bands: int) -> list[float]:
+def _sigma_for(target_freq: float) -> float:
+    """Shift-invert target in omega^2.
+
+    ``target_freq`` 0 means "the lowest bands": shift just below zero,
+    because at k = 0 the TM operator is singular (the omega = 0 mode) and
+    factorizing at sigma = 0 exactly would fail. A nonzero target is MPB's
+    targeted eigensolver -- eigsh with that sigma and which="LM" returns
+    the k eigenvalues NEAREST it, which is how a defect state inside a gap
+    is found without computing every band below it.
+    """
+    return -1e-7 if not target_freq else (2 * np.pi * float(target_freq)) ** 2
+
+
+def _pick(vals, num_bands: int, target_freq: float):
+    """Indices of the wanted eigenvalues, always returned in ascending
+    frequency order so band n is still entry n."""
+    if target_freq:
+        sel = np.argsort(np.abs(vals - _sigma_for(target_freq)))[:num_bands]
+        return sel[np.argsort(vals[sel])]
+    return np.argsort(vals)[:num_bands]
+
+
+def _normalize(vecs: np.ndarray, eps: np.ndarray, dx: float, dy: float,
+               polarization: str) -> np.ndarray:
+    """MPB's normalisation: the energy integral over the cell is 1.
+
+    TM carries Ez, so that is ``integral eps |E|^2 = 1``; TE carries Hz and
+    mu = 1, so ``integral |H|^2 = 1``. Both make compute_field_energy's
+    total come out at 1, which is the invariant every field test leans on.
+    """
+    w = (eps.reshape(-1, order="F")[:, None] if polarization == "tm" else 1.0)
+    nrm = np.sqrt((np.abs(vecs) ** 2 * w).sum(axis=0) * dx * dy)
+    return vecs / np.where(nrm == 0, 1.0, nrm)[None, :]
+
+
+def _solve_scipy(A, M, num_bands: int, return_vectors: bool = False,
+                 target_freq: float = 0.0):
     n = A.shape[0]
     if num_bands >= n - 1:
-        dense = A.toarray()
-        Md = M.toarray() if sp.issparse(M) else M
-        vals = np.linalg.eigvalsh(np.linalg.solve(Md, dense))
-        return _sorted_freqs(vals, num_bands)
-    # Shift just below zero: at k = 0 the TM operator is singular (the
-    # omega = 0 mode), and shift-invert at sigma = 0 exactly would try to
-    # factorize a singular matrix.
-    vals = spl.eigsh(A.astype(complex), k=num_bands, M=M.astype(complex),
-                     sigma=-1e-7, which="LM", return_eigenvectors=False)
-    return _sorted_freqs(vals, num_bands)
+        Md = (M.toarray() if sp.issparse(M) else np.asarray(M))
+        # eigh, not eigvalsh: the generalized form A v = lam M v keeps the
+        # vectors M-orthonormal. The old np.linalg.solve(M, A) route formed
+        # a non-Hermitian product and could not return usable vectors.
+        vals, vecs = sla.eigh(A.toarray(), Md)
+    else:
+        out = spl.eigsh(A.astype(complex), k=num_bands, M=M.astype(complex),
+                        sigma=_sigma_for(target_freq), which="LM",
+                        return_eigenvectors=return_vectors)
+        vals, vecs = out if return_vectors else (out, None)
+    sel = _pick(np.real(vals), num_bands, target_freq)
+    freqs = _sorted_freqs(np.real(vals)[sel], num_bands)
+    return freqs, (None if vecs is None else np.asarray(vecs)[:, sel])
 
 
 def _solve_torch(eps_t: torch.Tensor, dx: float, dy: float, kx: float,
                  ky: float, num_bands: int, polarization: str,
-                 eps_te=None) -> torch.Tensor:
+                 eps_te=None, return_vectors: bool = False,
+                 target_freq: float = 0.0):
     """Differentiable path: assemble in torch and eigendecompose.
 
     The operator has to be built from the eps *tensor* for autograd to
@@ -176,13 +237,31 @@ def _solve_torch(eps_t: torch.Tensor, dx: float, dy: float, kx: float,
         B = (Dx.conj().T @ (inv_x[:, None] * Dx)
              + Dy.conj().T @ (inv_y[:, None] * Dy))
     B = 0.5 * (B + B.conj().T)
-    vals = torch.linalg.eigvalsh(B)[:num_bands]
-    return torch.sqrt(torch.clamp(vals, min=0.0)) / (2 * np.pi)
+    if not return_vectors:
+        vals = torch.linalg.eigvalsh(B)
+        sel = _pick(vals.detach().cpu().numpy(), num_bands, target_freq)
+        vals = vals[torch.as_tensor(sel.copy())]
+        return torch.sqrt(torch.clamp(vals, min=0.0)) / (2 * np.pi), None
+    vals, y = torch.linalg.eigh(B)
+    sel = _pick(vals.detach().cpu().numpy(), num_bands, target_freq)
+    idx = torch.as_tensor(sel.copy())
+    vals, y = vals[idx], y[:, idx]
+    if polarization == "tm":
+        # B = D^-1 A D^-1 with D = sqrt(eps), so an eigenvector y of B maps
+        # back to the physical Ez as v = y / sqrt(eps). Getting this wrong
+        # is NOT caught by the normalisation test -- a wrongly scaled field
+        # still normalises to 1 -- only by the Faraday residual, which is
+        # the one check that couples the vector back to the operator.
+        d = torch.sqrt(eps_c.T.reshape(-1))
+        y = y / d[:, None]
+    freqs = torch.sqrt(torch.clamp(vals, min=0.0)) / (2 * np.pi)
+    return freqs, y.detach().cpu().numpy()
 
 
 def bloch_bands_2d(eps, dx: float, dy: float, kx: float, ky: float,
                    num_bands: int, polarization: str = "tm",
-                   differentiable: bool = False, eps_te=None) -> list[float]:
+                   differentiable: bool = False, eps_te=None,
+                   return_vectors: bool = False, target_freq: float = 0.0):
     """Lowest ``num_bands`` frequencies at Bloch vector (kx, ky).
 
     ``eps``: (nx, ny) cell-centred relative permittivity.
@@ -197,6 +276,16 @@ def bloch_bands_2d(eps, dx: float, dy: float, kx: float, ky: float,
     ``differentiable``: torch path with autograd through the eigensolve, so
     bands carry gradient w.r.t. ``eps``; returns a tensor. The default
     scipy path is faster, detached, and returns a plain list.
+    ``target_freq``: MPB's targeted eigensolver. 0 gives the lowest bands;
+    nonzero returns the ``num_bands`` modes whose frequency is NEAREST it,
+    which finds a defect state inside a gap without computing the hundreds
+    of bands below it.
+    ``return_vectors``: also return the mode fields as
+    ``(nx*ny, num_bands)`` complex, column-major (x fastest, the same
+    flattening the operator uses), normalised to MPB's convention
+    (integral of eps|E|^2 = 1 for TM, of |H|^2 = 1 for TE) and ordered to
+    match the frequencies. Vectors are always DETACHED, on both paths:
+    the eigenvalues carry gradient, the eigenvectors do not.
 
     Returns meep frequencies (a = 1, c = 1), ascending, one per band --
     always exactly ``num_bands`` of them, in order, with no gaps. That
@@ -205,12 +294,20 @@ def bloch_bands_2d(eps, dx: float, dy: float, kx: float, ky: float,
     """
     if polarization not in ("tm", "te"):
         raise ValueError(f"polarization must be 'tm' or 'te', got {polarization!r}")
-    if differentiable:
-        eps_t = (eps if isinstance(eps, torch.Tensor)
-                 else torch.as_tensor(np.asarray(eps, dtype=float)))
-        return _solve_torch(eps_t, dx, dy, kx, ky, num_bands, polarization,
-                            eps_te=eps_te)
     eps_np = (eps.detach().cpu().numpy() if isinstance(eps, torch.Tensor)
               else np.asarray(eps, dtype=float))
-    A, M = _assemble(eps_np, dx, dy, kx, ky, polarization, eps_te=eps_te)
-    return _solve_scipy(A, M, num_bands)
+    if differentiable:
+        eps_t = (eps if isinstance(eps, torch.Tensor)
+                 else torch.as_tensor(eps_np))
+        freqs, vecs = _solve_torch(eps_t, dx, dy, kx, ky, num_bands,
+                                   polarization, eps_te=eps_te,
+                                   return_vectors=return_vectors,
+                                   target_freq=target_freq)
+    else:
+        A, M = _assemble(eps_np, dx, dy, kx, ky, polarization, eps_te=eps_te)
+        freqs, vecs = _solve_scipy(A, M, num_bands,
+                                   return_vectors=return_vectors,
+                                   target_freq=target_freq)
+    if not return_vectors:
+        return freqs
+    return freqs, _normalize(vecs, eps_np, dx, dy, polarization)

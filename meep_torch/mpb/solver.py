@@ -26,10 +26,12 @@ FDFD is 2nd-order in the grid spacing, not spectral like MPB's planewave
 basis, so oracle comparisons want resolution-aware tolerances rather than
 golden equality (TM ~0.3%, TE ~2.6% at resolution 32; both converge).
 
-Everything needing per-band mode FIELDS (get_efield & co) still raises:
-the eigensolver returns eigenvalues only, eigenvectors are not exported
-yet (for guided strip/slab cross-sections use meep_torch.modes.fd1d/fd2d
-directly).
+Per-band mode FIELDS (get_efield & co, the energy density, MPB's phase
+fix, the output_* writers) come from the 2D eigensolve's eigenvectors and
+live in mpb/fields.py + mpb/band_functions.py. The 1D/3D harminv paths
+recover frequencies from a time series and have no eigenvectors, so the
+field getters raise there (for guided strip/slab cross-sections use
+meep_torch.modes.fd1d/fd2d directly).
 
 Backend knobs beyond meep's API (fmax, t_end, courant, differentiable,
 ...) are plain attributes documented on the class.
@@ -42,7 +44,8 @@ import time
 import numpy as np
 import torch
 
-from .eigensolver import bloch_bands_2d
+from .eigensolver import bloch_bands_2d, bloch_d_matrices
+from .fields import FieldsMixin
 
 from ..core.sources import GaussianPulse
 from ..core.stepper_bloch2 import init_bloch2_state, step_bloch2_tm
@@ -77,11 +80,13 @@ _PARITY_NAMES = {NO_PARITY: "", EVEN_Z: "zeven", ODD_Z: "zodd",
                  ODD_Y + EVEN_Z: "yodd, zeven",
                  ODD_Y + ODD_Z: "yodd, zodd"}
 
-_FIELDS_MSG = ("{} needs per-band mode fields; both band backends yield "
-               "eigenfrequencies only -- the FDFD eigensolve does not "
-               "export eigenvectors yet, and harminv has none (for "
-               "guided strip/slab cross-sections use "
-               "meep_torch.modes.fd1d/fd2d directly)")
+_FIELDS_MSG = ("{} is not ported. The 2D eigensolve does export mode "
+               "fields now (mpb/fields.py: get_efield/get_dfield/"
+               "get_hfield/get_bfield, compute_field_energy, "
+               "compute_energy_in_objects, fix_field_phase, output_*), so "
+               "this one is missing for its own reason rather than for "
+               "want of eigenvectors -- see wiki/tasks/"
+               "port_mpb-eigensolver.md")
 
 
 class MPBArray(np.ndarray):
@@ -108,7 +113,7 @@ def _eps_of(material):
     return val
 
 
-class ModeSolver:
+class ModeSolver(FieldsMixin):
     # Bloch-FDTD backend knobs (meep-torch extensions, not meep API):
     courant = 0.4        # dt = courant * dx (2D; the 3D stepper sets its own)
     t_end = 300.0        # run length per k-point
@@ -485,12 +490,29 @@ class ModeSolver:
             # list and mis-assigns wherever a mode is missed or duplicated.
             if abs(kc.z) > 1e-12:
                 raise NotImplementedError("2D lattice requires in-plane k")
-            return bloch_bands_2d(
-                eps, dx, dx, 2 * math.pi * kc.x, 2 * math.pi * kc.y,
-                self.num_bands,
+            nx, ny = eps.shape
+            kx, ky = 2 * math.pi * kc.x, 2 * math.pi * kc.y
+            freqs, vecs = bloch_bands_2d(
+                eps, dx, dx, kx, ky, self.num_bands,
                 "te" if self._parity == EVEN_Z else "tm",
                 differentiable=self.differentiable,
-                eps_te=self._eps_te)
+                eps_te=self._eps_te, return_vectors=True,
+                target_freq=self.target_freq)
+            # keep what the field getters need: the modes, their angular
+            # frequencies, the k they belong to, and the very difference
+            # operators the eigensolve used -- rebuilding those from k in
+            # fields.py would risk the two drifting apart
+            self._vecs = vecs
+            self._omegas = np.array([2 * math.pi * float(f) for f in freqs])
+            self._kc = kc
+            self._dxf, self._dyf = bloch_d_matrices(nx, ny, dx, dx, kx, ky)
+            return [float(f) for f in freqs]
+        # harminv recovers frequencies from a time series; there is no
+        # eigenvector to hand the field getters, so make that explicit
+        # rather than leaving a stale set from an earlier 2D run
+        self._vecs = self._omegas = None
+        self._dxf = self._dyf = None
+        self._kc = kc
         n_zero = self._zero_bands_at_gamma(kc)
         fmax = self.fmax
         if fmax is None:
@@ -523,6 +545,11 @@ class ModeSolver:
         self._parity = p
         self.parity = _PARITY_NAMES.get(p, "")
         self._eps = self._rasterize_epsilon()
+        # meep: kpoint_index counts solves within a run and shows up in
+        # every output filename (e.g. e.k01.b02.z.tm.h5)
+        self.kpoint_index = 0
+        self._curfield = None
+        self._curfield_type = None
 
     def set_parity(self, p):
         self._check_parity_supported(p)
@@ -533,6 +560,7 @@ class ModeSolver:
         if self._eps is None:
             self.init_params(self._parity, True)
         self.freqs = self._solve_k(k)
+        self.kpoint_index += 1
 
     def get_freqs(self):
         return list(self.freqs)
@@ -728,22 +756,15 @@ class ModeSolver:
         self.is_negative_epsilon_ok = True
         self.target_freq = 1 / inf
 
-    # -- field getters: unbackable without a planewave eigensolver ---------
+    # -- fields ------------------------------------------------------------
+    # get_efield/get_dfield/get_hfield/get_bfield, multiply_bloch_phase,
+    # fix_field_phase, compute_field_energy, compute_energy_in_objects,
+    # get_dpwr/get_bpwr/get_tot_pwr and the output_* writers come from
+    # FieldsMixin (mpb/fields.py), backed by the 2D eigensolve's vectors.
+    # What is left below genuinely has no backing yet.
 
     def _no_fields(self, name):
         raise NotImplementedError(_FIELDS_MSG.format(name))
-
-    def get_efield(self, which_band, bloch_phase=True):
-        self._no_fields("get_efield")
-
-    def get_hfield(self, which_band, bloch_phase=True):
-        self._no_fields("get_hfield")
-
-    def get_bfield(self, which_band, bloch_phase=True):
-        self._no_fields("get_bfield")
-
-    def get_dfield(self, which_band, bloch_phase=True):
-        self._no_fields("get_dfield")
 
     def get_charge_density(self, which_band, bloch_phase=True):
         self._no_fields("get_charge_density")
@@ -751,26 +772,8 @@ class ModeSolver:
     def get_poynting(self, which_band):
         self._no_fields("get_poynting")
 
-    def get_dpwr(self, band):
-        self._no_fields("get_dpwr")
-
-    def get_bpwr(self, band):
-        self._no_fields("get_bpwr")
-
-    def get_tot_pwr(self, which_band):
-        self._no_fields("get_tot_pwr")
-
     def get_eigenvectors(self, first_band, num_bands):
         self._no_fields("get_eigenvectors")
-
-    def multiply_bloch_phase(self, arr):
-        self._no_fields("multiply_bloch_phase")
-
-    def fix_field_phase(self):
-        self._no_fields("fix_field_phase")
-
-    def compute_field_energy(self):
-        self._no_fields("compute_field_energy")
 
     def compute_group_velocities(self):
         self._no_fields("compute_group_velocities")
