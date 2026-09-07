@@ -42,7 +42,12 @@ def cpml_profiles(
         u = u + u_lo
         sigma = sigma + (-(m + 1) * math.log(R0) / (2.0 * n_lo * dx)) * u_lo**m
     if n_hi > 0:
-        u_hi = torch.clamp((x - (n - 1 - n_hi)) / n_hi, min=0.0)
+        # the high wall sits at the last node plus the offset: a half-offset
+        # array is one node shorter, so anchoring the ramp at n-1 would start
+        # it a full cell inside the E ramp and mismatch the E/H stretches
+        # (0.18 amplitude reflection of a returning wave at dpml=1, res=10)
+        wall = n - 1 + 2.0 * offset
+        u_hi = torch.clamp((x - (wall - n_hi)) / n_hi, min=0.0)
         u = u + u_hi
         sigma = sigma + (-(m + 1) * math.log(R0) / (2.0 * n_hi * dx)) * u_hi**m
     u = torch.clamp(u, max=1.0)

@@ -23,19 +23,35 @@ from meep_torch.mp.cpp.core import structure as core_structure
 
 # pre-rearchitecture golden fluxes: run(until=40) on the waveguide below.
 #
-# Rebaselined 2026-09-07: exactly 100x the previous values, because the source
-# normalization was corrected. A meep current is a density integrated over its
-# extent, so its field is resolution-independent; we were injecting the bare
-# amplitude, which made the field scale as dx (measured 1/40 of meep at
-# resolution 40, 1/20 at 20). Flux goes as amplitude^2, and this cell is a
-# line source at resolution 10, hence 10^2. The shape of the spectrum is
-# unchanged -- only the absolute scale moved, and it moved onto meep's.
-GOLDEN_PLAIN = [2.7674774850386973e-06, 7.415436603754773e-06,
-                4.268356224067546e-06]
+# These are SELF-CONSISTENCY goldens -- captured from this engine, not from
+# meep. They guard the run path against silent drift; they are not a parity
+# claim. Real meep on the same cell gives 1.031e-06, 1.645e-06, 6.382e-07,
+# which is 2.5x to 6.4x below these values with a different spectral shape.
+# That gap is pre-existing and unexplained, and an earlier revision of this
+# comment asserted a rebaseline had moved these "onto meep's"; it had not.
+# Do not read agreement with meep into this gate.
+#
+# Rebaselined 2026-09-07 (2nd time) for the CPML high-edge anchor fix in
+# core/pml.py: the high ramp was anchored in array-index space, so half-offset
+# H arrays started it a cell inside the E ramp and the resulting E/H stretch
+# mismatch reflected off the layer. This cell's guide runs into the PML, so
+# its flux moves. All three values moved TOWARD meep (ratios 2.68/4.51/6.69 ->
+# 2.49/4.13/6.39):
+#     old  2.7674774850386973e-06  7.415436603754773e-06  4.268356224067546e-06
+#     new  2.5635746995635057e-06  6.786305104894549e-06  4.077624008546449e-06
+# (-7.4%, -8.5%, -4.5%). See wiki/tasks/fix_cpml-entrance-reflection.md.
+#
+# 1st rebaseline, same day: exactly 100x, for the source-normalization fix. A
+# meep current is a density integrated over its extent, so its field is
+# resolution-independent; we injected the bare amplitude, making the field
+# scale as dx. Flux goes as amplitude^2 and this is a line source at
+# resolution 10, hence 10^2.
+GOLDEN_PLAIN = [2.5635746995635057e-06, 6.786305104894549e-06,
+                4.0776240085464485e-06]
 # same sim through run(at_every(5.0, ...), until=40): chunked accumulation
 # differs from the single-chunk plain run only in summation grouping (1 ulp)
-GOLDEN_STEPPED = [2.7674774850386973e-06, 7.415436603754773e-06,
-                  4.268356224067546e-06]
+GOLDEN_STEPPED = [2.5635746995635057e-06, 6.786305104894549e-06,
+                  4.077624008546449e-06]
 
 
 def _sim():

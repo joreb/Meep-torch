@@ -3,29 +3,35 @@
 """Regression guard: how much of a guided mode the CPML reflects.
 
 A straight waveguide terminated by PML should show a FLAT complex-amplitude
-envelope along its axis. Ours does not: the CPML reflects the guided mode at
-roughly 0.22 in amplitude with ``dpml=1``, so the guide carries a standing
-wave. Measured 2026-09-07 at the full tutorial cell size (16 x 32, until=300):
+envelope along its axis, give or take the mode beating any line source
+launches. It now does.
 
-    meep-torch   depth 0.227   (uniform along the guide -> a reflector)
-    real meep    depth 0.064   (decaying -> mode beating, no reflector)
+Root cause of the original defect: ``cpml_profiles`` anchored the HIGH-edge
+ramp at ``n - 1 - n_hi`` in array-index space, but a half-offset H array is
+one node shorter than its E partner, so its ramp started a full cell inside
+the E ramp. The resulting E/H stretch mismatch reflected a returning guided
+mode at ~0.22 amplitude. The low edge was always correct (an H node genuinely
+sits half a cell inside that wall), which is why the two edges reflected
+0.0007 and 0.18. Fixed by anchoring both at the same physical wall.
 
-This is the cause of the bend-flux reflectance disagreement: bend-flux gets R
-by subtracting two large nearly equal fluxes, and its reflection plane sits in
-a cavity between this PML and the bend corner, so the reflector becomes a
-frequency fringe on R (torch mean 0.313 oscillating, meep 0.221 smooth) while
-T, measured past the bend, stays fine.
+    before the fix   depth 0.230   (uniform -> a reflector)
+    after the fix    depth 0.057   (decaying -> mode beating)
+    real meep        depth 0.064   (decaying)
 
-The gate below is a REGRESSION GUARD at the value we currently have, not a
-parity gate -- it fails if the reflection gets worse, and it is deliberately
-loose. When the CPML is fixed, tighten ``MAX_DEPTH`` toward meep's 0.064 and
-turn this into a parity gate.
+That reflection was the cause of the bend-flux reflectance disagreement:
+bend-flux gets R by subtracting two large nearly equal fluxes, and its
+reflection plane sat in a cavity between this PML and the bend corner, so the
+reflector became a frequency fringe on R while T, measured past the bend,
+stayed fine.
 
-Do not "fix" this by raising sigma: the reflection scales UP with sigma_max
-(R0 1e-3/1e-6/1e-15 -> depth 0.184/0.227/0.302) and DOWN with layer
-thickness (dpml 1/2/4 um -> 0.227/0.090/0.059). Full evidence, seven refuted
-hypotheses and one invalid test not to repeat:
-wiki/tasks/bend-flux_reflection-ripple.md
+If this ever regresses, do NOT "fix" it by raising sigma. The old defect
+scaled UP with sigma_max (R0 1e-3/1e-6/1e-15 -> depth 0.184/0.227/0.302) and
+DOWN with layer thickness (dpml 1/2/4 um -> 0.227/0.090/0.059), because both
+knobs move the sigma GRADIENT that the E/H mismatch multiplies. Every
+profile-shape knob was inert (cell-integrated ramp, m, alpha, node anchoring
+shifted equally). Full evidence and the refuted hypotheses:
+wiki/tasks/bend-flux_reflection-ripple.md and
+wiki/tasks/fix_cpml-entrance-reflection.md
 """
 import numpy as np
 
@@ -41,7 +47,7 @@ FCEN = 0.15
 SX, SY = 16, 12
 UNTIL = 200      # long enough for the CW field to settle (checked: identical at 300)
 
-MAX_DEPTH = 0.25     # currently 0.230; meep is 0.064
+MAX_DEPTH = 0.08     # currently 0.057; meep 0.064; was 0.230 before the fix
 
 
 def _guide_sim():
@@ -79,14 +85,16 @@ def test_pml_guided_reflection_does_not_regress():
     print(f"CPML guided-mode standing wave: depth {depth:.4f} "
           f"(far half {depth_far:.4f}); meep 0.064")
     assert depth < MAX_DEPTH, (
-        f"CPML reflection got worse: standing-wave depth {depth:.4f} exceeds "
-        f"{MAX_DEPTH} (was 0.230; real meep 0.064). See "
-        f"wiki/tasks/bend-flux_reflection-ripple.md -- and note that raising "
-        f"sigma makes this worse, not better.")
-    # The envelope is currently UNIFORM, which is what marks it as a reflector
-    # rather than mode beating; meep's decays (0.064 near, 0.019 far). If this
-    # ever starts decaying strongly the character has changed and the numbers
-    # above need re-measuring rather than the threshold nudging.
-    assert depth_far > 0.5 * depth, (
-        f"envelope no longer uniform (far {depth_far:.4f} vs all {depth:.4f}) "
-        f"-- re-measure against meep before touching MAX_DEPTH")
+        f"CPML reflection regressed: standing-wave depth {depth:.4f} exceeds "
+        f"{MAX_DEPTH} (0.057 after the high-edge anchor fix; 0.230 before it; "
+        f"real meep 0.064). See wiki/tasks/fix_cpml-entrance-reflection.md -- "
+        f"and note that raising sigma makes this worse, not better.")
+    # Character check, not a magnitude one. A DECAYING envelope is mode
+    # beating from the line source, which is what meep shows (0.064 near,
+    # 0.019 far). A uniform one means a reflector is back, and that is a
+    # different bug from the depth merely drifting -- so it gets its own
+    # assert rather than being folded into the threshold.
+    assert depth_far < 0.5 * depth, (
+        f"envelope is uniform again (far {depth_far:.4f} vs all {depth:.4f}): "
+        f"a reflector has returned, not just a magnitude drift. Re-measure "
+        f"against meep before touching MAX_DEPTH")
