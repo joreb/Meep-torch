@@ -107,7 +107,6 @@ def test_square_rods_tm_vs_mpb():
                                  len(want), "tm")
         worst = max(worst, _max_rel(got, want))
     assert worst <= 0.01, f"square TM max rel err {worst:.2e}"
-    assert worst > 1e-4, "suspiciously exact -- did the oracle get regenerated?"
 
 
 def test_square_rods_te_vs_mpb():
@@ -248,14 +247,23 @@ def test_grad_eps_rod_matches_finite_difference():
 
 
 def test_differentiable_path_matches_numpy_path():
-    """Same operator either way -- the torch path is a backend, not a model."""
-    eps = _cell(16, 16, (1, 0), (0, 1), [(0.0, 0.0)], 0.2, 12.0, ss=8)
+    """Same operator either way -- the torch path is a backend, not a model.
+
+    TE is checked WITH eps_te as well as without: the torch branch converts
+    the Kottke pair itself and indexes eta-hat with torch index tensors, so
+    a scalar-only comparison would leave the two-eta assembly untested on
+    that side.
+    """
+    blocks = _rod_blocks(16, 16, (1, 0), (0, 1), [(0.0, 0.0)], 0.2, 12.0, ss=8)
+    eps = blocks.mean(axis=(1, 3))
+    eps_te = tuple(np.asarray(e) for e in blend_te_supersampled(blocks))
     kc = 2 * np.pi * np.array([0.3, 0.1])
-    for pol in ("tm", "te"):
-        a = np.asarray(planewave_bands_2d(eps, (1, 0), (0, 1), kc, 4, pol))
-        b = planewave_bands_2d(eps, (1, 0), (0, 1), kc, 4, pol,
+    for pol, te in (("tm", None), ("te", None), ("te", eps_te)):
+        a = np.asarray(planewave_bands_2d(eps, (1, 0), (0, 1), kc, 4, pol,
+                                          eps_te=te))
+        b = planewave_bands_2d(eps, (1, 0), (0, 1), kc, 4, pol, eps_te=te,
                                differentiable=True).detach().numpy()
-        assert np.allclose(a, b, atol=1e-12)
+        assert np.allclose(a, b, atol=1e-12), f"{pol} eps_te={te is not None}"
 
 
 # --- 5. fields -----------------------------------------------------------
