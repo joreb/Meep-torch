@@ -2291,8 +2291,9 @@ class Simulation:
         """meep Simulation.solve_cw: steady-state fields at one frequency.
 
         Needs force_complex_fields=True. See cpp.core.fields.solve_cw for the
-        operator; ``L`` is accepted for signature parity and unused (scipy's
-        BiCGSTAB is L = 1). Returns True when the solve converged."""
+        operator; ``L`` is meep's BiCGSTAB(L) order and is live (keep L >= 2 --
+        L = 1 stagnates on a near-pure-imaginary spectrum). Returns True when
+        the solve converged."""
         if self.fields is None:
             self.init_sim()
         if self.fields is None:
