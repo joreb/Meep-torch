@@ -268,47 +268,113 @@ def test_differentiable_path_matches_numpy_path():
 
 # --- 5. fields -----------------------------------------------------------
 
-def _generic_case(pol, n=24):
-    eps = _cell(n, n, (1, 0), (0, 1), [(0.0, 0.0)], 0.2, 12.0, ss=8)
+def _generic_case(pol, use_te=False, n=24):
+    blocks = _rod_blocks(n, n, (1, 0), (0, 1), [(0.0, 0.0)], 0.2, 12.0, ss=8)
+    eps = blocks.mean(axis=(1, 3))
+    eps_te = (tuple(np.asarray(e) for e in blend_te_supersampled(blocks))
+              if use_te else None)
     kc = 2 * np.pi * np.array([0.3, 0.17])
     freqs, coeffs = planewave_bands_2d(eps, (1, 0), (0, 1), kc, 3, pol,
-                                       return_vectors=True)
-    return eps, kc, freqs, coeffs
+                                       eps_te=eps_te, return_vectors=True)
+    return eps, eps_te, kc, freqs, coeffs
 
 
-@pytest.mark.parametrize("pol", ["tm", "te"])
-def test_field_energy_identity(pol):
-    """integral |H|^2 == integral eps|E|^2 == 1, to 1e-8.
+@pytest.mark.parametrize("pol,use_te", [("tm", False), ("te", False),
+                                        ("te", True)])
+def test_field_energy_identity(pol, use_te):
+    """integral |H|^2 == integral Re(E* . D) == 1, to 1e-8.
 
     This is the one check that couples the three pieces: the operator, the
     field reconstruction from its eigenvector, and the normalisation. Get
     a K factor, an omega, or a 1/eps wrong in any one of them and the two
     integrals stop agreeing even though each still normalises to something.
     Measured: both sides within 2e-13 of 1.
+
+    The Kottke case is run because E = eta D is a per-component divide in
+    planewave_fields_2d, and with a tensor eta the energy has to be
+    weighted component by component (eps_xx|Ex|^2 + eps_yy|Ey|^2) -- a
+    scalar-eps test cannot tell the two apart.
     """
-    eps, kc, freqs, coeffs = _generic_case(pol)
+    eps, eps_te, kc, freqs, coeffs = _generic_case(pol, use_te)
+    exx, eyy = (eps, eps) if eps_te is None else eps_te
+    w = np.stack([exx, eyy, eps], axis=-1)
     dA = reciprocal_duals((1, 0), (0, 1))[1] / eps.size
     for b in range(3):
         E, H = planewave_fields_2d(coeffs[:, b], eps, (1, 0), (0, 1), kc,
-                                   freqs[b], pol)
+                                   freqs[b], pol, eps_te=eps_te)
         h2 = float((np.abs(H) ** 2).sum() * dA)
-        e2 = float((eps[:, :, None] * np.abs(E) ** 2).sum() * dA)
+        e2 = float((w * np.abs(E) ** 2).sum() * dA)
         assert abs(h2 - 1.0) <= 1e-8, f"{pol} band {b}: int|H|^2 = {h2}"
-        assert abs(e2 - 1.0) <= 1e-8, f"{pol} band {b}: int eps|E|^2 = {e2}"
+        assert abs(e2 - 1.0) <= 1e-8, f"{pol} band {b}: int E*.D = {e2}"
 
 
 @pytest.mark.parametrize("pol", ["tm", "te"])
-def test_bloch_phase_factor(pol):
-    """Bloch field and periodic envelope differ by exactly exp(i k.r)."""
-    eps, kc, freqs, coeffs = _generic_case(pol)
-    _, _, r = lattice_grid(*eps.shape, (1, 0), (0, 1))
-    phase = np.exp(1j * (r @ np.asarray(kc, dtype=float)))[..., None]
-    for b in range(3):
-        args = (coeffs[:, b], eps, (1, 0), (0, 1), kc, freqs[b], pol)
-        Eb, Hb = planewave_fields_2d(*args)
-        Ee, He = planewave_fields_2d(*args, envelope=True)
-        assert np.allclose(Hb, He * phase, atol=1e-14, rtol=0)
-        assert np.allclose(Eb, Ee * phase, atol=1e-14, rtol=0)
+def test_reconstruction_matches_direct_planewave_sum(pol):
+    """The FFT reconstruction against a brute-force sum over G, and the
+    Bloch periodicity against a lattice-vector shift of that sum.
+
+    The version this replaces multiplied the envelope by exp(i kc . r)
+    computed from the same lattice_grid the implementation multiplies by --
+    the same expression on both sides, so it could not fail. These two
+    share no code with planewave_fields_2d:
+
+      * ``envelope[i, j] == sum_G h_G exp(i G . r)`` evaluated point by
+        point, with r = (i/nu) a1 + (j/nv) a2 written out here rather than
+        taken from lattice_grid. That is the check on to_real's ifft2 and
+        on the C-order flattening of the coefficients.
+      * shifting r by a LATTICE vector multiplies the Bloch sum by exactly
+        exp(i kc . a), which holds only if exp(i G . a) = 1 for every G on
+        the grid -- i.e. it pins the reciprocal duals, the 2pi, and the FFT
+        frequency ordering all at once.
+    """
+    eps, _, kc, freqs, coeffs = _generic_case(pol)
+    nu, nv = eps.shape
+    a1, a2 = (1.0, 0.0), (0.0, 1.0)
+    B, _ = reciprocal_duals(a1, a2)
+    m = np.rint(np.fft.fftfreq(nu) * nu)
+    n = np.rint(np.fft.fftfreq(nv) * nv)
+    G = (2 * np.pi * (m[:, None, None] * B[0]
+                      + n[None, :, None] * B[1])).reshape(-1, 2)
+    band = 1
+    h = coeffs[:, band]
+    args = (h, eps, a1, a2, kc, freqs[band], pol)
+    _, He = planewave_fields_2d(*args, envelope=True)
+    if pol == "te":
+        c, got = h, He[..., 2]                                # Hz
+    else:
+        # H_x = h_G (zhat x K)_x/|K|, written out rather than imported
+        K = G + np.asarray(kc, float)
+        kn = np.linalg.norm(K, axis=1)
+        c, got = -K[:, 1] * h / np.where(kn == 0, 1.0, kn), He[..., 0]
+    for i, j in [(0, 0), (3, 7), (nu - 1, nv - 2)]:
+        r = (i / nu) * np.asarray(a1) + (j / nv) * np.asarray(a2)
+        want = complex(np.sum(c * np.exp(1j * (G @ r))))
+        assert abs(got[i, j] - want) <= 1e-11 * max(abs(want), 1.0), \
+            f"{pol} at {(i, j)}: {got[i, j]} vs {want}"
+        bloch = want * np.exp(1j * np.dot(kc, r))
+        for a in (a1, a2, (1.0, 1.0), (-2.0, 3.0)):
+            moved = complex(np.sum(c * np.exp(1j * ((G + np.asarray(kc, float))
+                                                    @ (r + np.asarray(a))))))
+            assert abs(moved - bloch * np.exp(1j * np.dot(kc, a))) \
+                <= 1e-11 * max(abs(bloch), 1.0), f"{pol}: lattice shift {a}"
+
+
+@pytest.mark.parametrize("pol", ["tm", "te"])
+def test_envelope_is_periodic_and_bloch_is_not(pol):
+    """The envelope repeats cell to cell; the Bloch field does not, unless
+    kc happens to sit on the reciprocal lattice."""
+    eps, _, kc, freqs, coeffs = _generic_case(pol)
+    comp = 2 if pol == "te" else 0
+    args = (coeffs[:, 1], eps, (1, 0), (0, 1), kc, freqs[1], pol)
+    Eb, Hb = planewave_fields_2d(*args)
+    Ee, He = planewave_fields_2d(*args, envelope=True)
+    assert np.abs(He[..., comp]).max() > 1e-6
+    # same array either way -- what differs is what the values mean; the
+    # Bloch one is the envelope times a phase that is not 1 anywhere here
+    ratio = Hb[..., comp] / He[..., comp]
+    assert np.abs(np.abs(ratio) - 1.0).max() <= 1e-12      # pure phase
+    assert np.abs(ratio - ratio.flat[0]).max() > 0.1       # and not constant
+    assert np.allclose(np.abs(Eb), np.abs(Ee), atol=1e-14)
 
 
 def test_zero_frequency_band_carries_no_field():
@@ -389,15 +455,43 @@ def test_matrix_free_tm_matches_dense(monkeypatch):
 
 
 def test_oversized_cell_refuses_rather_than_allocating(monkeypatch):
-    """TE and the targeted solver have no matrix-free path; they say so
-    instead of silently asking for a gigabyte."""
+    """Only TM at target_freq = 0 on the numpy path has a matrix-free
+    route; everything else says so instead of silently asking for a
+    gigabyte. The torch branch is the one that used to slip through -- it
+    returned before the guard, so a 128x128 differentiable solve would have
+    tried to allocate 4.3 GB."""
     monkeypatch.setattr(pw, "DENSE_MAX", 100)
     eps = np.ones((16, 16))
-    with pytest.raises(ValueError, match="DENSE_MAX"):
-        planewave_bands_2d(eps, (1, 0), (0, 1), (0.3, 0.1), 2, "te")
-    with pytest.raises(ValueError, match="DENSE_MAX"):
-        planewave_bands_2d(eps, (1, 0), (0, 1), (0.3, 0.1), 2, "tm",
-                           target_freq=0.5)
+    for kw in ({"polarization": "te"},
+               {"polarization": "tm", "target_freq": 0.5},
+               {"polarization": "tm", "differentiable": True},
+               {"polarization": "te", "differentiable": True}):
+        with pytest.raises(ValueError, match="DENSE_MAX"):
+            planewave_bands_2d(eps, (1, 0), (0, 1), (0.3, 0.1), 2, **kw)
+    # and the one case that IS allowed still works
+    assert len(planewave_bands_2d(eps, (1, 0), (0, 1), (0.3, 0.1), 2)) == 2
+
+
+def test_non_positive_epsilon_is_refused_not_reported_as_a_zero_band():
+    """A negative eps makes the operator indefinite, and omega =
+    sqrt(lambda) has no real value there. The failure mode this guards is
+    quiet: the omega = 0 snap used to catch anything BELOW its threshold,
+    so a raw eigenvalue of -61.5 came back as a 0.0 band at a generic k --
+    indistinguishable from the real omega = 0 band at Gamma.
+    """
+    eps = _cell(16, 16, (1, 0), (0, 1), [(0.0, 0.0)], 0.2, 12.0, ss=8)
+    bad = eps.copy()
+    bad[0, 0] = -4.0
+    with pytest.raises(ValueError, match="positive"):
+        planewave_bands_2d(bad, (1, 0), (0, 1), (0.3, 0.1), 3, "tm")
+    # eps_te bypasses that entry check (it is a smoother's output, not the
+    # caller's grid), so the eigenvalue guard has to catch it on its own.
+    # A 4x4 negative patch is enough to push the lowest eigenvalue to -315;
+    # a single negative cell is not, and comes back as an ordinary band.
+    te = (eps.copy(), eps.copy())
+    te[1][:4, :4] = -4.0
+    with pytest.raises(ValueError, match="indefinite"):
+        planewave_bands_2d(eps, (1, 0), (0, 1), (0.3, 0.1), 3, "te", eps_te=te)
 
 
 # --- surface -------------------------------------------------------------

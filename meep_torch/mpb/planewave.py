@@ -193,14 +193,24 @@ def _freqs(vals) -> np.ndarray:
 
     At Gamma the G = 0 row of both operators is identically zero (|K| = 0
     for TM, zhat x K = 0 for TE), so one eigenvalue is a numerical zero of
-    order 1e-13. MPB reports band 1 = 0.0 there; snapping everything below
-    1e-12 of the largest returned eigenvalue reproduces that exactly rather
-    than to 7 digits.
+    order 1e-13. MPB reports band 1 = 0.0 there; snapping the window
+    [0, 1e-12*max) to zero reproduces that exactly rather than to 7 digits.
+
+    The window is one-sided on purpose. Snapping everything BELOW the
+    threshold would swallow a genuinely negative eigenvalue -- which is not
+    round-off but an indefinite operator, i.e. a non-positive epsilon
+    somewhere -- and report it as another omega = 0 band at a generic k
+    (measured: eps[0,0] = -4 turned a raw -61.5 into a reported 0.0). A
+    negative eigenvalue has no real frequency, so say so instead.
     """
     vals = np.asarray(vals, dtype=float)
-    hi = float(vals.max()) if vals.size else 0.0
-    vals = np.where(vals < 1e-12 * max(hi, 1e-300), 0.0, vals)
-    return np.sqrt(vals) / (2 * np.pi)
+    hi = max(float(vals.max()) if vals.size else 0.0, 1e-300)
+    if vals.size and vals.min() < -1e-12 * hi:
+        raise ValueError(
+            f"operator is indefinite (eigenvalue {vals.min():.4g}): the "
+            f"planewave formulation needs eps > 0 everywhere, and omega = "
+            f"sqrt(lambda) has no real value here")
+    return np.sqrt(np.where(vals < 1e-12 * hi, 0.0, vals)) / (2 * np.pi)
 
 
 def _normalize(vecs: np.ndarray, area: float) -> np.ndarray:
@@ -340,10 +350,28 @@ def planewave_bands_2d(eps, a1, a2, kc, num_bands: int,
         raise ValueError(f"polarization must be 'tm' or 'te', got {polarization!r}")
     eps_np = (eps.detach().cpu().numpy() if isinstance(eps, torch.Tensor)
               else np.asarray(eps, dtype=float))
+    if eps_np.ndim != 2:
+        raise ValueError(f"eps must be a 2D (nu, nv) grid, got {eps_np.shape}")
+    if not eps_np.min() > 0:
+        raise ValueError(
+            f"eps must be positive everywhere (min {eps_np.min():.4g}): the "
+            f"operator is built from 1/eps and goes indefinite otherwise")
     nu, nv = eps_np.shape
     n_cells = nu * nv
     if not 1 <= num_bands <= n_cells:
         raise ValueError(f"num_bands must be in 1..{n_cells}, got {num_bands}")
+    # Before either backend: the torch path and the targeted solver are
+    # dense-only, and a 128x128 cell would ask torch for 4.3 GB without
+    # this. Only TM at target_freq = 0 has somewhere else to go.
+    if n_cells > DENSE_MAX and not (polarization == "tm" and not differentiable
+                                    and target_freq <= 1e-12):
+        raise ValueError(
+            f"{nu}x{nv} = {n_cells} planewaves needs the dense operator "
+            f"({n_cells ** 2 * 16 / 2 ** 20:.0f} MB) -- only TM at "
+            f"target_freq = 0 on the numpy path has a matrix-free path. "
+            f"Lower the resolution or raise "
+            f"meep_torch.mpb.planewave.DENSE_MAX (currently {DENSE_MAX}) "
+            f"knowingly.")
     B, area = reciprocal_duals(a1, a2)
     K = _kvectors(nu, nv, B, kc)
 
@@ -364,16 +392,9 @@ def planewave_bands_2d(eps, a1, a2, kc, num_bands: int,
         return freqs, _normalize(vecs[:, idx].detach().cpu().numpy(), area)
 
     etas, kcols = _operator_parts(eps_np, eps_te, polarization, K)
-    if n_cells > DENSE_MAX and target_freq <= 1e-12 and polarization == "tm":
+    if n_cells > DENSE_MAX:
         vals, vecs = _solve_sparse_tm(eps_np, kcols[0], nu, nv, num_bands)
     else:
-        if n_cells > DENSE_MAX:
-            raise ValueError(
-                f"{nu}x{nv} = {n_cells} planewaves needs the dense operator "
-                f"({n_cells ** 2 * 16 / 2 ** 20:.0f} MB) -- only TM at "
-                f"target_freq = 0 has a matrix-free path. Lower the "
-                f"resolution or raise meep_torch.mpb.planewave.DENSE_MAX "
-                f"(currently {DENSE_MAX}) knowingly.")
         A = _assemble(etas, kcols, nu, nv)
         A = 0.5 * (A + A.conj().T)
         if target_freq > 1e-12:
@@ -424,7 +445,15 @@ def planewave_fields_2d(coeffs, eps, a1, a2, kc, freq: float,
     omega = 2 * np.pi * float(freq)
 
     def to_real(c):
-        """coefficients -> sum_G c_G exp(i G . r) on the grid."""
+        """coefficients -> sum_G c_G exp(i G . r) on the DFT's own grid,
+        r = (i/nu) a1 + (j/nv) a2 -- not lattice_grid's half-cell-offset r.
+
+        The two differ by a rigid shift, and it cancels: the eigenvector
+        already carries the matching gauge phase (the operator is the same
+        one up to that diagonal unitary), so the reconstructed fields land
+        on lattice_grid's cells with only a global phase to show for it.
+        The energy identity closing to 1e-13 is the check on that.
+        """
         return np.fft.ifft2(c) * (nu * nv)
 
     E = np.zeros((nu, nv, 3), dtype=complex)
