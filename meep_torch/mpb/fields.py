@@ -354,13 +354,14 @@ class FieldsMixin:
         """MPB parity_string (mpb/mpb.c): a 2D run says "tm"/"te", a 3D one
         "zodd"/"zeven". This is the ``.tm``/``.te`` suffix on output files.
         """
-        from .solver import EVEN_Z, ODD_Z
+        from .solver import _PARITY_NAMES, EVEN_Z, ODD_Z
         two_d = len(self._active_axes()) == 2
         if self._parity == EVEN_Z:
             return "te" if two_d else "zeven"
         if self._parity == ODD_Z:
             return "tm" if two_d else "zodd"
-        return self.parity or ""
+        # never read self.parity here: it is SET from this method
+        return _PARITY_NAMES.get(self._parity, "")
 
     def get_filename_prefix(self):
         if self.filename_prefix:

@@ -558,7 +558,7 @@ class ModeSolver(FieldsMixin):
     def init_params(self, p, reset_fields):
         self._check_parity_supported(p)
         self._parity = p
-        self.parity = _PARITY_NAMES.get(p, "")
+        self.parity = self.get_parity_string()
         self._eps = self._rasterize_epsilon()
         # meep: kpoint_index counts solves within a run and shows up in
         # every output filename (e.g. e.k01.b02.z.tm.h5)
@@ -569,7 +569,7 @@ class ModeSolver(FieldsMixin):
     def set_parity(self, p):
         self._check_parity_supported(p)
         self._parity = p
-        self.parity = _PARITY_NAMES.get(p, "")
+        self.parity = self.get_parity_string()
 
     def solve_kpoint(self, k):
         if self._eps is None:

@@ -98,7 +98,7 @@ def test_te_bands_vs_mpb_oracle():
                     geometry=[Cylinder(ref["r"],
                                        material=Medium(epsilon=ref["eps"]))])
     ms.run_te()
-    assert ms.parity == "zeven"
+    assert ms.parity == "te"   # MPB nz==1 rule: 2D says tm/te
     got, want = np.array(ms.all_freqs), np.array(ref["bands"])[:, :4]
     assert got[0, 0] == 0.0                       # omega = 0 band at Gamma
     err = np.abs(got - want) / np.where(want > 1e-9, want, 1.0)
@@ -214,7 +214,7 @@ def test_sq_lattice_tm_bands_vs_mpb_oracle():
     ms.fmax = 0.8
     ms.run_tm()
     assert ms.all_freqs.shape == (2, 4)
-    assert ms.parity == "zodd"
+    assert ms.parity == "tm"   # MPB nz==1 rule: 2D says tm/te
     for i, kxf in enumerate((0.2, 0.4)):
         want = ref["bands"][ref["kx"].index(kxf)][:2]
         got = [f for f in ms.all_freqs[i] if np.isfinite(f)]
