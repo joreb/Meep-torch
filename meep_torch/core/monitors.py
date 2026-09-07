@@ -149,3 +149,7 @@ class FluxMonitorTEY:
         return self.dt * torch.stack(
             [torch.cos(w * tE) * E, -torch.sin(w * tE) * E,
              torch.cos(w * tH) * H, -torch.sin(w * tH) * H], dim=1)
+
+    def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
+        ReE, ImE, ReH, ImH = acc.unbind(1)
+        return -0.5 * (ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sy = -Ex*Hz

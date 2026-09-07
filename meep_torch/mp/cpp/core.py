@@ -293,7 +293,8 @@ class structure:
             built = build_te_coeffs(
                 self.grid, eps_inf=eps, poles=self._poles,
                 pole_masks=self._pole_masks or None, chi3=self._chi3,
-                npml=npml_arg, **extra)
+                npml=npml_arg, y_mirror=self._y_mirror,
+                x_mirror=self._x_mirror, **extra)
         else:
             built = build_tm_coeffs(
                 self.grid, eps_inf=self._eps, poles=self._poles,

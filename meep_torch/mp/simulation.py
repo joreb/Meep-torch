@@ -417,13 +417,19 @@ class Simulation:
             raise NotImplementedError(
                 f"Mirror(X/Y) / Rotate2(Z) / Rotate4(Z) is 2D-only "
                 f"({_SYM_TODO})")
-        if (mirrors or rot2 or rot4) and (self._pol != "tm" or self._bloch):
-            # meep treats symmetries as an optimization hint; the TE engine
-            # and the Bloch (k_point) path have no half-domain machinery, so
-            # keep the full cell (same physics)
-            warnings.warn("Symmetries on a TE or k_point run do not "
-                          f"reduce the domain (full-cell run; {_SYM_TODO})")
+        if (mirrors or rot2 or rot4) and self._bloch:
+            # meep treats symmetries as an optimization hint; the Bloch
+            # (k_point) path has no half-domain machinery, so keep the full
+            # cell (same physics)
+            warnings.warn("Symmetries on a k_point run do not reduce the "
+                          f"domain (full-cell run; {_SYM_TODO})")
             mirrors, rot2, rot4 = {}, 0, 0
+        if (rot2 or rot4) and self._pol != "tm":
+            # Rotate2/Rotate4 fold the TM engine only; the TE engine has no
+            # rotation path, so keep the full cell (same physics)
+            warnings.warn("Rotate2/Rotate4 on a TE run keep the full cell "
+                          f"({_SYM_TODO})")
+            rot2, rot4 = 0, 0
         if Y in mirrors:
             if self.gs.ny % 2:
                 raise NotImplementedError(

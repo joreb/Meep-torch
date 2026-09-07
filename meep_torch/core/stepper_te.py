@@ -84,6 +84,16 @@ def step_db(state: TEState, m, ft: str) -> TEState:
         dHz_dx = (state.Hz[1:, :] - state.Hz[:-1, :]) / dx      # (nx-2, ny-1)
         psi_Hzx = m.b_ex * state.psi_Hzx + m.a_ex * dHz_dx
         curl_y = F.pad(dHz_dx / m.k_ex + psi_Hzx, (0, 0, 1, 1))
+        if m.y_mirror_lo == +1:
+            # even y-mirror: the on-plane Ex row is live (tangential E,
+            # even); the odd Hz ghost across the cut gives dHz/dy = 2 Hz[0]/dx
+            # there. Row 0 sits outside the psi arrays (no PML at the cut).
+            # For phase -1 the on-plane Ex row is odd, stays zero, and the
+            # zero-pad ghost above is exact -- no substitution.
+            curl_x = torch.cat([2.0 * state.Hz[:, :1] / dx, curl_x[:, 1:]], dim=1)
+        if m.x_mirror_lo == +1:
+            # even x-mirror: same structure on the x axis (Ey tangential)
+            curl_y = torch.cat([2.0 * state.Hz[:1, :] / dx, curl_y[1:, :]], dim=0)
         if m.d1x is not None:
             # W5: dD/dt = curl H - sigma_d D
             Dx = m.d1x * state.Dx + m.d2x * curl_x

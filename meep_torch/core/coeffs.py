@@ -337,6 +337,11 @@ class TECoeffs(NamedTuple):
     # None -> stepper fast-path (grid-aligned poles only).
     c3xy: torch.Tensor | None = None        # (np_x, nx-1, ny)
     c3yx: torch.Tensor | None = None        # (np_y, nx, ny-1)
+    # Low-side mirror parity (phase of the polar-transformed E component
+    # about the cut): +1 on-plane tangential E live with 2 Hz[0]/dx curl,
+    # -1 on-plane tangential E odd (zero; the zero-pad ghost is exact).
+    y_mirror_lo: int = 0
+    x_mirror_lo: int = 0
 
 
 def _avg_to_ex(v: torch.Tensor) -> torch.Tensor:
@@ -367,6 +372,8 @@ def build_te_coeffs(
     pole_masks_y: Sequence[torch.Tensor] | None = None,
     poles_tensor: Sequence = (),
     pole_masks_tensor: Sequence[torch.Tensor] | None = None,
+    y_mirror: int = 0,
+    x_mirror: int = 0,
 ) -> TECoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -447,20 +454,38 @@ def build_te_coeffs(
         c3yx = torch.cat([grid.zeros(npy0, grid.nx, grid.ny - 1), tc3yx])
         cond["c3xy"], cond["c3yx"] = c3xy, c3yx
 
+    if y_mirror not in (0, +1, -1) or x_mirror not in (0, +1, -1):
+        raise ValueError(f"mirror parity must be 0/+1/-1, got y={y_mirror} x={x_mirror}")
+
     px, py = _axis_sides(npml)
+    # a mirror wall replaces the low-side PML (as in build_tm_coeffs):
+    # drop the low-side budget BEFORE the fits-in-the-grid guard, or a
+    # thick-PML half-cell run raises "npml too large for grid" even though
+    # only the high side is absorbing
+    if y_mirror:
+        py = (0, py[1])
+    if x_mirror:
+        px = (0, px[1])
     if sum(px) >= grid.nx or sum(py) >= grid.ny:
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
 
     def prof(n, offset, pair):
         return cpml_profiles(n, pair, offset, dt, dx, dtype=grid.dtype, device=grid.device)
 
-    # Hz update: dEy/dx at half-x (nx-1); dEx/dy at half-y (ny-1)
+    # Hz update: dEy/dx at half-x (nx-1); dEx/dy at half-y (ny-1). Both
+    # difference at kept-region nodes only -- no ghost enters the Hz
+    # update (Hz/Ey sit at half-offset positions away from the cut); a
+    # mirror just replaces the low-side PML with the reflecting wall.
     b_hx, a_hx, k_hx = prof(grid.nx - 1, 0.5, px)
     b_hy, a_hy, k_hy = prof(grid.ny - 1, 0.5, py)
-    # Dx update: dHz/dy at interior integer y (positions 1..ny-2)
+    # Dx update: dHz/dy at integer y. Interior rows 1..ny-2 carry psi; the
+    # on-plane row 0 is live (Ex is tangential, even for phase +1) but sits
+    # outside the psi arrays -- the stepper substitutes 2 Hz[0]/dx there
+    # (phase +1) or keeps the zero-pad (phase -1, odd Ex stays zero).
     b_ey_f, a_ey_f, k_ey_f = prof(grid.ny, 0.0, py)
     b_ey, a_ey, k_ey = b_ey_f[1:-1], a_ey_f[1:-1], k_ey_f[1:-1]
-    # Dy update: dHz/dx at interior integer x (positions 1..nx-2)
+    # Dy update: dHz/dx at integer x -- same structure on the x axis
+    # (Ey tangential to an x cut, on-plane col live for phase +1)
     b_ex_f, a_ex_f, k_ex_f = prof(grid.nx, 0.0, px)
     b_ex, a_ex, k_ex = b_ex_f[1:-1], a_ex_f[1:-1], k_ex_f[1:-1]
 
@@ -473,5 +498,6 @@ def build_te_coeffs(
         b_hy=b_hy[None, :], a_hy=a_hy[None, :], k_hy=k_hy[None, :],
         b_ey=b_ey[None, :], a_ey=a_ey[None, :], k_ey=k_ey[None, :],
         b_ex=b_ex[:, None], a_ex=a_ex[:, None], k_ex=k_ex[:, None],
+        y_mirror_lo=y_mirror, x_mirror_lo=x_mirror,
         **cond,
     )
