@@ -290,7 +290,22 @@ class ModeSolver(FieldsMixin):
 
     def _rasterize_epsilon(self):
         """Supersampled coverage eps over the unit cell (min-image periodic),
-        rank = number of periodic axes. First-listed object wins, like MPB."""
+        rank = number of periodic axes.
+
+        LAST-listed object wins, which is meep's and MPB's documented rule:
+        "When objects overlap, later objects in the list take precedence"
+        (mpb and meep Python_User_Interface.md; MPB's fields.c says the same
+        of its object list, "just like the ordinary geometry list").
+
+        This used to iterate in reverse, giving the FIRST object precedence,
+        and every single-object fixture was blind to it. The tutorial is
+        not: it builds a point defect by appending an air rod over a
+        lattice duplicate, and tunes it by appending a second rod on top --
+        both of which the old order silently discarded, so the 5x5 defect
+        never formed (band 25 came out at 0.279 instead of 0.376, energy in
+        the defect cylinder 0.12 instead of ~0.7) and the tuning root-find
+        got the same frequency for eps=1 and eps=12.
+        """
         axes = self._active_axes()
         if not axes:
             raise ValueError("geometry_lattice.size has no nonzero component")
@@ -324,7 +339,7 @@ class ModeSolver(FieldsMixin):
         else:
             fine = np.full(grids[0].shape, _eps_of(self.default_material))
 
-        for obj in reversed(self.geometry):
+        for obj in self.geometry:
             c = obj.center - self.geometry_center
             dp = []
             for a, i in enumerate(axes):
