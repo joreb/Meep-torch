@@ -521,7 +521,11 @@ class ModeSolver(FieldsMixin):
             self._omegas = np.array([2 * math.pi * float(f) for f in freqs])
             self._kc = kc
             self._dxf, self._dyf = bloch_d_matrices(nx, ny, dx, dx, kx, ky)
-            return [float(f) for f in freqs]
+            # keep the tensor under differentiable=True: ms.freqs is the
+            # only handle a caller has on the bands, so listifying it here
+            # silently severs autograd for every optimiser driving epsilon
+            # through the eigensolve. The scipy path is detached anyway.
+            return freqs if self.differentiable else [float(f) for f in freqs]
         # harminv recovers frequencies from a time series; there is no
         # eigenvector to hand the field getters, so make that explicit
         # rather than leaving a stale set from an earlier 2D run
@@ -576,6 +580,11 @@ class ModeSolver(FieldsMixin):
             self.init_params(self._parity, True)
         self.freqs = self._solve_k(k)
         self.kpoint_index += 1
+        # MPB's solve_kpoint ends with curfield_reset: without it a density
+        # computed at k=N stays loaded and output_field would write it out
+        # under k=N+1's filename
+        self._curfield = None
+        self._curfield_type = None
 
     def get_freqs(self):
         return list(self.freqs)
@@ -600,7 +609,10 @@ class ModeSolver(FieldsMixin):
             # FDTD run harvested by harminv -- so the count is 1 rather
             # than MPB's iterative-eigensolver sweep count.
             self.eigensolver_iters.append(1)
-            self.all_freqs[i, :] = np.array(self.freqs)
+            # self.freqs may be a torch tensor (differentiable path);
+            # all_freqs is a plain numpy record, so detach here rather
+            # than letting np.array() try to convert element-wise
+            self.all_freqs[i, :] = np.array([float(f) for f in self.freqs])
             self.band_range_data = self.update_band_range_data(
                 self.band_range_data,
                 [f for f in self.freqs if not math.isnan(f)], k)

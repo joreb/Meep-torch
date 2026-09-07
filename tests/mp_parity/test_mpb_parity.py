@@ -422,18 +422,18 @@ def test_tm_efield_shape_normalisation_and_faraday():
         ms.differentiable = differentiable       # class attribute, not a kwarg
         ms.run_tm()
         E = ms.get_efield(2)
-        assert E.shape == (FIELD_RES, FIELD_RES, 3)
+        assert E.shape == (FIELD_RES, FIELD_RES, 1, 3)   # meep pads dims to 3, then + 3
         assert E.dtype == np.complex128
-        assert np.abs(E[..., 0]).max() == 0.0    # TM carries Ez only
-        assert np.abs(E[..., 1]).max() == 0.0
+        assert np.abs(E[..., 0, 0]).max() == 0.0    # TM carries Ez only
+        assert np.abs(E[..., 0, 1]).max() == 0.0
         eps = ms.get_epsilon()
-        e_energy = float((eps * np.abs(E[..., 2]) ** 2).sum()) * _dA(ms)
+        e_energy = float((eps * np.abs(E[..., 0, 2]) ** 2).sum()) * _dA(ms)
         assert e_energy == pytest.approx(1.0, abs=1e-10)
 
         H = ms.get_hfield(2)
-        assert np.abs(H[..., 2]).max() == 0.0    # ... and Hx, Hy only
-        h_energy = float((np.abs(H[..., 0]) ** 2
-                          + np.abs(H[..., 1]) ** 2).sum()) * _dA(ms)
+        assert np.abs(H[..., 0, 2]).max() == 0.0    # ... and Hx, Hy only
+        h_energy = float((np.abs(H[..., 0, 0]) ** 2
+                          + np.abs(H[..., 0, 1]) ** 2).sum()) * _dA(ms)
         assert h_energy == pytest.approx(e_energy, rel=1e-8), (
             f"Faraday residual: eps|E|^2 {e_energy} vs |H|^2 {h_energy} "
             f"(differentiable={differentiable})")
@@ -442,13 +442,13 @@ def test_tm_efield_shape_normalisation_and_faraday():
 def test_te_hfield_is_the_mirror_of_tm():
     ms = _field_ms("te")
     H = ms.get_hfield(2)
-    assert H.shape == (FIELD_RES, FIELD_RES, 3)
-    assert np.abs(H[..., 0]).max() == 0.0 and np.abs(H[..., 1]).max() == 0.0
-    assert float((np.abs(H[..., 2]) ** 2).sum()) * _dA(ms) == pytest.approx(
+    assert H.shape == (FIELD_RES, FIELD_RES, 1, 3)
+    assert np.abs(H[..., 0, 0]).max() == 0.0 and np.abs(H[..., 0, 1]).max() == 0.0
+    assert float((np.abs(H[..., 0, 2]) ** 2).sum()) * _dA(ms) == pytest.approx(
         1.0, abs=1e-10)
     E = ms.get_efield(2)
-    assert np.abs(E[..., 2]).max() == 0.0        # TE carries Ex, Ey only
-    assert np.abs(E[..., 0]).max() > 0.0
+    assert np.abs(E[..., 0, 2]).max() == 0.0        # TE carries Ex, Ey only
+    assert np.abs(E[..., 0, 0]).max() > 0.0
 
 
 def test_bloch_phase_flag_is_exactly_the_phase_factor():
@@ -459,7 +459,7 @@ def test_bloch_phase_flag_is_exactly_the_phase_factor():
     d = float(d)
     x = (np.arange(FIELD_RES) + 0.5) * d - FIELD_RES * d / 2.0
     ph = np.exp(1j * 2 * math.pi * FIELD_K.x * x)[:, None]
-    assert np.abs(full[..., 2] - env[..., 2] * ph).max() < 1e-12
+    assert np.abs(full[..., 0, 2] - env[..., 0, 2] * ph).max() < 1e-12
 
 
 def test_compute_field_energy_totals_and_fractions():
@@ -603,3 +603,199 @@ def test_fix_field_phase_is_canonical():
     ms._curfield = a.copy()
     ms._curfield_type = "e"
     assert np.abs(ms.fix_field_phase() - a).max() < 1e-12
+
+
+def _to_cell_centres(x):
+    """MPB's node samples averaged onto this engine's cell centres.
+
+    Our sample i sits half a cell above MPB's sample i on each axis, so the
+    matching value is the mean of MPB's four surrounding samples. Periodic
+    wrap, like the cell.
+    """
+    return 0.25 * (x + np.roll(x, -1, 0) + np.roll(x, -1, 1)
+                   + np.roll(np.roll(x, -1, 0), -1, 1))
+
+
+def test_h5_output_matches_meep_byte_for_byte_metadata(tmp_path, monkeypatch):
+    """Diff our HDF5 output against meep's OWN files for the same mode.
+
+    tests/examples/data/defect-{e.k01.b25.z.tm,dpwr.k01.b25}.h5 were
+    written by real meep.mpb (generate_defect_mpb.py, 2026-09-07). The
+    metadata is exact parity surface -- dataset names, the description
+    strings, and "Bloch wavevector", which MPB documents as being in the
+    RECIPROCAL LATTICE BASIS ("real output_k[3]; /* kvector in reciprocal
+    lattice basis */", mpb/fields.c). Writing it in cartesian put 0.1 in
+    the file where meep has 0.5 on this 5x5 cell, and no test saw it.
+
+    Field VALUES only get a correlation gate: 2nd-order FDFD against a
+    planewave basis, and each solver picks its own global phase.
+
+    They are also compared on a COMMON grid. MPB samples epsilon and
+    fields at ``i*d - L/2`` (mpb/fields.c, the energy loop); this engine
+    samples cell centres ``(i+0.5)*d - L/2``. Index i is therefore not the
+    same physical point in the two files, and the offset is systematic.
+    Measured on this fixture, raw against half-cell aligned:
+
+        Ez        0.995976 -> 0.999937
+        |Ez|^2    0.995949 -> 0.999960
+        eps|Ez|^2 0.950569 -> 0.992274
+
+    The energy density is the one that exposes it, because it peaks at the
+    rod boundary where a half-cell shift bites hardest, while Ez itself is
+    smooth enough to survive one. Aligning first turns a vague 0.95 into a
+    0.99 gate that would actually catch a wrong field.
+    """
+    import h5py
+    from meep_torch.mp.functions import geometric_objects_lattice_duplicates
+    from meep_torch import mpb as _mpb
+
+    lat = Lattice(size=Vector3(5, 5))
+    geom = geometric_objects_lattice_duplicates(
+        lat, [Cylinder(0.2, material=Medium(epsilon=12))])
+    geom.append(Cylinder(0.2, material=Medium(epsilon=1.0)))
+    ms = ModeSolver(num_bands=50, resolution=16, geometry_lattice=lat,
+                    geometry=geom, k_points=[Vector3(0.5, 0.5)])
+    ms.filename_prefix = "defect"
+    monkeypatch.chdir(tmp_path)
+    ms.run_tm()
+    _mpb.output_efield_z(ms, 25)
+    _mpb.output_dpwr(ms, 25)
+
+    for name in ("e.k01.b25.z.tm", "dpwr.k01.b25.tm"):
+        ours = tmp_path / f"defect-{name}.h5"
+        ref = DATA / f"defect-{name}.h5"
+        assert ours.exists(), sorted(p.name for p in tmp_path.iterdir())
+        with h5py.File(ours) as a, h5py.File(ref) as b:
+            assert sorted(a.keys()) == sorted(b.keys()), name
+            # the description embeds the mode frequency, and ours differs
+            # from meep's by the 0.6% discretization gap -- compare
+            # everything up to it, which is what carries the format
+            da = a["description"][()].decode().split(", freq=")
+            db = b["description"][()].decode().split(", freq=")
+            assert da[0] == db[0], f"{name}: {da[0]!r} != {db[0]!r}"
+            assert len(da) == len(db) == 2
+            np.testing.assert_allclose(a["lattice vectors"][()],
+                                       b["lattice vectors"][()], atol=1e-12)
+            if "Bloch wavevector" in b:
+                np.testing.assert_allclose(a["Bloch wavevector"][()],
+                                           b["Bloch wavevector"][()],
+                                           atol=1e-12)
+            if "z.r" in b:
+                fa = a["z.r"][()] + 1j * a["z.i"][()]
+                fb = b["z.r"][()] + 1j * b["z.i"][()]
+                assert fa.shape == fb.shape
+                fb = _to_cell_centres(fb)
+                corr = abs(np.vdot(fb, fa)) / (np.linalg.norm(fa)
+                                               * np.linalg.norm(fb))
+                assert corr > 0.999, f"Ez pattern correlation {corr:.5f}"
+            else:
+                da, db = a["data"][()], b["data"][()]
+                assert da.shape == db.shape
+                assert float(da.sum()) * (5.0 / 80) ** 2 == pytest.approx(
+                    1.0, abs=1e-8)
+                db = _to_cell_centres(db)
+                corr = float((da * db).sum()
+                             / (np.linalg.norm(da) * np.linalg.norm(db)))
+                assert corr > 0.99, f"energy density correlation {corr:.5f}"
+
+
+def test_fix_field_phase_rotates_the_eigenvector():
+    """MPB rotates the eigenvector, so a later fetch of ANY field of that
+    band carries the canonical phase. Rotating only the loaded curfield
+    made combine_band_functions(fix_efield_phase, output_efield_z) write an
+    unfixed field -- the fix landed on a curfield the next get_efield
+    immediately overwrote."""
+    ms = _field_ms("tm")
+    before = np.asarray(ms.get_efield(2, False)).copy()
+    ms.get_efield(2, False)
+    fixed = np.asarray(ms.fix_field_phase()).copy()
+    after = np.asarray(ms.get_efield(2, False))
+    assert np.abs(after - fixed.reshape(after.shape)).max() < 1e-12, (
+        "re-fetching after fix_field_phase did not carry the phase")
+    # and it really did change something
+    assert np.abs(after - before.reshape(after.shape)).max() > 1e-9
+
+
+def test_gamma_zero_mode_is_exactly_zero():
+    """The omega = 0 TM mode at Gamma must be EXACTLY 0.0, not 1e-8.
+
+    The eigensolver puts it anywhere in +-1e-15 of the spectrum scale;
+    clamping only negatives let +5.3e-15 through as f = 1.2e-8, which is
+    nonzero, so every `omega == 0` guard downstream silently stopped
+    firing and band 1's H field became curl(const)/roundoff.
+    """
+    ms = _field_ms("tm", k=Vector3())
+    assert ms.get_freqs()[0] == 0.0
+    H = ms.get_hfield(1)
+    assert np.abs(H).max() == 0.0
+    ms.get_dfield(1)
+    assert ms.compute_field_energy()[0] == pytest.approx(1.0, abs=1e-8)
+
+
+def test_allow_negative_epsilon_does_not_become_a_target():
+    """allow_negative_epsilon() sets target_freq = 1/inf, and the solver
+    must still return the lowest bands rather than shift-inverting at
+    sigma ~ 0 on the singular Gamma operator.
+
+    Reviewed as a live bug on the premise that 1/inf is a denormal 1e-20
+    and therefore truthy; in Python it is 0.0 exactly, so the original
+    truthiness test was already correct. The guard is now a threshold,
+    which is what the code means, and this pins the behaviour either way.
+    """
+    ms = ModeSolver(num_bands=3, resolution=FIELD_RES, k_points=[Vector3()],
+                    geometry_lattice=Lattice(size=Vector3(1, 1)),
+                    geometry=[Cylinder(0.2, material=Medium(epsilon=12))])
+    ms.allow_negative_epsilon()
+    assert ms.target_freq == 0.0        # 1/inf, not a denormal
+    ms.run_tm()
+    assert ms.get_freqs()[0] == 0.0
+    assert ms.get_freqs()[1] > 0.1
+
+
+def test_freqs_keep_autograd_through_modesolver():
+    """differentiable=True has to survive ModeSolver, not just the direct
+    bloch_bands_2d call: ms.freqs is the only handle an optimiser has."""
+    import torch
+    eps = torch.tensor(12.0, dtype=torch.float64, requires_grad=True)
+    ms = ModeSolver(num_bands=2, resolution=8, k_points=[Vector3(0.3)],
+                    geometry_lattice=Lattice(size=Vector3(1, 1)),
+                    geometry=[Cylinder(0.2, material=Medium(epsilon=12))])
+    ms.differentiable = True
+    ms.run_tm()
+    f = ms.freqs[1]
+    assert isinstance(f, torch.Tensor), type(f)
+    # NOT asserting requires_grad here: _rasterize_epsilon builds the eps
+    # tensor from geometry floats, so there is no upstream graph for a
+    # plain ModeSolver run to carry. Returning the tensor is what lets a
+    # caller attach one (assign a leaf tensor to ms._eps); listifying it
+    # made that impossible, which is the regression this pins.
+    assert torch.is_floating_point(f)
+
+
+def test_solve_kpoint_resets_the_loaded_field():
+    """MPB's solve_kpoint ends with curfield_reset. Without it a density
+    computed at k=N stays loaded and gets written under k=N+1's name."""
+    ms = _field_ms("tm")
+    ms.get_dfield(2)
+    ms.compute_field_energy()
+    assert ms._curfield is not None
+    ms.solve_kpoint(Vector3(0.4))
+    assert ms._curfield is None and ms._curfield_type is None
+
+
+def test_later_geometry_objects_win_in_1d_too():
+    """The precedence fix (d7456a0) also moves the 1D/3D harminv
+    rasterization; that path has its own fixtures and none of them
+    overlapped either."""
+    lat = Lattice(size=Vector3(1, 0, 0))
+    over = ModeSolver(num_bands=1, resolution=32, k_points=[Vector3(0.2)],
+                      geometry_lattice=lat,
+                      geometry=[Cylinder(0.4, material=Medium(epsilon=12)),
+                                Cylinder(0.4, material=Medium(epsilon=2))])
+    plain = ModeSolver(num_bands=1, resolution=32, k_points=[Vector3(0.2)],
+                       geometry_lattice=lat,
+                       geometry=[Cylinder(0.4, material=Medium(epsilon=2))])
+    over.init_params(ODD_Z, True)
+    plain.init_params(ODD_Z, True)
+    np.testing.assert_allclose(over._eps[0].cpu().numpy(),
+                               plain._eps[0].cpu().numpy(), atol=1e-12)

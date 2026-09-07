@@ -138,11 +138,21 @@ def _assemble(eps: np.ndarray, dx: float, dy: float, kx: float, ky: float,
 def _sorted_freqs(vals: np.ndarray, num_bands: int) -> list[float]:
     """omega^2 eigenvalues -> meep frequencies f = omega / 2pi, ascending.
 
-    Tiny negative eigenvalues are round-off around the omega = 0 mode that
-    genuinely exists at k = 0 (Ez = const for TM); clamping at zero keeps
-    that band at exactly 0.0, which is what meep.mpb reports.
+    The omega = 0 mode genuinely exists at k = 0 (Ez = const for TM) and
+    must come back as EXACTLY 0.0, which is what meep.mpb reports and what
+    every downstream ``omega == 0`` guard tests. Clamping only the negative
+    side is not enough: the eigensolver puts that mode anywhere in
+    +-1e-15 * |lambda|max, and +5.3e-15 survives the clamp and becomes
+    f = 1.2e-8 -- nonzero, so the guards silently stop firing and a
+    band-1 H field comes out as curl(const)/roundoff.
+
+    So zero anything within 1e-12 of the spectrum's own scale first, then
+    clamp. Relative to the spectrum, not absolute: these are omega^2 in
+    meep units and their magnitude follows the cell size.
     """
     vals = np.sort(np.real(vals))
+    if vals.size:
+        vals = np.where(np.abs(vals) < 1e-12 * np.abs(vals).max(), 0.0, vals)
     vals = np.clip(vals, 0.0, None)
     return [float(np.sqrt(v) / (2 * np.pi)) for v in vals[:num_bands]]
 
@@ -157,13 +167,24 @@ def _sigma_for(target_freq: float) -> float:
     the k eigenvalues NEAREST it, which is how a defect state inside a gap
     is found without computing every band below it.
     """
-    return -1e-7 if not target_freq else (2 * np.pi * float(target_freq)) ** 2
+    # Threshold rather than truthiness. `if not target_freq` happens to be
+    # correct today -- allow_negative_epsilon() sets target_freq = 1/inf,
+    # and 1/inf is 0.0 exactly in Python, not a denormal -- but a target
+    # far below any representable band frequency can only mean "lowest",
+    # and shift-inverting at sigma ~ 0 would factorize the singular Gamma
+    # operator. Cheap guard, and it states the intent.
+    return (-1e-7 if float(target_freq) <= 1e-12
+            else (2 * np.pi * float(target_freq)) ** 2)
+
+
+def _is_targeted(target_freq) -> bool:
+    return float(target_freq) > 1e-12
 
 
 def _pick(vals, num_bands: int, target_freq: float):
     """Indices of the wanted eigenvalues, always returned in ascending
     frequency order so band n is still entry n."""
-    if target_freq:
+    if _is_targeted(target_freq):
         sel = np.argsort(np.abs(vals - _sigma_for(target_freq)))[:num_bands]
         return sel[np.argsort(vals[sel])]
     return np.argsort(vals)[:num_bands]

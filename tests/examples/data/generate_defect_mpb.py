@@ -26,8 +26,18 @@ geom.append(mp.Cylinder(0.2, material=mp.air))
 
 ms = mpb.ModeSolver(num_bands=NUM_BANDS, resolution=RES, geometry_lattice=lat,
                     geometry=geom, k_points=[mp.Vector3(0.5, 0.5)])
+ms.filename_prefix = "defect"          # -> defect-e.k01.b25.z.tm.h5 etc.
 ms.run_tm()
 freqs = list(ms.get_freqs())
+
+# meep's OWN h5 for band 25, committed alongside the json: the field
+# values, the dataset names, the "Bloch wavevector" basis and the
+# description strings are all parity surface, and nothing else in the
+# suite pins them.
+os.chdir(HERE)
+mpb.output_efield_z(ms, 25)
+mpb.output_dpwr(ms, 25)
+
 ms.get_dfield(25)
 ms.compute_field_energy()
 energy = ms.compute_energy_in_objects([mp.Cylinder(1.0, material=mp.air)])

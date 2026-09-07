@@ -16,6 +16,14 @@ difference matrices, so the operator is the plain Laplacian and no
 ``_curfield`` stores; the output writers multiply the phase back in, as
 meep's ``_output_vector_field`` does.
 
+One deliberate divergence: meep's ``get_efield(b, bloch_phase=True)``
+calls ``multiply_bloch_phase()`` on the STORED curfield before reading it
+out, so in meep a phased fetch leaves a phased curfield and a following
+``output_field_z()`` would apply the phase twice. (Its own band functions
+all fetch with ``bloch_phase=False``, which is why that never bites
+upstream.) Here ``_curfield`` is ALWAYS the envelope regardless of what
+the caller asked for, so fetch-then-output is correct either way.
+
 Derived fields come straight from Maxwell on the SAME difference
 operators the eigensolve used, so the discrete curl identities hold to
 round-off rather than to discretization order:
@@ -139,7 +147,19 @@ class FieldsMixin:
         self._curfield_band = band
 
     def _as_mpb(self, arr, bloch_phase):
+        """Wrap for return, in meep's shape.
+
+        meep pads the grid dims out to 3 and then appends the component
+        axis (reference python/mpb/solver.py:415), so a 2D VECTOR field is
+        (nx, ny, 1, 3), not (nx, ny, 3). Scalars keep the grid dims. The
+        arrays are kept (nx, ny, 3) internally -- the extra axis would only
+        get in the way of every eps broadcast -- and reshaped here, at the
+        one boundary where the shape is part of the API.
+        """
         from .solver import MPBArray
+        arr = np.asarray(arr)
+        if arr.ndim == 3:
+            arr = arr.reshape(arr.shape[0], arr.shape[1], 1, arr.shape[2])
         return MPBArray(arr, self.get_lattice(), self.current_k,
                         bloch_phase=bloch_phase)
 
@@ -160,7 +180,7 @@ class FieldsMixin:
         D = np.zeros_like(E)
         D[..., 2] = eps * v
         H = np.zeros_like(E)
-        if w != 0.0:                    # omega = 0 at Gamma: Ez const, no H
+        if w != 0.0:      # exact: _sorted_freqs zeroes the Gamma mode
             H[..., 0] = self._apply(self._dyf, v) / (1j * w)
             H[..., 1] = -self._apply(self._dxf, v) / (1j * w)
         return E, D, H
@@ -171,7 +191,7 @@ class FieldsMixin:
         H = np.zeros(eps.shape + (3,), dtype=np.complex128)
         H[..., 2] = v
         D = np.zeros_like(H)
-        if w != 0.0:
+        if w != 0.0:      # exact: _sorted_freqs zeroes the Gamma mode
             D[..., 0] = 1j * self._apply(self._dyf, v) / w
             D[..., 1] = -1j * self._apply(self._dxf, v) / w
         return self._eps_inv_apply(D), D, H
@@ -332,8 +352,12 @@ class FieldsMixin:
         half the maximum -- not the maximum itself, which would be
         ambiguous for a field that oscillates within the cell.
         """
-        if self._curfield is None or self._curfield_type not in _VECTOR_TYPES:
+        if self._curfield_type is None or self._curfield is None:
             raise RuntimeError("fix_field_phase needs a vector field loaded")
+        if self._curfield_type not in _VECTOR_TYPES:
+            raise RuntimeError(
+                f"fix_field_phase needs a vector field, not "
+                f"{self._curfield_type!r}")
         f = self._curfield.reshape(-1)
         s0 = float((f.real ** 2 - f.imag ** 2).sum())
         s1 = float((2 * f.real * f.imag).sum())
@@ -345,7 +369,15 @@ class FieldsMixin:
         if maxabs > 0:
             hits = np.nonzero(np.abs(r) >= 0.5 * maxabs)[0]
             sign = -1.0 if r[hits[-1]] < 0 else 1.0
-        self._curfield = self._curfield * (phase * sign)
+        rot = phase * sign
+        self._curfield = self._curfield * rot
+        # MPB rotates the EIGENVECTOR, not just the loaded field, so every
+        # field derived afterwards carries the same canonical phase. Only
+        # rotating curfield made combine_band_functions(fix_efield_phase,
+        # output_efield_z) write an UNfixed field: the fix landed on a
+        # curfield that the next get_efield immediately overwrote.
+        if self._vecs is not None and self._curfield_band:
+            self._vecs[:, self._curfield_band - 1] *= rot
         return self._curfield
 
     # -- output ------------------------------------------------------------
@@ -375,9 +407,17 @@ class FieldsMixin:
         suffix = f".{parity_str}" if parity_suffix and parity_str else ""
         return prefix + fname + suffix + ".h5"
 
-    def _description(self, kind):
+    def _description(self, kind, energy=False):
+        """meep's two description strings (reference solver.py:686, :722).
+
+        The energy one is NOT the field one with a suffix: meep writes
+        "D field energy density, kpoint 1, band 25, freq=0.375", where
+        appending to the field string would give "D field, kpoint 1,
+        band 25, freq=0.375 energy density".
+        """
         f = self.freqs[self._curfield_band - 1]
-        return (f"{kind} field, kpoint {self.kpoint_index}, "
+        what = f"{kind} field energy density" if energy else f"{kind} field"
+        return (f"{what}, kpoint {self.kpoint_index}, "
                 f"band {self._curfield_band}, freq={f:.6g}")
 
     def output_field(self):
@@ -398,12 +438,15 @@ class FieldsMixin:
         self.output_field_to_file(-1, self.get_filename_prefix())
 
     def output_field_to_file(self, component, fname_prefix):
-        if self._curfield_type in _VECTOR_TYPES:
+        t = self._curfield_type
+        if t is None:
+            raise RuntimeError("no field loaded to output")
+        if t in _VECTOR_TYPES:
             self._output_vector_field(fname_prefix, component)
-        elif self._curfield_type in ("n",) or self._curfield_type in _ENERGY_TYPES:
+        elif t == "n" or t in _ENERGY_TYPES:
             self._output_scalar_field(fname_prefix)
         else:
-            raise ValueError(f"Unkown field type: {self._curfield_type}")
+            raise ValueError(f"Unkown field type: {t}")
         self._curfield = None
         self._curfield_type = None
 
@@ -419,12 +462,18 @@ class FieldsMixin:
         fname = self._create_fname(fname, fname_prefix, True)
         if verbosity.mpb > 0:
             print(f"Outputting fields to {fname}...")
-        kx, ky = self._k_rad()
         field = self.multiply_bloch_phase()
         with h5py.File(fname, "w") as f:
             f["description"] = self._description(t).encode()
+            # MPB writes k in the RECIPROCAL LATTICE BASIS, not cartesian:
+            # "real output_k[3]; /* kvector in reciprocal lattice basis */"
+            # (mpb/fields.c output_field_to_file). current_k already is
+            # that basis -- it is what the user passed in k_points. Writing
+            # the cartesian vector put 0.1 in the file where meep has 0.5
+            # on a 5x5 supercell.
             f["Bloch wavevector"] = np.array(
-                [kx / (2 * math.pi), ky / (2 * math.pi), 0.0])
+                [float(self.current_k.x), float(self.current_k.y),
+                 float(self.current_k.z)])
             self._write_lattice(f)
             for idx, c in enumerate(_COMPONENTS):
                 if component >= 0 and idx != component:
@@ -440,7 +489,7 @@ class FieldsMixin:
         else:
             fname = (f"{t.lower()}pwr.k{self.kpoint_index:02d}"
                      f".b{self._curfield_band:02d}")
-            description = self._description(t) + " energy density"
+            description = self._description(t, energy=True)
         fname = self._create_fname(fname, fname_prefix, t != "n")
         if verbosity.mpb > 0:
             print(f"Outputting {fname}...")
@@ -451,9 +500,18 @@ class FieldsMixin:
             self._write_lattice(f)
             if t == "n":
                 zero = np.zeros_like(data)
+                # the TE operator runs on a smoothed DIAGONAL tensor when
+                # subpixel smoothing produced one, so xx/yy are not the
+                # scalar eps; writing the scalar into all three would
+                # misreport the structure the solver actually used
+                te = getattr(self, "_eps_te", None)
+                diag = ([np.asarray(te[0]), np.asarray(te[1]), data]
+                        if te is not None else [data, data, data])
                 for inv, name in ((False, "epsilon"), (True, "epsilon_inverse")):
-                    vals = 1.0 / data if inv else data
                     for c1 in range(3):
                         for c2 in range(c1, 3):
                             key = f"{name}.{_COMPONENTS[c1]}{_COMPONENTS[c2]}"
-                            f[key] = vals if c1 == c2 else zero
+                            if c1 != c2:
+                                f[key] = zero
+                            else:
+                                f[key] = 1.0 / diag[c1] if inv else diag[c1]
