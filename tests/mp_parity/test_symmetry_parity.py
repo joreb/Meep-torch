@@ -21,6 +21,9 @@ DX = 1.0 / RES
 FCEN = 1.0
 # offsets on cell centers so the mirror image lands exactly on a grid row
 OFF = (20 + 0.5) * DX          # 1.025 um off the cut plane
+# Half-domain runs reproduce the full cell to roundoff (~4e-15 measured) since
+# the CPML high-edge anchor fix; see the comment in the mirror gate below.
+TOL = 1e-9
 
 
 def _run(direction, phase, half):
@@ -66,8 +69,16 @@ def test_mirror_half_domain_matches_full(direction, phase):
     rel_p = abs(p_half - p_full) / abs(p_full)
     print(f"Mirror({'XY'[direction == mp.Y]}, {phase:+d}): "
           f"|dEz|/max={rel_ez:.2e} dP/P={rel_p:.2e}")
-    assert rel_ez < 0.01, f"de-mirrored Ez off by {rel_ez:.4f}"
-    assert rel_p < 0.01, f"flux off by {rel_p:.4f}"
+    # Tightened 2026-09-07 from 1e-2 to EXACT-ish. Before the CPML high-edge
+    # anchor fix these ran at 3.6e-03 to 6.2e-03, entirely because the full
+    # cell's low edge was aligned and its high edge was not. With both edges
+    # aligned the half-domain run reproduces the full cell to roundoff
+    # (measured 1.9e-15 to 4.1e-15), so a 1e-2 gate had become vacuous.
+    # TOL sits ~6 orders above the observed value and ~6 below the old gate;
+    # if a float32 or GPU run ever trips it, raise TOL and say so -- do not
+    # read it as a physics regression without checking dtype first.
+    assert rel_ez < TOL, f"de-mirrored Ez off by {rel_ez:.4e} (tol {TOL:g})"
+    assert rel_p < TOL, f"flux off by {rel_p:.4e} (tol {TOL:g})"
     # the de-mirrored array respects the parity by construction
     flip = ez_half[:, ::-1] if direction == mp.Y else ez_half[::-1, :]
     np.testing.assert_allclose(ez_half, phase * flip, atol=1e-12 * scale)
@@ -112,8 +123,8 @@ def test_rotate2_half_domain_matches_full(phase):
     rel_ez = np.abs(ez_half - ez_full)[n:-n, n:-n].max() / scale
     rel_p = abs(p_half - p_full) / abs(p_full)
     print(f"Rotate2(Z, {phase:+d}): |dEz|/max={rel_ez:.2e} dP/P={rel_p:.2e}")
-    assert rel_ez < 0.01, f"de-rotated Ez off by {rel_ez:.4f}"
-    assert rel_p < 0.01, f"flux off by {rel_p:.4f}"
+    assert rel_ez < TOL, f"de-rotated Ez off by {rel_ez:.4e} (tol {TOL:g})"
+    assert rel_p < TOL, f"flux off by {rel_p:.4e} (tol {TOL:g})"
     # C2 invariance of the de-rotated array: Ez(r) = phase * Ez(-r)
     np.testing.assert_allclose(ez_half, phase * ez_half[::-1, ::-1],
                                atol=1e-12 * scale)
@@ -171,19 +182,21 @@ def test_rotate4_quadrant_matches_full(phase):
     n = RES
     rel_ez = np.abs(ez_q - ez_full)[n:-n, n:-n].max() / scale
     rel_p = abs(p_q - p_full) / abs(p_full)
-    # The full-cell run does not obey C4 exactly: the cpml half-offset ramp
-    # is half a cell asymmetric edge to edge, and a quarter turn maps every
-    # edge onto the next, so all four disagree. Measure that self-asymmetry
-    # and require the quadrant run (which is C4-exact by construction) to sit
-    # inside it -- a tighter statement than a fixed tolerance, and it does
-    # not silently absorb a real fold error, which would show up AT the cut
-    # planes rather than decaying inward from the PML bands.
+    # The full-cell run used to disagree with its own quarter turn at 1.0e-02,
+    # which this gate was originally written around ("the cpml half-offset
+    # ramp is asymmetric edge to edge"). That was not a quirk: it was the
+    # CPML high-edge anchor bug, and with it fixed the reference is C4-exact
+    # to roundoff (1.4e-15). The self-asymmetry is still measured, because a
+    # reference that stops being C4-exact is itself worth catching, but it no
+    # longer sets the tolerance. See wiki/tasks/fix_cpml-entrance-reflection.
     self_err = np.abs(ez_full - phase * ez_full[::-1, :].T)[n:-n, n:-n].max() / scale
     print(f"Rotate4(Z, {phase:+d}): |dEz|/max={rel_ez:.2e} dP/P={rel_p:.2e} "
           f"(full-cell self-C4 asymmetry {self_err:.2e})")
-    assert rel_ez < 1.2 * max(self_err, 1e-3), \
-        f"de-rotated Ez off by {rel_ez:.4f}, beyond the reference's own {self_err:.4f}"
-    assert rel_p < 0.01, f"flux off by {rel_p:.4f}"
+    assert self_err < TOL, \
+        f"the full-cell reference is no longer C4-exact ({self_err:.4e}): fix " \
+        f"that before reading the comparison below"
+    assert rel_ez < TOL, f"de-rotated Ez off by {rel_ez:.4e} (tol {TOL:g})"
+    assert rel_p < TOL, f"flux off by {rel_p:.4e} (tol {TOL:g})"
     # C4 invariance of the de-rotated array: a quarter turn is a transpose
     # plus a flip on the grid
     np.testing.assert_allclose(ez_q, phase * ez_q[::-1, :].T,

@@ -131,10 +131,16 @@ def test_mirror_half_domain_matches_full(direction, phase):
     print(f"TE Mirror({'XY'[direction == mp.Y]}, {phase:+d}): "
           f"|dHz|/max={rel_hz:.2e} (self {self_hz:.2e}) "
           f"dP/P={rel_p:.2e} (self {self_p:.2e})")
-    assert rel_hz <= 1.2 * self_hz + 1e-15, \
+    # roundoff floor; a half-vs-full run agreeing to 1e-8 is exact, the ratio
+    # only governs above it. Before the CPML high-edge anchor fix these ran at
+    # ~7e-04 / ~2e-04 and the "self-asymmetry" they are measured against WAS
+    # that bug: the full cell's low edge was aligned and its high edge was
+    # not. With both aligned the full cell is symmetric to roundoff, so the
+    # ratio would otherwise be dividing two noise-floor quantities.
+    assert rel_hz <= 1.2 * self_hz + 1e-7, \
         f"de-mirrored Hz {rel_hz:.4e} exceeds the full run's own " \
         f"asymmetry {self_hz:.4e} by more than 1.2x"
-    assert rel_p <= 1.2 * self_p + 1e-15, \
+    assert rel_p <= 1.2 * self_p + 1e-7, \
         f"flux {rel_p:.4e} exceeds the full run's own asymmetry " \
         f"{self_p:.4e} by more than 1.2x"
     # the reconstructed array respects the parity by construction
