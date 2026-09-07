@@ -68,7 +68,7 @@ def cavity_ldos(w):
     sim = make_sim(w)
     name = sim.dft_ldos(FCEN, 0.2, 3)             # records center Ez series
     sim.run(until=400)
-    acc, _, _ = sim._last_acc[name]
+    acc, _, _ = sim._last_acc[name.name]   # dft_ldos returns a DftLdos object
     tail = acc.detach().cpu().numpy()[int(round(60.0 / sim.grid.dt)):]
     modes = [m for m in harminv(tail, sim.grid.dt, 0.55, 0.8) if m.amp > 1e-6]
     m0 = max(modes, key=lambda x: x.amp)
