@@ -26,7 +26,7 @@ from ...core.grid import Grid
 from ...core.monitors import DFTFieldsMonitor, FluxMonitorTM
 from ...core.pml import absorber_sigma
 from ...core.run import _run_chunk
-from ...core.sources import SoftSource
+from ...core.sources import SoftSource, cw_amplitude
 from ...core import stepper_tm as _tm_phases
 from ...core import stepper_te as _te_phases
 from ...core.stepper_tm import init_tm_state, step_tm
@@ -491,6 +491,7 @@ class fields:
         self._n_mpoles = (0 if getattr(c, "mc1x", None) is None
                           else c.mc1x.shape[0])
         self._state = None
+        self._state_im = None        # force_complex_fields companion (solve_cw)
         for comp in self._components:
             self.alloc_f(comp)
         self._t = 0
@@ -603,40 +604,191 @@ class fields:
         a no-op here: whole-domain tensors, with the PEC walls and CPML baked
         into the phase kernels' curls."""
 
-    def step(self):
+    def step_once(self, state, sources):
         """One engine step in meep's fields::step phase order (src/step.cpp):
         phase_material -> step_db(B) -> step_source(B) -> update_eh(H) ->
         step_boundaries(H) -> step_db(D) -> step_source(D) -> update_pols ->
         update_eh(E) -> step_boundaries(E). A TE component set (Hz/Ex/Ey;
         Hz staggered on integer steps by the engine's TM-TE duality) enters
         the same cycle at the D half. Identical evolution to core.run.run_tm.
+
+        Pure in the field state: ``state`` in, the advanced state out, with
+        ``sources`` driving it (pass ``[]`` for the source-free operator
+        solve_cw's matrix-vector product needs). Neither the monitors nor the
+        step counter move -- step() owns those.
         """
-        self.phase_material()
-        if self._has("Hz"):
-            self.step_db("D")
-            self.step_source("D")
-            self.update_pols()
-            self.update_eh("E")
-            self.step_boundaries("E")
-            self.step_db("B")
-            self.step_source("B")
-            self.update_eh("H")
-            self.step_boundaries("H")
-        else:
-            self.step_db("B")
-            self.step_source("B")
-            self.update_eh("H")
-            self.step_boundaries("H")
-            self.step_db("D")
-            self.step_source("D")
-            self.update_pols()
-            self.update_eh("E")
-            self.step_boundaries("E")
+        saved = self._state, self._sources
+        self._state, self._sources = state, sources
+        try:
+            self.phase_material()
+            if self._has("Hz"):
+                self.step_db("D")
+                self.step_source("D")
+                self.update_pols()
+                self.update_eh("E")
+                self.step_boundaries("E")
+                self.step_db("B")
+                self.step_source("B")
+                self.update_eh("H")
+                self.step_boundaries("H")
+            else:
+                self.step_db("B")
+                self.step_source("B")
+                self.update_eh("H")
+                self.step_boundaries("H")
+                self.step_db("D")
+                self.step_source("D")
+                self.update_pols()
+                self.update_eh("E")
+                self.step_boundaries("E")
+            return self._state
+        finally:
+            self._state, self._sources = saved
+
+    def step(self):
+        """Advance the field state one step and fold the DFT monitors.
+
+        Under force_complex_fields a companion imaginary field set rides
+        along. The step operator has real coefficients, so it acts on the two
+        parts independently; the companion steps SOURCE-FREE because every
+        engine current profile is real-valued (meep injects imag(J), which is
+        zero) -- so a plain run() with complex fields reproduces the real run
+        exactly, with Im == 0 unless solve_cw put something there."""
+        self._state = self.step_once(self._state, self._sources)
+        if self._state_im is not None:
+            self._state_im = self.step_once(self._state_im, [])
         t = self._t
         for name, (mon, _) in list(self._monitors.items()):
             smp = mon.sample(self._state, t)
             self._fold(name, mon, smp if mon.reduce == "sum" else smp.unsqueeze(0))
         self._t += 1
+
+    # --- frequency-domain CW solve (meep src/cw_fields.cpp) ---
+    def _cw_unknowns(self, st):
+        """State fields that are genuine unknowns of the CW linear system.
+
+        meep's vector holds D and B plus, inside the PML, the auxiliary
+        fields; E is excluded and re-derived by update_eh after every
+        array_to_fields. Here that set is Dz, the H pair (this engine steps H
+        directly when no magnetic pole splits B off), the four CPML
+        convolution memories, the on-plane H rows a symmetry cut keeps live,
+        and the ADE polarizations -- everything the step carries FORWARD.
+        Ez is dropped because update_eh derives it from Dz - sum P; leaving it
+        in would make the operator singular in that block."""
+        return tuple(n for n in st._fields
+                     if n != "Ez" and getattr(st, n) is not None)
+
+    def _cw_pack(self, names, re, im):
+        """The two real field sets as one flat complex vector, on the engine
+        device -- the Krylov solver never leaves torch."""
+        return (torch.cat([getattr(re, n).reshape(-1) for n in names])
+                + 1j * torch.cat([getattr(im, n).reshape(-1) for n in names]))
+
+    def _cw_unpack(self, names, shapes, x):
+        """Inverse of _cw_pack, then meep's array_to_fields tail: update_eh(E)
+        re-derives Ez so the state handed to step() is self-consistent."""
+        m, mod = self._mcoeffs, self._phase_mod()
+        out_re, out_im, i = {}, {}, 0
+        for n, sh in zip(names, shapes):
+            k = 1
+            for d in sh:
+                k *= d
+            chunk = x[i:i + k].reshape(sh)
+            i += k
+            out_re[n] = chunk.real.contiguous()
+            out_im[n] = chunk.imag.contiguous()
+        base = self._fresh_state()
+        return (mod.update_eh(base._replace(**out_re), m, "E"),
+                mod.update_eh(base._replace(**out_im), m, "E"))
+
+    def _cw_rhs(self, names):
+        """meep's RHS: zero the fields, inject one step of source current,
+        read the state back, scale by -1/dt. With only electric currents this
+        lands entirely in Dz, but it is built through step_source so the
+        conductivity scaling (d2) is the injection's own."""
+        m, mod = self._mcoeffs, self._phase_mod()
+        re, im = self._fresh_state(), self._fresh_state()
+        for src in self._sources:
+            if getattr(src, "mask", None) is None:
+                continue
+            a = cw_amplitude(src, self._t)
+            re = mod.step_source(re, m, "D", a.real, src_mask=src.mask)
+            im = mod.step_source(im, m, "D", a.imag, src_mask=src.mask)
+        re = mod.update_eh(re, m, "E")
+        im = mod.update_eh(im, m, "E")
+        return self._cw_pack(names, re, im) * (-1.0 / m.dt)
+
+    def solve_cw(self, tol=1e-8, maxiters=10000, L=2, frequency=None):
+        """meep fields::solve_cw -- steady-state fields at a single frequency.
+
+        Solves ``A x = b`` with meep's operator (src/cw_fields.cpp)
+
+            A x = (step(x) - x) / dt + i.Omega x,
+            i.Omega = (1 - exp(-i.2.pi.f.dt)) / dt,
+
+        where ``step`` is one source-free FDTD step and ``b`` is a single
+        source injection scaled by -1/dt. The step operator has real
+        coefficients, so the complex unknown is carried as the two real field
+        sets force_complex_fields allocates and one matvec is two real steps.
+
+        ``L`` is meep's BiCGSTAB(L) order (core.bicgstab, ported from
+        src/bicgstab.cpp). L = 1 is plain BiCGSTAB, which stagnates on this
+        operator -- its eigenvalues are near-pure imaginary -- so keep L >= 2.
+
+        Returns True when the solver converged to ``tol``.
+        """
+        from ...core.bicgstab import bicgstabL
+
+        if self._state_im is None:
+            raise RuntimeError(
+                "solve_cw needs complex fields: build the Simulation with "
+                "force_complex_fields=True")
+        if self._has("Hz"):
+            raise NotImplementedError("solve_cw: 2D TM only (Ez/Hx/Hy)")
+        m = self._mcoeffs
+        if self._n_mpoles:
+            raise NotImplementedError(
+                "solve_cw with magnetic Lorentz poles: H would be a derived "
+                "field, not an unknown, and update_eh(H) advances the M "
+                "history -- it cannot sit inside the matvec")
+        if m.has_kerr or m.has_chi2:
+            raise NotImplementedError(
+                "solve_cw with chi2/chi3: the step operator is nonlinear")
+        if frequency is None:
+            fs = {getattr(getattr(s, "profile", None), "fcen", None)
+                  for s in self._sources}
+            fs.discard(None)
+            if len(fs) != 1:
+                raise ValueError(
+                    f"solve_cw cannot infer one frequency from the sources "
+                    f"(found {sorted(fs)}); pass frequency=")
+            frequency = fs.pop()
+
+        dt = m.dt
+        iomega = complex((1.0 - np.exp(-2j * np.pi * frequency * dt)) / dt)
+        names = self._cw_unknowns(self._state)
+        shapes = tuple(tuple(getattr(self._state, n).shape) for n in names)
+
+        b = self._cw_rhs(names)
+        if not bool(b.any()):
+            raise ValueError("zero current amplitudes in solve_cw")
+
+        def matvec(x):
+            re, im = self._cw_unpack(names, shapes, x)
+            y = self._cw_pack(names, self.step_once(re, []),
+                              self.step_once(im, []))
+            return (y - x) / dt + iomega * x
+
+        tsave = self._t
+        x = self._cw_pack(names, self._state, self._state_im)
+        ierr, iters = bicgstabL(L, matvec, b, x, tol=tol, maxiters=maxiters)
+        self._cw_iters = iters
+        self._state, self._state_im = self._cw_unpack(names, shapes, x)
+        # meep follows this with one more step() "to sync H/B with E/D". Here
+        # H IS an unknown (no magnetic poles), so it is already in x and that
+        # step would only advance the answer by dt*(b - i.Omega x).
+        self._t = tsave
+        return ierr == 0
 
     def _fold(self, name, mon, out):
         entry = self._monitors[name]
@@ -690,6 +842,13 @@ class fields:
 
     def zero_fields(self):
         self._state = self._fresh_state()
+        if self._state_im is not None:
+            self._state_im = self._fresh_state()
+
+    def use_complex_fields(self):
+        """meep force_complex_fields: allocate the imaginary field set."""
+        if self._state_im is None:
+            self._state_im = self._fresh_state()
 
     # --- sources ---
     def _profile_of(self, src):
@@ -975,7 +1134,7 @@ _stub_raises(fields, "HDF5 field output/dump is not implemented "
 _stub_raises(fields, "eigenmode/CW solves live in meep_torch.ports "
              "(compute_smatrix) and meep_torch.mpb",
              "add_eigenmode_source get_eigenmode get_eigenmode_coefficients "
-             "get_mode_flux_overlap get_mode_mode_overlap get_overlap solve_cw "
+             "get_mode_flux_overlap get_mode_mode_overlap get_overlap "
              "set_solve_cw_omega unset_solve_cw_omega initialize_with_n_te "
              "initialize_with_n_tm initialize_with_nth_te initialize_with_nth_tm "
              "populate_maxwell_dielectric")

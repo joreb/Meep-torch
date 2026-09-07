@@ -250,13 +250,17 @@ def test_geometric_object_info_prints_properties(capsys):
 # ------------------------------------------- Simulation params + new methods
 def test_simulation_unsupported_params_raise():
     # k_point no longer raises: the Bloch shim (mp/bloch_shim.py) drives it
-    for kw in ({"force_complex_fields": True},
-               {"m": 1}, {"epsilon_func": lambda p: 1.0},
+    for kw in ({"m": 1}, {"epsilon_func": lambda p: 1.0},
                {"epsilon_input_file": "eps.h5"}, {"force_all_components": True},
                {"output_volume": mp.Volume(center=mp.Vector3())},
                {"bfast_scaled_k": (0.1, 0, 0)}):
         with pytest.raises(NotImplementedError):
             _sim(**kw)
+    # force_complex_fields left this group: 2D carries the companion
+    # imaginary field set (solve_cw). Still unported outside 2D/cylindrical.
+    assert _sim(force_complex_fields=True).force_complex_fields
+    with pytest.raises(NotImplementedError):
+        _sim(force_complex_fields=True, dimensions=3)
 
 
 def test_simulation_stored_params_and_eps_averaging_warns():

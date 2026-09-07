@@ -50,12 +50,6 @@ X, Y, Z, R, P = 0, 1, 2, 3, 4
 
 _SYM_TODO = "see wiki/tasks/port_symmetry-system.md"
 
-# mirror fold sign per component: a folded image amplitude is
-# phi * (component parity about that cut). Ez is axial and carries the user
-# phase; in-plane E and the axial H pick up the reflection's determinant.
-_MIRROR_PARITY_X = {"Ex": -1, "Hz": -1, "Hy": -1}   # Ey, Ez, Hx: +1
-_MIRROR_PARITY_Y = {"Ey": -1, "Hz": -1, "Hx": -1}   # Ex, Ez, Hy: +1
-
 
 class Symmetry:
     """Symmetry of the structure *and* sources for the `symmetries` input
@@ -211,8 +205,9 @@ class Simulation:
     collect_stats (whole-domain tensors, no chunking), filename_prefix,
     output_single_precision, accurate_fields_near_cylorigin. k_point runs the
     Bloch-periodic path (mp/bloch_shim.py; unsupported combos raise at run
-    time). Raise on non-default:
-    force_complex_fields (real-field engine; cylindrical runs are exempt),
+    time). force_complex_fields carries a second (imaginary) field set beside
+    the real steppers -- 2D and cylindrical only; it is what solve_cw solves
+    for. Raise on non-default:
     force_all_components, bfast_scaled_k, material_function / epsilon_func /
     epsilon_input_file (no pointwise material sampling), output_volume."""
 
@@ -245,12 +240,18 @@ class Simulation:
         self.cell_size = cell_size
         self.resolution = resolution
         self.run_index = 0           # meep: bumped after each run()
-        if force_complex_fields and dimensions != CYLINDRICAL:
+        # meep force_complex_fields: the steppers stay real, and the second
+        # (imaginary) field set rides beside them -- the step operator has
+        # real coefficients, so it acts on the two parts independently. That
+        # is what solve_cw needs a complex state for. Cylindrical is exempt
+        # for its own reason: the BOR engine carries complex F(r, z)
+        # e^{i m phi} fields by construction.
+        self.force_complex_fields = bool(force_complex_fields)
+        if self.force_complex_fields and dimensions not in (2, CYLINDRICAL):
             raise NotImplementedError(
-                "force_complex_fields: the engine steps real fields only "
-                "(using_real_fields() is always True). Cylindrical runs are "
-                "exempt: the BOR engine carries complex F(r, z) e^{i m phi} "
-                "fields by construction")
+                f"force_complex_fields is 2D-only (got dimensions="
+                f"{dimensions}); the 1D and 3D steppers have no companion "
+                f"imaginary field set")
         # k_point: Bloch-periodic run (mp/bloch_shim.py drives
         # core/stepper_bloch); unsupported combos raise there at run time
         self._bloch = k_point not in (False, None)
@@ -598,7 +599,18 @@ class Simulation:
             return SimpleNamespace(Hz=st.Hz_c + 1j * st.Hz_s,
                                    Ex=st.Ex_c + 1j * st.Ex_s,
                                    Ey=st.Ey_c + 1j * st.Ey_s)
-        return None if self.fields is None else self.fields._state
+        if self.fields is None:
+            return None
+        st, im = self.fields._state, self.fields._state_im
+        if im is None:
+            return st
+        # force_complex_fields: surface the two real field sets as one
+        # complex state, exactly as the Bloch quadratures do above, so
+        # get_array and every reader below it come out complex128
+        from types import SimpleNamespace
+        return SimpleNamespace(**{n: getattr(st, n) + 1j * getattr(im, n)
+                                  for n in st._fields
+                                  if getattr(st, n) is not None})
 
     def _absorber_ramp(self):
         """Quadratic sigma ramp on every absorbing edge (R_asymptotic 1e-15)."""
@@ -807,36 +819,22 @@ class Simulation:
                 if amp_func is not None:
                     raise NotImplementedError(
                         f"amp_func with Mirror symmetry not supported ({_SYM_TODO})")
-                # a source below a cut plane folds onto its image with the
-                # mirror phase times the component's parity about that cut
-                # (Ez is axial and carries the user phase; in-plane E and
-                # the axial H pick up the reflection's determinant); a span
-                # crossing the plane keeps its upper part -- the wall implies
-                # the mirrored image, so each physical source is listed once
-                px = self._sym_px * _MIRROR_PARITY_X.get(spec.component, 1)
-                py = self._sym_py * _MIRROR_PARITY_Y.get(spec.component, 1)
+                # A source outside the kept half is DROPPED, not folded onto
+                # its image. That is meep: sources.cpp adds source volumes
+                # with use_symmetry=false and intersects them only with the
+                # untransformed (reduced) chunk -- "the transformed versions
+                # are implicit" -- so the image is supplied by the wall, and
+                # listing it again would double the drive. Verified against
+                # the oracle: one source in the discarded half with a mirror
+                # declared gives max|Ez| == 0.0 exactly, and the ring
+                # tutorial's +1/-1 source PAIR under Mirror(X,-1)+Mirror(Y,+1)
+                # reproduces the full cell to 1.8e-15. Folding them in instead
+                # made this engine read 4x high. A span CROSSING the plane
+                # keeps its upper part, which is the same clip.
                 ix, mirx = self._foldpt(ix, "x")
-                if self._sym_rot4 and mirx:
-                    raise NotImplementedError(
-                        f"a source outside the Rotate4(Z) quadrant is not "
-                        f"folded: which power of the quarter turn carries it "
-                        f"back depends on its quadrant. Place the source in "
-                        f"the kept quadrant ({_SYM_TODO})")
-                if mirx:
-                    amp = amp * px
                 j0, j1, crossed_y, miry = self._fold(j0, j1, "y")
-                if self._sym_rot4 and (miry or crossed_y):
-                    raise NotImplementedError(
-                        f"a source outside the Rotate4(Z) quadrant is not "
-                        f"folded: which power of the quarter turn carries it "
-                        f"back depends on its quadrant. Place the source in "
-                        f"the kept quadrant ({_SYM_TODO})")
-                if miry:
-                    amp = amp * py
-                    if self._sym_rot2:
-                        # C2 image: the y fold above placed the span, the
-                        # rotation also reverses x
-                        ix = self.grid.nx - 1 - ix
+                if mirx or miry:
+                    continue
             from ..core.sources import LineSource
             src = LineSource(self.grid, ix, j0, j1, profile=prof)
             if amp_func is not None:
@@ -2046,27 +2044,47 @@ class Simulation:
         if self.dimensions == 3:
             raise NotImplementedError(
                 "get_array(center=, size=) sub-volumes are 1D/2D only")
-        gs = self.gs
-        c = center if center is not None else Vector3()
-        sz = size if size is not None else Vector3(gs.sx, gs.sy, 0)
         out, drop = arr, []
-        for ax, (lo_c, ext, n, idx) in enumerate((
-                (float(c.x), float(sz.x), gs.nx, lambda v: cell_index(v, gs)),
-                (float(c.y), float(sz.y), gs.ny, lambda v: cell_index_y(v, gs)))):
-            if ext == 0:                      # meep collapses a zero extent
-                i0 = max(0, min(n - 1, idx(lo_c)))
+        for ax, (i0, npts) in enumerate(self._slice_window(center, size)):
+            if npts == 0:                     # meep collapses a zero extent
                 out = out[i0:i0 + 1] if ax == 0 else out[:, i0:i0 + 1]
                 drop.append(ax)
                 continue
-            # meep counts both endpoints and one more: a size-4 box at
-            # resolution 10 comes back as 42 samples, not 41. Clamped to the
-            # cell, which is why a full-width cut matches either way.
-            npts = min(n, int(round(ext / gs.dx)) + 2)
-            i0 = max(0, min(n - npts, idx(lo_c - ext / 2.0)))
             out = out[i0:i0 + npts] if ax == 0 else out[:, i0:i0 + npts]
         for ax in reversed(drop):
             out = np.squeeze(out, axis=ax)
         return out
+
+    def _slice_window(self, center, size):
+        """Per-axis ``(i0, npts)`` of meep's (center, size) array slice.
+
+        meep's window is the run of cells whose CENTRES span
+        ``[c - ext/2 - dx/2, c + ext/2 + dx/2]``: it counts both endpoints
+        and one more, so a 12 um box at resolution 20 is 242 samples starting
+        at -6.025, not 240 starting at -5.975. Anchoring at
+        ``cell_index(c - ext/2)`` instead put the window one cell high, which
+        broke the symmetry of a symmetric slice (a centred ring's own eps
+        came back asymmetric) and shifted every exported raster against the
+        pymeep twin's by one pixel. ``npts == 0`` marks a collapsed axis.
+
+        Single owner for get_array and get_array_metadata -- they used to
+        compute the window separately and disagreed (240 coordinates
+        described a 242-wide array).
+        """
+        gs = self.gs
+        c = center if center is not None else Vector3()
+        sz = size if size is not None else Vector3(gs.sx, gs.sy, 0)
+        win = []
+        for lo_c, ext, n, idx in (
+                (float(c.x), float(sz.x), gs.nx, lambda v: cell_index(v, gs)),
+                (float(c.y), float(sz.y), gs.ny, lambda v: cell_index_y(v, gs))):
+            if ext == 0:
+                win.append((max(0, min(n - 1, idx(lo_c))), 0))
+                continue
+            npts = min(n, int(round(ext / gs.dx)) + 2)
+            i0 = max(0, min(n - npts, idx(lo_c - ext / 2.0) - 1))
+            win.append((i0, npts))
+        return win
 
     def _bloch_array(self, component):
         """Physical field of a Bloch run, from the stored envelope.
@@ -2173,17 +2191,28 @@ class Simulation:
         With return_pw=True, returns (points, w) with points as Vector3s."""
         if self.dimensions == 3:
             raise NotImplementedError("3D get_array_metadata not supported (W9 wave 3)")
-        if dft_cell is not None:
-            center, size = dft_cell.args[3] if len(dft_cell.args) > 3 else (None, None)
         gs = self.gs
         if vol is not None:
             center, size = vol.center, vol.size
-        if center is None and size is None:
-            i0, i1, j0, j1 = 0, gs.nx, 0, gs.ny
-        else:
+        if dft_cell is not None:
+            # A DFT region's raster is cut by span_index_range, two cells
+            # narrower than the window meep uses for both get_array and
+            # get_dft_array (meep: a 2x1 region at resolution 10 is 22x12,
+            # this engine 20x10 -- wiki/tasks/fix_dft-region-window.md).
+            # Describe the array the caller actually holds: metadata that
+            # does not match its own array is worse than metadata that
+            # inherits a known window bug.
+            center, size = dft_cell.args[3] if len(dft_cell.args) > 3 else (None, None)
             x0, y0, x1, y1 = rect_corners(center or Vector3(), size or Vector3(), gs)
             i0, i1 = span_index_range(x0, x1, gs, "x")
             j0, j1 = span_index_range(y0, y1, gs, "y")
+        elif center is None and size is None:
+            i0, i1, j0, j1 = 0, gs.nx, 0, gs.ny
+        else:
+            # the same window get_array slices, or the coordinates would not
+            # describe the array they are handed out with
+            (i0, ni), (j0, nj) = self._slice_window(center, size)
+            i1, j1 = i0 + max(ni, 1), j0 + max(nj, 1)
         x = (np.arange(i0, i1) + 0.5) * gs.dx - gs.sx / 2.0
         y = (np.arange(j0, j1) + 0.5) * gs.dx - gs.sy / 2.0
         z = np.zeros(1)
@@ -2233,6 +2262,8 @@ class Simulation:
             from .cpp.core import fields
             self.fields = fields(self.structure,
                                  components=self._component_set())
+            if self.force_complex_fields:
+                self.fields.use_complex_fields()
             if self._eig_source is None:
                 self._register_sources()
 
@@ -2255,6 +2286,18 @@ class Simulation:
             self.fields.zero_fields()
             self.fields._t = 0
         self._t_step = 0
+
+    def solve_cw(self, tol=1e-8, maxiters=10000, L=2, frequency=None):
+        """meep Simulation.solve_cw: steady-state fields at one frequency.
+
+        Needs force_complex_fields=True. See cpp.core.fields.solve_cw for the
+        operator; ``L`` is accepted for signature parity and unused (scipy's
+        BiCGSTAB is L = 1). Returns True when the solve converged."""
+        if self.fields is None:
+            self.init_sim()
+        if self.fields is None:
+            raise RuntimeError("Fields must be initialized before using solve_cw")
+        return self.fields.solve_cw(tol, maxiters, L, frequency=frequency)
 
     def reset_meep(self):
         """Delete the fields and all accumulated monitor data, as if no

@@ -1,10 +1,26 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
+import cmath
 import math
 
 import torch
 
 from .grid import Grid
+
+
+def cw_amplitude(src, t_idx: int) -> complex:
+    """Complex CW current amplitude of an engine source at step ``t_idx``.
+
+    solve_cw needs the analytic (complex) current the real-field steppers only
+    ever see the real part of. A profile that knows its own continuation
+    supplies ``camplitude(t)`` with ``camplitude(t).real == amplitude(t)``;
+    everything else falls back to the real value, which is the right answer
+    for a profile that has no single carrier frequency."""
+    prof = getattr(src, "profile", None)
+    dt = getattr(src, "dt", None)
+    if prof is None or dt is None or not hasattr(prof, "camplitude"):
+        return complex(src.amplitude(t_idx))
+    return prof.camplitude((t_idx + 0.5) * dt)
 
 
 class GaussianPulse:
@@ -90,12 +106,25 @@ class ContinuousSource:
         self.cutoff = cutoff
 
     def amplitude(self, t: float) -> float:
+        return math.sin(2 * math.pi * self.fcen * t) * self._ramp(t)
+
+    def _ramp(self, t: float) -> float:
         if self.t_ramp <= 0:
-            ramp = 1.0
-        else:
-            s = min(1.0, t / self.t_ramp)
-            ramp = 0.5 - 0.5 * math.cos(math.pi * s)
-        return math.sin(2 * math.pi * self.fcen * t) * ramp
+            return 1.0
+        return 0.5 - 0.5 * math.cos(math.pi * min(1.0, t / self.t_ramp))
+
+    def camplitude(self, t: float) -> complex:
+        """Analytic continuation of amplitude() under the e^{-i.omega.t}
+        convention: ``camplitude(t).real == amplitude(t)`` exactly, since
+        Re[i e^{-i.omega.t}] = sin(omega t).
+
+        meep's own continuous_src_time carries the current as e^{-i.omega.t}
+        (real part cos), a quarter period ahead of this engine's sin. Either
+        is a valid CW current; they scale the frequency-domain solution by a
+        constant phase, which every |field| and every relative-error metric
+        is blind to. Matching THIS engine's real convention is what keeps a
+        solve_cw field comparable to the same cell's time-domain run."""
+        return 1j * cmath.exp(-2j * math.pi * self.fcen * t) * self._ramp(t)
 
 
 class CustomSource:

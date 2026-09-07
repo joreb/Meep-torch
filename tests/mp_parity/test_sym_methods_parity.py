@@ -143,11 +143,15 @@ def test_get_array_metadata():
     assert abs(x[0] - (-7.5 + 0.5 / RES)) < 1e-12  # meep-centered coordinates
     x2, y2, z2, w2 = sim.get_array_metadata(center=mp.Vector3(0, 0),
                                             size=mp.Vector3(2, 1))
-    assert len(x2) == 2 * RES and len(y2) == RES and w2.shape == (40, 20)
+    # meep's array slice counts both endpoints and one more, so a 2x1 box at
+    # resolution 20 is 42x22, not 40x20 (checked against pymeep). These read
+    # 40x20 while get_array_metadata computed its own window; it now shares
+    # get_array's.
+    assert len(x2) == 2 * RES + 2 and len(y2) == RES + 2 and w2.shape == (42, 22)
     p, wp = sim.get_array_metadata(vol=mp.Volume(center=mp.Vector3(),
                                                  size=mp.Vector3(2, 1)),
                                    return_pw=True)
-    assert len(p) == 40 * 20 and wp.shape == (40, 20)
+    assert len(p) == 42 * 22 and wp.shape == (42, 22)
 
 
 def test_reset_and_restart():

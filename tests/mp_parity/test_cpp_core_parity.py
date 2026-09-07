@@ -230,11 +230,15 @@ def test_initialize_field_and_slices():
 
 def test_fields_raise_groups():
     f = mp.fields(mp.structure(_grid(), 1.0))
-    for m in ("loop_in_chunks", "process_incoming_chunk_data", "solve_cw", "dump", "load",
+    for m in ("loop_in_chunks", "process_incoming_chunk_data", "dump", "load",
               "output_hdf5", "get_eigenmode", "use_bloch", "energy_in_box",
               "get_timing_data", "add_dft_near2far", "synchronize_magnetic_fields"):
         with pytest.raises(NotImplementedError):
             getattr(f, m)()
+    # solve_cw left that group when it was implemented; it now refuses for a
+    # reason of its own (real fields) rather than as an unported stub
+    with pytest.raises(RuntimeError, match="force_complex_fields"):
+        f.solve_cw()
 
 
 # ------------------------------------------------- h5file / small leftovers ---

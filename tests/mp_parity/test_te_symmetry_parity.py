@@ -153,17 +153,23 @@ def test_mirror_half_domain_matches_full(direction, phase):
 
 
 def test_te_offplane_ey_source_fold():
-    """An Ey source below a Y cut folds onto its image with -phi (Ey is
-    normal to the plane). The half run lists the source once and the fold
-    supplies the image; the full run lists both explicitly, the image
-    amplitude carrying -phi. A wrong fold sign flips the image amplitude
-    and the two sources cancel/double -- an O(1) mismatch, so a 1% gate is
-    decisive (the correct fold sits at the ~1e-3 CPML level)."""
+    """An off-plane Ey source under a Y cut implies its image with -phi (Ey is
+    normal to the plane). The half run lists the source once, in the KEPT
+    half, and the wall supplies the image; the full run lists both, the image
+    amplitude carrying -phi. A wrong wall sign flips the image amplitude and
+    the two sources cancel/double -- an O(1) mismatch, so a 1% gate is
+    decisive (the correct sign sits at the ~1e-3 CPML level).
+
+    The source used to be listed BELOW the cut here, on the assumption that
+    the engine folds it up. It does not, and neither does meep: sources.cpp
+    intersects source volumes with the untransformed reduced chunk only, so a
+    source in the discarded half is DROPPED (oracle: max|Ez| == 0.0 exactly).
+    Folding it in instead double-counted the drive."""
     for phase in (+1, -1):
         def run(half):
-            src_pos = [(0.0, -OFF_Y)]            # below the cut: folds up
+            src_pos = [(0.0, OFF_Y)]             # in the kept half
             if not half:
-                src_pos.append((0.0, OFF_Y))     # explicit image, sign -phi
+                src_pos.append((0.0, -OFF_Y))    # explicit image, sign -phi
             img_phase = -phase                   # Ey normal to a Y cut
             sources = [mp.Source(mp.GaussianSource(FCEN, fwidth=0.2 * FCEN),
                                  component=mp.Ey, center=mp.Vector3(x, y),
