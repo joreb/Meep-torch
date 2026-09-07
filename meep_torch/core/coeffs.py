@@ -62,6 +62,11 @@ class TMCoeffs(NamedTuple):
     # H holds the on-plane row/col). build_tm_coeffs y_mirror/x_mirror.
     y_mirror_lo: int = 0
     x_mirror_lo: int = 0
+    # C2 (Rotate2 about z) fold at the LOW-y cut: 0 = off, else the user
+    # phase +-1. Shares every shape/PML rule with an odd y mirror; only the
+    # ghost differs -- Ez[i, -1] = phase * Ez[nx-1-i, 0] (reversed in x)
+    # rather than phase * Ez[i, 0]. See stepper_tm.step_db.
+    y_rot2_lo: int = 0
 
 
 def _as_field(val, grid: Grid, default: float) -> torch.Tensor:
@@ -137,6 +142,7 @@ def build_tm_coeffs(
     m_pole_masks: Sequence[torch.Tensor] | None = None,
     y_mirror: int = 0,
     x_mirror: int = 0,
+    y_rot2: int = 0,
 ) -> TMCoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -195,6 +201,15 @@ def build_tm_coeffs(
         c3[k] = cv3 * mask.to(eps)
 
     px, py = _axis_sides(npml)
+    # A symmetry cut replaces the low-side PML: the kept half spans from the
+    # cut plane to the far edge, so only the FAR edge carries an absorber.
+    # Drop the low count before the fits-in-the-grid check -- otherwise a
+    # halved cell is measured against the full cell's two-sided PML budget
+    # (metal-cavity-ldos.py: npml=((50,50),(50,50)) vs a 200x100 half grid).
+    if y_mirror or y_rot2:
+        py = (0, py[1])
+    if x_mirror:
+        px = (0, px[1])
     if sum(px) >= grid.nx or (sum(py) >= grid.ny and not y_pmc):
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
 
@@ -203,14 +218,18 @@ def build_tm_coeffs(
             n, pair if use_pml else 0, offset, dt, dx, dtype=grid.dtype, device=grid.device
         )
 
-    if y_mirror not in (0, +1, -1) or x_mirror not in (0, +1, -1):
-        raise ValueError(f"mirror parity must be 0/+1/-1, got y={y_mirror} x={x_mirror}")
-    if y_pmc and (y_mirror or x_mirror):
-        raise ValueError("mirrors and y_pmc are mutually exclusive")
-    if (y_mirror == -1 or x_mirror == -1) and ("h1x" in cond or m_poles):
+    if (y_mirror not in (0, +1, -1) or x_mirror not in (0, +1, -1)
+            or y_rot2 not in (0, +1, -1)):
+        raise ValueError(f"symmetry parity must be 0/+1/-1, got y={y_mirror} "
+                         f"x={x_mirror} rot2={y_rot2}")
+    if y_mirror and y_rot2:
+        raise ValueError("y_mirror and y_rot2 both cut the low-y edge")
+    if y_pmc and (y_mirror or x_mirror or y_rot2):
+        raise ValueError("symmetry cuts and y_pmc are mutually exclusive")
+    if (y_mirror == -1 or x_mirror == -1 or y_rot2) and ("h1x" in cond or m_poles):
         raise NotImplementedError(
-            "odd mirror with sigma_b/mu/m_poles: the on-plane H row has no "
-            "conductivity/mu coefficients (standard H-grid shapes only)")
+            "odd mirror / Rotate2 with sigma_b/mu/m_poles: the on-plane H row "
+            "has no conductivity/mu coefficients (standard H-grid shapes only)")
 
     def kill_lo(b, a, k, nlo):
         # a mirror wall replaces the low-side PML: identity profile there
@@ -223,7 +242,7 @@ def build_tm_coeffs(
     # so the interior profiles are the same for both parities.
     b_hy, a_hy, k_hy = prof(grid.ny - 1, 0.5, py, use_pml=not y_pmc)
     b_hx, a_hx, k_hx = prof(grid.nx - 1, 0.5, px)
-    if y_mirror:
+    if y_mirror or y_rot2:
         kill_lo(b_hy, a_hy, k_hy, py[0])
     if x_mirror:
         kill_lo(b_hx, a_hx, k_hx, px[0])
@@ -239,7 +258,7 @@ def build_tm_coeffs(
     b_ey_f, a_ey_f, k_ey_f = prof(grid.ny, 0.0, py, use_pml=not y_pmc)
     if y_pmc:
         b_ey, a_ey, k_ey = b_ey_f, a_ey_f, k_ey_f
-    elif y_mirror:
+    elif y_mirror or y_rot2:
         # fdtdx-style mirror: wall at the LOW-y cut, PML high-y only; the D
         # update keeps rows 0..ny-2 (cut row live, top row PEC behind PML)
         kill_lo(b_ey_f, a_ey_f, k_ey_f, py[0])
@@ -251,7 +270,7 @@ def build_tm_coeffs(
         dt=dt, dx=dx, eps_inf=eps, chi3=x3, has_kerr=has_kerr,
         chi2=x2, has_chi2=has_chi2,
         c1=c1, c2=c2, c3=c3, y_pmc=y_pmc,
-        y_mirror_lo=y_mirror, x_mirror_lo=x_mirror,
+        y_mirror_lo=y_mirror, x_mirror_lo=x_mirror, y_rot2_lo=y_rot2,
         b_hy=b_hy[None, :], a_hy=a_hy[None, :], k_hy=k_hy[None, :],
         b_hx=b_hx[:, None], a_hx=a_hx[:, None], k_hx=k_hx[:, None],
         b_ex=b_ex[:, None], a_ex=a_ex[:, None], k_ex=k_ex[:, None],

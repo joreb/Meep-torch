@@ -36,10 +36,11 @@ class TMState(NamedTuple):
 
 def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
                   n_mpoles: int = 0, y_mirror: int = 0,
-                  x_mirror: int = 0) -> TMState:
+                  x_mirror: int = 0, y_rot2: int = 0) -> TMState:
     nx, ny = grid.nx, grid.ny
-    # psi_Hxy rows: PEC interior ny-2; both-wall PMC ny; mirror lo ny-1
-    ny_e = ny if y_pmc else (ny - 1 if y_mirror else ny - 2)
+    # psi_Hxy rows: PEC interior ny-2; both-wall PMC ny; a low-y cut (mirror
+    # or Rotate2) ny-1
+    ny_e = ny if y_pmc else (ny - 1 if (y_mirror or y_rot2) else ny - 2)
     nx_e = nx - 1 if x_mirror else nx - 2
     mag = {}
     if n_mpoles:
@@ -61,7 +62,9 @@ def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
         psi_Ezx=grid.zeros(nx - 1, ny),
         psi_Hyx=grid.zeros(nx_e, ny_e),
         psi_Hxy=grid.zeros(nx_e, ny_e),
-        Hx0=grid.zeros(nx) if y_mirror == -1 else None,
+        # the C2 fold keeps the on-plane Hx row live for BOTH parities: the
+        # cut row maps onto itself reversed in x, it is not forced to zero
+        Hx0=grid.zeros(nx) if (y_mirror == -1 or y_rot2) else None,
         Hy0=grid.zeros(ny) if x_mirror == -1 else None,
         **mag,
     )
@@ -90,7 +93,12 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         # cut -> dEz/dn = 2 Ez[0]/dx there (no PML at the cut, no psi)
         mir = {}
         if state.Hx0 is not None:
-            mir["Hx0"] = state.Hx0 - dt * 2.0 * state.Ez[:, 0] / dx
+            ez0 = state.Ez[:, 0]
+            # ghost Ez one row below the cut: odd mirror -> -Ez[0] (so
+            # dEz/dn = 2 Ez[0]/dx); C2 -> phase * Ez[0] reversed in x, the
+            # rotated partner of the cut row being the cut row itself
+            ghost = (m.y_rot2_lo * ez0.flip(0)) if m.y_rot2_lo else -ez0
+            mir["Hx0"] = state.Hx0 - dt * (ez0 - ghost) / dx
         if state.Hy0 is not None:
             mir["Hy0"] = state.Hy0 + dt * 2.0 * state.Ez[0, :] / dx
         if m.mc1x is not None:
@@ -118,8 +126,8 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
     elif m.y_mirror_lo == +1:
         Hx = F.pad(Hx, (1, 0))                                    # even: H=0 ghost at cut
         pad_y, ys = (0, 1), slice(None, -1)
-    elif m.y_mirror_lo == -1:
-        Hx = torch.cat([state.Hx0[:, None], Hx], dim=1)           # odd: plane node live
+    elif m.y_mirror_lo == -1 or m.y_rot2_lo:
+        Hx = torch.cat([state.Hx0[:, None], Hx], dim=1)           # odd/C2: plane node live
         pad_y, ys = (0, 1), slice(None, -1)
     else:
         pad_y, ys = (1, 1), slice(1, -1)

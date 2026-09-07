@@ -63,14 +63,19 @@ def test_symmetry_family():
 
 
 def test_unsupported_symmetries_raise_at_simulation():
-    for sym in (mp.Rotate2(mp.Z), mp.Rotate4(mp.Z), mp.Mirror(mp.Z),
-                mp.Mirror(mp.Y, phase=1j)):
+    for sym in (mp.Rotate4(mp.Z), mp.Mirror(mp.Z), mp.Rotate2(mp.X),
+                mp.Mirror(mp.Y, phase=1j), mp.Rotate2(mp.Z, phase=1j)):
         with pytest.raises(NotImplementedError):
             _wg_sim([sym])
+    # a C2 fold does not compose with a mirror cut in the half-domain engine
+    with pytest.raises(NotImplementedError):
+        _wg_sim([mp.Rotate2(mp.Z), mp.Mirror(mp.Y)])
     _wg_sim([mp.Identity()])     # no-op, accepted
     # Mirror(X/Y, phase=+-1) are engine-supported now (test_symmetry_parity)
     _wg_sim([mp.Mirror(mp.X)])
     _wg_sim([mp.Mirror(mp.Y, phase=-1)])
+    _wg_sim([mp.Rotate2(mp.Z)])              # C2 halves in y (test_symmetry_parity)
+    _wg_sim([mp.Rotate2(mp.Z, phase=-1)])
 
 
 # --- Mirror(Y) half-domain physics gate ---

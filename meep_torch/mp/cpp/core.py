@@ -174,6 +174,7 @@ class structure:
         self._y_pmc = False
         self._y_mirror = 0
         self._x_mirror = 0
+        self._y_rot2 = 0
         self._coeffs = self._coeffs_tm = self._coeffs_te = None
         for region in (br if isinstance(br, (list, tuple)) else [br] if br else []):
             self._apply_boundary(region)
@@ -208,8 +209,9 @@ class structure:
         st._npml_sides = [list(p) for p in sim._npml_sides[:2]]
         st._nabs_sides = [[0, 0], [0, 0]]        # sim folded its ramp already
         st._y_pmc = sim._y_pmc
-        st._y_mirror = sim._sym_py if sim._sym_cy else 0
+        st._y_mirror = (sim._sym_py if (sim._sym_cy and not sim._sym_rot2) else 0)
         st._x_mirror = sim._sym_px if sim._sym_cx else 0
+        st._y_rot2 = sim._sym_rot2 if sim._sym_cy else 0
         st._coeffs = st._coeffs_tm = st._coeffs_te = None
         return st
 
@@ -294,7 +296,8 @@ class structure:
                 self.grid, eps_inf=self._eps, poles=self._poles,
                 pole_masks=self._pole_masks or None, chi2=self._chi2,
                 chi3=self._chi3, npml=npml_arg, y_pmc=self._y_pmc,
-                y_mirror=self._y_mirror, x_mirror=self._x_mirror, **extra)
+                y_mirror=self._y_mirror, x_mirror=self._x_mirror,
+                y_rot2=self._y_rot2, **extra)
         setattr(self, slot, built)
         return built
 
@@ -524,7 +527,8 @@ class fields:
             return init_te_state(self.s.grid, n_poles=c.c1x.shape[0])
         return init_tm_state(self.s.grid, n_poles=c.c1.shape[0], y_pmc=c.y_pmc,
                              n_mpoles=self._n_mpoles,
-                             y_mirror=c.y_mirror_lo, x_mirror=c.x_mirror_lo)
+                             y_mirror=c.y_mirror_lo, x_mirror=c.x_mirror_lo,
+                             y_rot2=c.y_rot2_lo)
 
     # --- stepping (the physics core) ---
     def _phase_mod(self):

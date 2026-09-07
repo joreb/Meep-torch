@@ -380,9 +380,15 @@ class Simulation:
         while the fields are unbuilt: meep's sim.symmetries is mutable."""
         self._sym_cx = self._sym_cy = 0
         self._sym_px = self._sym_py = 1
+        self._sym_rot2 = 0
         mirrors = {}
+        rot2 = 0
         for s in self.symmetries:
             if isinstance(s, Identity):
+                continue
+            if (isinstance(s, Rotate2) and s.direction == Z
+                    and s.phase in (1 + 0j, -1 + 0j)):
+                rot2 = int(s.phase.real)
                 continue
             if (isinstance(s, Mirror) and not isinstance(s, (Rotate2, Rotate4))
                     and s.direction in (X, Y) and s.phase in (1 + 0j, -1 + 0j)):
@@ -391,16 +397,23 @@ class Simulation:
             raise NotImplementedError(
                 f"{type(s).__name__}(direction={getattr(s, 'direction', None)}, "
                 f"phase={getattr(s, 'phase', None)}) not supported: "
-                f"Mirror(X/Y, phase=+-1) only ({_SYM_TODO})")
-        if mirrors and self.dimensions != 2:
-            raise NotImplementedError(f"Mirror(X/Y) is 2D-only ({_SYM_TODO})")
-        if mirrors and (self._pol != "tm" or self._bloch):
+                f"Mirror(X/Y, phase=+-1) and Rotate2(Z, phase=+-1) only "
+                f"({_SYM_TODO})")
+        if rot2 and mirrors:
+            raise NotImplementedError(
+                f"Rotate2 combined with Mirror not supported: the C2 fold and "
+                f"a mirror cut do not compose in the half-domain engine "
+                f"({_SYM_TODO})")
+        if (mirrors or rot2) and self.dimensions != 2:
+            raise NotImplementedError(
+                f"Mirror(X/Y) / Rotate2(Z) is 2D-only ({_SYM_TODO})")
+        if (mirrors or rot2) and (self._pol != "tm" or self._bloch):
             # meep treats symmetries as an optimization hint; the TE engine
             # and the Bloch (k_point) path have no half-domain machinery, so
             # keep the full cell (same physics)
-            warnings.warn("Mirror symmetries on a TE or k_point run do not "
+            warnings.warn("Symmetries on a TE or k_point run do not "
                           f"reduce the domain (full-cell run; {_SYM_TODO})")
-            mirrors = {}
+            mirrors, rot2 = {}, 0
         if Y in mirrors:
             if self.gs.ny % 2:
                 raise NotImplementedError(
@@ -413,6 +426,28 @@ class Simulation:
                     f"Mirror(X) needs an even cell column count ({_SYM_TODO})")
             self._sym_cx = self.gs.nx // 2
             self._sym_px = mirrors[X]
+        if rot2:
+            # C2 about z folds (i, j) -> (nx-1-i, ny-1-j). Halve in y (the
+            # kept half keeps the FULL x extent, since the fold reverses x
+            # rather than cutting it), so the y rules match a mirror's and
+            # the x extent must be reversal-symmetric: even column count and
+            # an x PML that is the same on both edges.
+            if self.gs.ny % 2:
+                raise NotImplementedError(
+                    f"Rotate2(Z) needs an even cell row count ({_SYM_TODO})")
+            if self.gs.nx % 2:
+                raise NotImplementedError(
+                    f"Rotate2(Z) needs an even cell column count ({_SYM_TODO})")
+            if self._npml_sides[0][0] != self._npml_sides[0][1] or \
+                    self._nabs_sides[0][0] != self._nabs_sides[0][1]:
+                raise NotImplementedError(
+                    f"Rotate2(Z) needs an x-symmetric absorber: the C2 fold "
+                    f"maps the low-x edge onto the high-x edge, so unequal "
+                    f"PML/Absorber thicknesses break the symmetry "
+                    f"({_SYM_TODO})")
+            self._sym_cy = self.gs.ny // 2
+            self._sym_py = rot2
+            self._sym_rot2 = rot2
 
     def __getattr__(self, name):
         # deferred-raster attributes: meep builds the structure in init_sim,
@@ -739,6 +774,10 @@ class Simulation:
                 j0, j1, _, miry = self._fold(j0, j1, "y")
                 if miry:
                     amp = amp * self._sym_py
+                    if self._sym_rot2:
+                        # C2 image: the y fold above placed the span, the
+                        # rotation also reverses x
+                        ix = self.grid.nx - 1 - ix
             from ..core.sources import LineSource
             src = LineSource(self.grid, ix, j0, j1, profile=prof)
             if amp_func is not None:
@@ -794,6 +833,19 @@ class Simulation:
             return j, False
         return (j - c, False) if j >= c else (c - 1 - j, True)
 
+    def _rot2_guard(self, what, *below_plane):
+        """Reject a monitor that reaches below the C2 cut plane. A mirror
+        image sits at the same x, so the folded half plus a phase is the
+        whole answer; a C2 image sits at nx-1-i, i.e. on a DIFFERENT line of
+        the kept half, so folding a crossing region would need the partner
+        line summed in as well. Regions wholly in the kept half are exact."""
+        if self._sym_rot2 and any(below_plane):
+            raise NotImplementedError(
+                f"{what} reaching below the Rotate2(Z) cut plane is not "
+                f"supported: the C2 image of a point is at (nx-1-i, ny-1-j), "
+                f"so the region maps onto a different line of the kept half. "
+                f"Place the region at y >= 0 (the kept half) ({_SYM_TODO})")
+
     def _ypoint(self, j):
         """Full-cell y index -> half-grid row (mirrored below the plane)."""
         return self._foldpt(j, "y")[0]
@@ -803,7 +855,8 @@ class Simulation:
         flip. ``parity`` = (px, py) of the stored component under the X/Y
         mirror (Dielectric/mu are even; Ez carries the mirror phases)."""
         if self._sym_cy:
-            a = np.concatenate([parity[1] * a[:, ::-1], a], axis=1)
+            lower = a[:, ::-1] if not self._sym_rot2 else a[::-1, ::-1]
+            a = np.concatenate([parity[1] * lower, a], axis=1)
         if self._sym_cx:
             a = np.concatenate([parity[0] * a[::-1, :], a], axis=0)
         return a
@@ -812,6 +865,11 @@ class Simulation:
         """(px, py) mirror parity of a TM component (E vector / H pseudo-
         vector transform times the user phase)."""
         px, py = float(self._sym_px), float(self._sym_py)
+        if self._sym_rot2:
+            # C2 about z: Ez is a scalar (unchanged), the in-plane H vector
+            # reverses -- both components pick up -1 on top of the user phase
+            return {"Ez": (1.0, py), "Dz": (1.0, py),
+                    "Hx": (1.0, -py), "Hy": (1.0, -py)}.get(comp, (1.0, 1.0))
         return {"Ez": (px, py), "Dz": (px, py),
                 "Hx": (px, -py), "Hy": (-px, py)}.get(comp, (1.0, 1.0))
 
@@ -1266,7 +1324,9 @@ class Simulation:
             if self._sym_cy or self._sym_cx:
                 span = "y" if axis == "x" else "x"
                 idx2, pos_mir = self._foldpt(idx, "x" if axis == "x" else "y")
-                lo2, hi2, _, _ = self._fold(lo, hi, span)
+                lo2, hi2, n2f_cross, n2f_mir = self._fold(lo, hi, span)
+                self._rot2_guard("a near2far face", pos_mir, n2f_cross,
+                                 n2f_mir)
                 meta.update(span=(span, lo, hi), lo_half=lo2, pos_mir=pos_mir)
             if self._pol == "tm":
                 mon = FluxMonitorTM(self.grid, freqs, x_normal=(axis == "x"),
@@ -1680,7 +1740,10 @@ class Simulation:
             # face below a cut plane maps onto its image, where the mirrored
             # tangential H flips relative to E -> flux sign flips (msign)
             idx, pos_mir = self._foldpt(idx, "x" if x_normal else "y")
-            lo, hi, meta["mir2"], _ = self._fold(lo, hi, "y" if x_normal else "x")
+            lo, hi, meta["mir2"], span_mir = self._fold(
+                lo, hi, "y" if x_normal else "x")
+            self._rot2_guard("a flux/mode region", pos_mir, meta["mir2"],
+                             span_mir)
             if pos_mir:
                 meta["msign"] = -1.0
             meta.update(lo=lo, hi=hi)
@@ -2056,9 +2119,11 @@ class Simulation:
             if pol != self._pol:
                 self._pol = pol
                 self.structure = None
-            sym = (self._sym_cx, self._sym_cy, self._sym_px, self._sym_py)
+            sym = (self._sym_cx, self._sym_cy, self._sym_px, self._sym_py,
+                   self._sym_rot2)
             self._apply_symmetries()
-            if sym != (self._sym_cx, self._sym_cy, self._sym_px, self._sym_py):
+            if sym != (self._sym_cx, self._sym_cy, self._sym_px, self._sym_py,
+                       self._sym_rot2):
                 self.structure = None
         self._init_structure()
         if self.dimensions == 3:
