@@ -158,3 +158,84 @@ def test_diamond_epsilon_fill_matches_analytic_sphere_volume():
     r = 0.25 / math.sqrt(2)
     want = 1.0 + (11.56 - 1.0) * 8 * (4 / 3) * math.pi * r ** 3
     assert abs(float(eps.mean()) - want) / want < 0.02
+
+
+# --- mirror parity --------------------------------------------------------
+
+def _z_symmetric_eta(grid, seed=0):
+    """eta symmetric under the FFT grid's own mirror ``k -> (-k) % n``."""
+    rng = np.random.default_rng(seed)
+    base = 1.0 / (1.0 + 10.0 * rng.random(grid))
+    n = grid[2]
+    return 0.5 * (base + np.take(base, (-np.arange(n)) % n, axis=2))
+
+
+def _op(grid, eta, kfrac=(0.2, 0.3, 0.0)):
+    from meep_torch.mpb.planewave3d import ThetaOperator
+    B, _ = reciprocal_duals_3d(*CUBIC)
+    K = kvectors_3d(*grid, B, 2 * np.pi * (np.array(kfrac) @ B))
+    return ThetaOperator(eta, K, grid)
+
+
+@pytest.mark.parametrize("grid", [(8, 8, 8), (8, 8, 7)])
+def test_mirror_squares_to_identity_and_projector_is_idempotent(grid):
+    """An index-map error breaks these while still looking like a mirror."""
+    from meep_torch.mpb.parity3d import zparity_operator
+    op = _op(grid, _z_symmetric_eta(grid))
+    P = zparity_operator(op, even=True)
+    rng = np.random.default_rng(3)
+    X = rng.standard_normal((op.n, 3)) + 1j * rng.standard_normal((op.n, 3))
+    Xk = X * P._keep[:, None]
+    scale = np.abs(Xk).max()
+    assert np.abs(P.mirror(P.mirror(Xk)) - Xk).max() / scale < 1e-12
+    assert np.abs(P(P(X)) - P(X)).max() / scale < 1e-12
+
+
+def test_mirror_commutes_with_theta_on_an_odd_grid():
+    """Exact only without a Nyquist plane -- which is why parity forces odd.
+
+    On an even grid the mirrored axis has a frequency ``-n/2`` with no
+    partner ``+n/2``; the projector drops it, Theta does not, and the two
+    stop commuting (measured 0.35 at 8x8x8 against 5e-16 at 8x8x7). The
+    sector is then only a Rayleigh-Ritz compression rather than an
+    invariant subspace, so the solver makes the axis odd instead.
+    """
+    from meep_torch.mpb.parity3d import zparity_operator
+    grid = (8, 8, 7)
+    op = _op(grid, _z_symmetric_eta(grid))
+    M = zparity_operator(op, even=True).mirror
+    rng = np.random.default_rng(4)
+    X = rng.standard_normal((op.n, 2)) + 1j * rng.standard_normal((op.n, 2))
+    lhs, rhs = M(op.matmat(X)), op.matmat(M(X))
+    assert np.abs(lhs - rhs).max() / np.abs(rhs).max() < 1e-12
+
+
+def test_parity_requires_zero_k_along_the_mirrored_axis():
+    from meep_torch.mpb.parity3d import zparity_operator
+    grid = (6, 6, 7)
+    op = _op(grid, _z_symmetric_eta(grid), kfrac=(0.2, 0.3, 0.25))
+    with pytest.raises(ValueError, match="k_z = 0"):
+        zparity_operator(op, even=True)
+
+
+def test_even_and_odd_sectors_partition_the_kept_space():
+    from meep_torch.mpb.parity3d import zparity_operator
+    grid = (8, 8, 7)
+    op = _op(grid, _z_symmetric_eta(grid))
+    Pe = zparity_operator(op, even=True)
+    Po = zparity_operator(op, even=False)
+    rng = np.random.default_rng(5)
+    X = rng.standard_normal((op.n, 2)) + 1j * rng.standard_normal((op.n, 2))
+    assert np.abs(Pe(X) + Po(X) - X).max() / np.abs(X).max() < 1e-12
+
+
+def test_parity_expectation_is_plus_or_minus_one_on_a_pure_sector():
+    """<h|M|h> is what MPB prints; a projected vector must be exactly +-1."""
+    from meep_torch.mpb.parity3d import zparity_operator
+    grid = (8, 8, 7)
+    op = _op(grid, _z_symmetric_eta(grid))
+    rng = np.random.default_rng(6)
+    X = rng.standard_normal((op.n, 2)) + 1j * rng.standard_normal((op.n, 2))
+    for even, want in ((True, 1.0), (False, -1.0)):
+        P = zparity_operator(op, even=even)
+        assert np.abs(P.expectation(P(X)) - want).max() < 1e-10
