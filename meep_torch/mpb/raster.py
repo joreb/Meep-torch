@@ -26,10 +26,24 @@ import math
 
 import numpy as np
 
+import torch
+
+from .eigensolver import dual_vectors
+from ..geometry.smoothing import blend_te_supersampled
 from ..mp.geometry import Block, Cylinder, Sphere
+from ..mp.material import Medium
+from ..mp.vec import Vector3
 
 __all__ = ["lattice_matrix", "frac_min_image", "cell_centres",
-           "object_mask_2d", "rasterize_2d"]
+           "object_mask_2d", "rasterize_2d", "RasterMixin"]
+
+
+def _eps_of(material):
+    val, _ = material.resolve()
+    if not isinstance(val, float):
+        raise NotImplementedError(
+            "dispersive/tensor materials not supported by ModeSolver")
+    return val
 
 
 def lattice_matrix(a1, a2) -> np.ndarray:
@@ -116,3 +130,144 @@ def rasterize_2d(a1, a2, nu: int, nv: int, geometry, geometry_center,
 
     blocks = fine.reshape(nu, supersample, nv, supersample)
     return blocks.mean(axis=(1, 3)), blocks
+
+
+class RasterMixin:
+    """Epsilon rasterization on the ModeSolver, split out for file size.
+
+    Moved verbatim from ``mpb/solver.py``: same methods on the same
+    object. The 1D/3D branch still rasterizes per cartesian axis and keeps
+    its own orthogonality guard; 2D goes through the lattice-coordinate
+    path in this module.
+    """
+
+    def _rasterize_epsilon(self):
+        """Supersampled coverage eps over the unit cell (min-image periodic),
+        rank = number of periodic axes.
+
+        LAST-listed object wins, which is meep's and MPB's documented rule:
+        "When objects overlap, later objects in the list take precedence"
+        (mpb and meep Python_User_Interface.md; MPB's fields.c says the same
+        of its object list, "just like the ordinary geometry list").
+
+        This used to iterate in reverse, giving the FIRST object precedence,
+        and every single-object fixture was blind to it. The tutorial is
+        not: it builds a point defect by appending an air rod over a
+        lattice duplicate, and tunes it by appending a second rod on top --
+        both of which the old order silently discarded, so the 5x5 defect
+        never formed (band 25 came out at 0.279 instead of 0.376, energy in
+        the defect cylinder 0.12 instead of ~0.7) and the tuning root-find
+        got the same frequency for eps=1 and eps=12.
+        """
+        axes = self._active_axes()
+        if not axes:
+            raise ValueError("geometry_lattice.size has no nonzero component")
+        gs = self._adjust_grid_size()
+        if len(axes) == 2:
+            return self._rasterize_lattice_2d(gs)
+        # 1D/3D still rasterize on a cartesian box, which silently solves a
+        # sheared structure on an oblique basis. 2D goes through the
+        # lattice-coordinate path above and needs no such guard.
+        self._check_basis_orthogonal()
+        size = self.geometry_lattice.size
+        n = [int(gs[i]) for i in axes]
+        L = [float(size[i]) for i in axes]
+        d = [L[a] / n[a] for a in range(len(axes))]
+        if max(d) - min(d) > 1e-9 * max(d):
+            raise NotImplementedError(
+                "anisotropic grid cells (resolution*size mismatch across "
+                "axes) not supported by the Bloch-FDTD backend")
+        ss = self.supersample
+        coords = [(-L[a] / 2 + (np.arange(n[a] * ss) + 0.5) * d[a] / ss)
+                  for a in range(len(axes))]
+        grids = np.meshgrid(*coords, indexing="ij")
+        # world point per fine cell: active axes filled, collapsed axes at 0
+        P = [grids[axes.index(i)] if i in axes else np.zeros(grids[0].shape)
+             for i in range(3)]
+
+        if callable(self.default_material) and not isinstance(
+                self.default_material, Medium):
+            fine = np.empty(grids[0].shape)
+            it = np.nditer(fine, flags=["multi_index"])
+            for _ in it:
+                m = it.multi_index
+                med = self.default_material(
+                    Vector3(P[0][m], P[1][m], P[2][m]))
+                fine[m] = _eps_of(med)
+        else:
+            fine = np.full(grids[0].shape, _eps_of(self.default_material))
+
+        for obj in self.geometry:
+            c = obj.center - self.geometry_center
+            dp = []
+            for a, i in enumerate(axes):
+                v = grids[a] - c[i]
+                dp.append(v - L[a] * np.round(v / L[a]))  # min-image wrap
+            if isinstance(obj, (Cylinder, Sphere)):
+                if isinstance(obj, Cylinder) and len(axes) == 3:
+                    raise NotImplementedError(
+                        "3D Cylinder rasterization not supported")
+                mask = sum(v ** 2 for v in dp) < obj.radius ** 2
+            elif isinstance(obj, Block):
+                if (obj.e1 != Vector3(1, 0, 0) or obj.e2 != Vector3(0, 1, 0)
+                        or obj.e3 != Vector3(0, 0, 1)):
+                    raise NotImplementedError(
+                        "rotated Block not supported in ModeSolver")
+                mask = np.ones(grids[0].shape, dtype=bool)
+                for a, i in enumerate(axes):
+                    half = obj.size[i] / 2
+                    if not math.isinf(half):
+                        mask &= np.abs(dp[a]) < half
+            else:
+                raise NotImplementedError(
+                    f"{type(obj).__name__} rasterization not supported "
+                    "in ModeSolver (Cylinder/Sphere/Block only)")
+            fine[mask] = _eps_of(obj.material)
+
+        shape = []
+        for a in range(len(axes)):
+            shape += [n[a], ss]
+        blocks = fine.reshape(shape)
+        eps = blocks.mean(axis=tuple(range(1, 2 * len(axes), 2)))
+        self._eps_te = (blend_te_supersampled(blocks)
+                        if len(axes) == 2 else None)
+        return torch.as_tensor(eps, dtype=torch.float64), d[0]
+
+    def _lattice_vectors(self):
+        """Cartesian a1, a2 of the 2D cell (rows of get_lattice)."""
+        lat = self.get_lattice()
+        return (float(lat[0][0]), float(lat[0][1])), \
+               (float(lat[1][0]), float(lat[1][1]))
+
+    def _rasterize_lattice_2d(self, gs):
+        """2D epsilon on the lattice cell, oblique or not (mpb/raster.py).
+
+        The grid is uniform in fractional coordinates, so a triangular cell
+        is sampled on its own rhombus. A rectangular basis reduces to the
+        cartesian per-axis form the 1D/3D path uses, bitwise, which is what
+        leaves the existing goldens unmoved.
+        """
+        from .raster import rasterize_2d
+        a1, a2 = self._lattice_vectors()
+        nu, nv = int(gs[0]), int(gs[1])
+        du = math.hypot(*a1) / nu
+        dv = math.hypot(*a2) / nv
+        if abs(du - dv) > 1e-9 * max(du, dv):
+            raise NotImplementedError(
+                f"anisotropic grid cells (|a1|/nu = {du:.6g} vs |a2|/nv = "
+                f"{dv:.6g}): resolution*size differs across the lattice "
+                f"axes, which the Bloch-FDTD backend does not support")
+        eps, blocks = rasterize_2d(a1, a2, nu, nv, self.geometry,
+                                   self.geometry_center,
+                                   self.default_material, _eps_of,
+                                   supersample=self.supersample)
+        b1, b2 = dual_vectors(a1, a2)
+        # Kottke blends an interface normal against the cartesian axes, so
+        # it is only meaningful when the cell axes ARE the cartesian ones.
+        # Oblique falls back to scalar eps for TE, which costs an order of
+        # convergence on a staircased boundary and is stated in the task.
+        self._eps_te = (blend_te_supersampled(blocks)
+                        if abs(float(b1 @ b2)) < 1e-12 else None)
+        self._a1, self._a2 = a1, a2
+        return torch.as_tensor(eps, dtype=torch.float64), du
+
