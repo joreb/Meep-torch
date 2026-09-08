@@ -107,6 +107,12 @@ class ModeSolver(FieldsMixin, BackendMixin, RasterMixin):
     # True -> torch path with autograd through the eigensolve, so bands
     # are differentiable w.r.t. epsilon. Same frequencies either way.
     differentiable = False
+    # Which 2D band solver runs: "fdfd" (mpb.eigensolver, 2nd-order finite
+    # differences, the default and what every committed golden was measured
+    # with) or "planewave" (mpb.planewave, spectral). Not a meep attribute
+    # -- meep has one backend -- so it is set after construction:
+    # ``ms.backend = "planewave"``. 1D/3D ignore it and stay on harminv.
+    backend = "fdfd"
     min_Q = 100.0        # harminv mode acceptance
     min_amp = 1e-9
 

@@ -68,6 +68,7 @@ class FieldsMixin(OutputMixin):
     _omegas = None          # (num_bands,) angular frequencies, 2*pi*f
     _kc = None              # cartesian Bloch vector (Vector3, meep units)
     _dxf = _dyf = None      # Bloch difference operators for the current k
+    _band_pol = None        # per-band "tm"/"te" (2D no-parity union)
     _curfield = None        # (nx, ny, 3) complex, or (nx, ny) real energy
     _curfield_type = None
     _curfield_band = 0
@@ -148,6 +149,16 @@ class FieldsMixin(OutputMixin):
         """
         eps, _ = self._grid()
         out = np.zeros_like(F)
+        if getattr(self, "backend", "fdfd") == "planewave":
+            # spectral fields live at cell centres; the staggered edge
+            # weights below belong to the finite-difference operator
+            exx, eyy, ezz = (self._eps_diag
+                             if getattr(self, "_eps_diag", None) is not None
+                             else (eps, eps, eps))
+            out[..., 0] = F[..., 0] / exx
+            out[..., 1] = F[..., 1] / eyy
+            out[..., 2] = F[..., 2] / ezz
+            return out
         inv_for_ey, inv_for_ex = te_edge_inv_eps(eps, getattr(self, "_eps_te", None))
         out[..., 0] = F[..., 0] * inv_for_ex
         out[..., 1] = F[..., 1] * inv_for_ey
@@ -209,8 +220,46 @@ class FieldsMixin(OutputMixin):
             D[..., 1] = -1j * self._apply(self._dxf, v) / w
         return self._eps_inv_apply(D), D, H
 
+    def _planewave_band_fields(self, which_band):
+        """(E, D, H) from the planewave backend's coefficients.
+
+        planewave_fields_2d reconstructs on the SAME cell-centre grid this
+        module uses (its lattice_grid), returns Bloch fields, and carries
+        MPB's normalisation, so nothing here rescales. D is recovered as
+        eps E at cell centres, which is exactly the relation that module
+        used to build E from D -- not this module's staggered edge
+        weights, which belong to the finite-difference operator.
+        """
+        from .planewave import planewave_fields_2d, reciprocal_k_to_cartesian
+        self._require_fields("field access")
+        pol = self._band_pol[which_band - 1]
+        eps, _ = self._grid()
+        a1, a2 = self._lattice()
+        kc = reciprocal_k_to_cartesian(self._k_frac, a1, a2)
+        freq = float(self._omegas[which_band - 1]) / (2 * np.pi)
+        E, H = planewave_fields_2d(
+            self._vecs[:, which_band - 1], eps, a1, a2, kc, freq,
+            polarization=pol, eps_te=self._pw_eps_te())
+        exx, eyy, ezz = (self._eps_diag if getattr(self, "_eps_diag", None)
+                         is not None else (eps, eps, eps))
+        D = np.empty_like(E)
+        D[..., 0] = E[..., 0] * exx
+        D[..., 1] = E[..., 1] * eyy
+        D[..., 2] = E[..., 2] * ezz
+        return E, D, H
+
     def _fields(self, which_band):
-        return (self._te_fields(which_band) if self._parity == EVEN_Z
+        if getattr(self, "backend", "fdfd") == "planewave":
+            return self._planewave_band_fields(which_band)
+        # Under 2D no-parity a band is TM or TE individually, so the
+        # polarization is per BAND, not per run. MPB's no-parity fields are
+        # the full vector field; ours are exactly TM-only or TE-only,
+        # because the two polarizations decouple in a z-invariant
+        # structure and each band belongs to one of them.
+        pol = getattr(self, "_band_pol", None)
+        te = (pol[which_band - 1] == "te" if pol
+              else self._parity == EVEN_Z)
+        return (self._te_fields(which_band) if te
                 else self._tm_fields(which_band))
 
     def get_efield(self, which_band, bloch_phase=True):

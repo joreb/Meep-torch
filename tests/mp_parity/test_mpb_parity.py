@@ -17,6 +17,7 @@ import subprocess
 import numpy as np
 import pytest
 
+import meep_torch.mpb as mp_mpb
 from meep_torch.mpb import (EVEN_Z, NO_PARITY, ODD_Z, ModeSolver, MPBArray,
                             MPBData)
 from meep_torch.mp.geometry import Cylinder, Lattice
@@ -62,8 +63,11 @@ def test_unbacked_paths_raise():
     ms = ModeSolver(resolution=8, num_bands=1, k_points=[Vector3(0.1)],
                     geometry_lattice=Lattice(size=Vector3(1, 1)),
                     geometry=[Cylinder(0.2, material=Medium(epsilon=4.0))])
-    with pytest.raises(NotImplementedError):
-        ms.run()                          # 2D no-parity: union of TM + TE
+    # 2D no-parity is backed now (the union of TM and TE); the y-parities
+    # still are not, because they need a mirror-reduced cell.
+    for p in (mp_mpb.EVEN_Y, mp_mpb.ODD_Y, mp_mpb.EVEN_Y + mp_mpb.EVEN_Z):
+        with pytest.raises(NotImplementedError):
+            ms.run_parity(p, True)
     # 2D DOES export fields now; the field getters raise on the 1D/3D
     # harminv backend instead, which recovers frequencies from a time
     # series and has no eigenvectors to hand out.

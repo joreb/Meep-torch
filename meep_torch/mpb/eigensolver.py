@@ -215,8 +215,18 @@ def _assemble(eps: np.ndarray, a1, a2, k1: float, k2: float,
         # staggered edges, which is a discretization choice, not a
         # correctness one -- and it is why oblique TE is gated at 4% while
         # rectangular TE holds 2.6%.
-        W = flat(1.0 / np.asarray(eps, dtype=float))
-        A = Gx.conj().T @ W @ Gx + Gy.conj().T @ W @ Gy
+        # Component-keyed, exactly as te_edge_inv_eps is: the x-derivative
+        # of Hz is set by E_y and so carries eps_yy, the y-derivative by
+        # E_x and eps_xx. Using a single 1/eps here is invisible for an
+        # isotropic structure and catastrophic for a tensor one -- the
+        # tutorial's anisotropic cell (rods eps_diag (1,1,12) in a
+        # (12,12,1) background) came out 60% off, because ezz is the
+        # INVERTED structure relative to the in-plane pair TE actually
+        # sees.
+        exx, eyy = ((eps, eps) if eps_te is None else eps_te)
+        Wx = flat(1.0 / np.asarray(eyy, dtype=float))
+        Wy = flat(1.0 / np.asarray(exx, dtype=float))
+        A = Gx.conj().T @ Wx @ Gx + Gy.conj().T @ Wy @ Gy
     A = ((A + A.conj().T) * 0.5).tocsr()
     return A, sp.identity(nu * nv, format="csr")
 
@@ -362,9 +372,13 @@ def _solve_torch(eps_t: torch.Tensor, a1, a2, k1: float, k2: float,
             # Gram form; see the note in _assemble for why the
             # lattice-component form is not usable off-rectangle
             Gx, Gy = dense(Gx_s), dense(Gy_s)
-            w = (1.0 / eps_c).T.reshape(-1)
-            B = (Gx.conj().T @ (w[:, None] * Gx)
-                 + Gy.conj().T @ (w[:, None] * Gy))
+            exx, eyy = ((eps_c, eps_c) if eps_te is None else
+                        tuple(torch.as_tensor(np.asarray(e)).to(torch.complex128)
+                              for e in eps_te))
+            wx = (1.0 / eyy).T.reshape(-1)     # pairs with Gx (see _assemble)
+            wy = (1.0 / exx).T.reshape(-1)
+            B = (Gx.conj().T @ (wx[:, None] * Gx)
+                 + Gy.conj().T @ (wy[:, None] * Gy))
     B = 0.5 * (B + B.conj().T)
     if not return_vectors:
         vals = torch.linalg.eigvalsh(B)

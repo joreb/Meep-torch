@@ -118,15 +118,14 @@ class BackendMixin:
             return
         if p == EVEN_Z and ndims == 2:
             return                        # TE via the FDFD Bloch eigensolve
-        if p == NO_PARITY and ndims in (1, 3):
+        if p == NO_PARITY and ndims in (1, 2, 3):
             return
         raise NotImplementedError(
             f"parity {PARITY_NAMES.get(p, p)!r} in {ndims}D is not backed: "
             "available: TM/zodd (1D/2D), TE/zeven (2D, FDFD Bloch "
-            "eigensolve), no-parity (1D degenerate TM; 3D via "
-            "stepper_bloch3). 2D no-parity would be the union of the two "
-            "polarizations and is not wired; y-parities need a mirror-"
-            "reduced cell")
+            "eigensolve), no-parity (1D degenerate TM; 2D as the union "
+            "of the two polarizations; 3D via stepper_bloch3). y-parities "
+            "need a mirror-reduced cell")
 
     def _zero_bands_at_gamma(self, kc):
         """Number of omega = 0 modes at k = 0, which harminv cannot see.
@@ -174,13 +173,63 @@ class BackendMixin:
             # components are the Bloch wrap phases directly and no
             # cartesian round trip is needed.
             k1, k2 = float(k[0]), float(k[1])
-            freqs, vecs = bloch_bands_2d(
-                eps, dx, dx, 0.0, 0.0, self.num_bands,
-                "te" if self._parity == EVEN_Z else "tm",
-                differentiable=self.differentiable,
-                eps_te=self._eps_te, return_vectors=True,
-                target_freq=self.target_freq,
-                lattice=(a1, a2), k_frac=(k1, k2))
+
+            if self.backend not in ("fdfd", "planewave"):
+                raise ValueError(
+                    f"backend must be 'fdfd' or 'planewave', got "
+                    f"{self.backend!r}")
+
+            def solve(pol):
+                if self.backend == "fdfd":
+                    return bloch_bands_2d(
+                        eps, dx, dx, 0.0, 0.0, self.num_bands, pol,
+                        differentiable=self.differentiable,
+                        eps_te=self._eps_te, return_vectors=True,
+                        target_freq=self.target_freq,
+                        lattice=(a1, a2), k_frac=(k1, k2))
+                from .planewave import (planewave_bands_2d,
+                                        reciprocal_k_to_cartesian)
+                eps_pw = (self._eps_diag[2] if pol == "tm"
+                          else np.asarray(eps.cpu()))
+                try:
+                    return planewave_bands_2d(
+                        eps_pw, a1, a2,
+                        reciprocal_k_to_cartesian((k1, k2), a1, a2),
+                        self.num_bands, pol,
+                        eps_te=self._pw_eps_te(),
+                        differentiable=self.differentiable,
+                        target_freq=self.target_freq, return_vectors=True)
+                except ValueError as exc:
+                    if "DENSE_MAX" not in str(exc):
+                        raise
+                    raise NotImplementedError(
+                        f"the planewave backend cannot take this case: "
+                        f"{exc}\n\nSet ms.backend = \"fdfd\" to solve it "
+                        f"with the finite-difference backend, which is "
+                        f"matrix-free and has no such limit.") from exc
+
+            if self._parity == NO_PARITY:
+                # 2D no-parity is the UNION of the two polarizations. They
+                # decouple completely in a z-invariant structure, so there
+                # is no third operator to solve: run both and merge by
+                # frequency. This is what makes a "complete" 2D gap -- a
+                # gap in the union -- computable, which is the whole point
+                # of run() in MPB's tutorial.
+                ft, vt = solve("tm")
+                fe, ve = solve("te")
+                merged = ([(float(f), "tm", i) for i, f in enumerate(ft)]
+                          + [(float(f), "te", i) for i, f in enumerate(fe)])
+                merged.sort(key=lambda r: r[0])
+                merged = merged[:self.num_bands]
+                src = {"tm": (ft, vt), "te": (fe, ve)}
+                freqs = [src[pol][0][i] for _, pol, i in merged]
+                vecs = np.stack([src[pol][1][:, i] for _, pol, i in merged],
+                                axis=1)
+                self._band_pol = [pol for _, pol, _ in merged]
+            else:
+                pol = "te" if self._parity == EVEN_Z else "tm"
+                freqs, vecs = solve(pol)
+                self._band_pol = [pol] * len(freqs)
             # keep what the field getters need: the modes, their angular
             # frequencies, the k they belong to, and the very difference
             # operators the eigensolve used -- rebuilding those from k in
@@ -188,6 +237,7 @@ class BackendMixin:
             self._vecs = vecs
             self._omegas = np.array([2 * math.pi * float(f) for f in freqs])
             self._kc = kc
+            self._k_frac = (k1, k2)
             gx, gy, _, _ = lattice_gradients(a1, a2, nx, ny, k1, k2)
             self._dxf, self._dyf = gx, gy
             # keep the tensor under differentiable=True: ms.freqs is the
@@ -200,6 +250,7 @@ class BackendMixin:
         # rather than leaving a stale set from an earlier 2D run
         self._vecs = self._omegas = None
         self._dxf = self._dyf = None
+        self._band_pol = None
         self._kc = kc
         n_zero = self._zero_bands_at_gamma(kc)
         fmax = self.fmax

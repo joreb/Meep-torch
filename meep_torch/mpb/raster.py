@@ -35,7 +35,40 @@ from ..mp.material import Medium
 from ..mp.vec import Vector3
 
 __all__ = ["lattice_matrix", "frac_min_image", "cell_centres",
-           "object_mask_2d", "rasterize_2d", "RasterMixin"]
+           "object_mask_2d", "rasterize_2d", "eps_diag_of",
+           "RasterMixin"]
+
+
+def eps_diag_of(material):
+    """``(exx, eyy, ezz)`` of a Medium, for the 2D mpb rasterizer.
+
+    Reads ``epsilon_diag`` directly instead of going through
+    ``Medium.resolve()``. resolve() is the mp FDTD shim's entry point and
+    rejects an anisotropic diagonal outright ("the core engine takes an
+    in-plane tensor directly"), which is correct there and wrong here:
+    MPB's own tutorial builds a complete 2D gap out of exactly such a
+    material (rods epsilon_diag=(1,1,12) in a background of (12,12,1)).
+
+    An isotropic Medium returns three equal values, so the caller needs no
+    special case and the scalar path is unchanged bit for bit.
+    """
+    off = getattr(material, "epsilon_offdiag", None)
+    if off is not None and (float(off.x) or float(off.y) or float(off.z)):
+        raise NotImplementedError(
+            f"epsilon_offdiag {off} is not supported: the 2D operators are "
+            f"built from a DIAGONAL epsilon (ezz for TM, (exx, eyy) for "
+            f"TE). An off-diagonal term couples the two polarizations and "
+            f"needs the full vector operator")
+    if getattr(material, "E_susceptibilities", None):
+        raise NotImplementedError(
+            "dispersive materials are not supported by ModeSolver: the "
+            "eigenproblem is linear in omega^2 and a frequency-dependent "
+            "epsilon makes it nonlinear")
+    if getattr(material, "material", None) is not None:
+        raise NotImplementedError(
+            "material functions are not supported by ModeSolver")
+    d = material.epsilon_diag
+    return float(d.x), float(d.y), float(d.z)
 
 
 def _eps_of(material):
@@ -106,30 +139,35 @@ def object_mask_2d(obj, X, Y, a1, a2, centre_shift):
 
 
 def rasterize_2d(a1, a2, nu: int, nv: int, geometry, geometry_center,
-                 default_material, eps_of, supersample: int = 4):
+                 default_material, supersample: int = 4):
     """Supersampled coverage epsilon on the (possibly oblique) cell.
 
     LAST-listed object wins, which is meep's and MPB's documented rule.
-    Returns ``(eps, blocks)``: the coverage average, and the raw
-    supersampled block array a caller can feed to the Kottke TE blend.
+    Returns ``(eps3, blocks3)``, each carrying the three DIAGONAL
+    components on axis 0: ``eps3`` is the coverage average per component,
+    ``blocks3`` the raw supersampled array a caller can feed to the Kottke
+    TE blend. An isotropic structure gives three identical components, so
+    the scalar case is the general one with nothing special about it.
     """
     X, Y = cell_centres(a1, a2, nu, nv, supersample)
+    fine = np.empty((3,) + X.shape)
     if callable(default_material) and not hasattr(default_material, "resolve"):
-        from ..mp.vec import Vector3
-        fine = np.empty(X.shape)
-        it = np.nditer(fine, flags=["multi_index"])
+        it = np.nditer(X, flags=["multi_index"])
         for _ in it:
             m = it.multi_index
-            fine[m] = eps_of(default_material(Vector3(X[m], Y[m], 0.0)))
+            fine[(slice(None),) + m] = eps_diag_of(
+                default_material(Vector3(X[m], Y[m], 0.0)))
     else:
-        fine = np.full(X.shape, eps_of(default_material))
+        fine[:] = np.asarray(eps_diag_of(default_material))[:, None, None]
 
     for obj in geometry:
-        fine[object_mask_2d(obj, X, Y, a1, a2, geometry_center)] = \
-            eps_of(obj.material)
+        mask = object_mask_2d(obj, X, Y, a1, a2, geometry_center)
+        vals = eps_diag_of(obj.material)
+        for c in range(3):
+            fine[c][mask] = vals[c]
 
-    blocks = fine.reshape(nu, supersample, nv, supersample)
-    return blocks.mean(axis=(1, 3)), blocks
+    blocks3 = fine.reshape(3, nu, supersample, nv, supersample)
+    return blocks3.mean(axis=(2, 4)), blocks3
 
 
 class RasterMixin:
@@ -140,6 +178,20 @@ class RasterMixin:
     its own orthogonality guard; 2D goes through the lattice-coordinate
     path in this module.
     """
+
+    def _pw_eps_te(self):
+        """The TE epsilon pair the planewave operator should use.
+
+        Kottke's blended diagonal is a FINITE-DIFFERENCE smoothing: it
+        belongs on the staggered edges of a Yee-like grid, not in a
+        spectral operator whose basis already resolves the interface. So
+        the planewave backend gets the plain per-component coverage
+        averages -- None (scalar eps) for an isotropic structure, the
+        (exx, eyy) pair for an anisotropic one.
+        """
+        if getattr(self, "_isotropic", True):
+            return None
+        return (self._eps_diag[0], self._eps_diag[1])
 
     def _rasterize_epsilon(self):
         """Supersampled coverage eps over the unit cell (min-image periodic),
@@ -257,17 +309,34 @@ class RasterMixin:
                 f"anisotropic grid cells (|a1|/nu = {du:.6g} vs |a2|/nv = "
                 f"{dv:.6g}): resolution*size differs across the lattice "
                 f"axes, which the Bloch-FDTD backend does not support")
-        eps, blocks = rasterize_2d(a1, a2, nu, nv, self.geometry,
-                                   self.geometry_center,
-                                   self.default_material, _eps_of,
-                                   supersample=self.supersample)
+        eps3, blocks3 = rasterize_2d(a1, a2, nu, nv, self.geometry,
+                                     self.geometry_center,
+                                     self.default_material,
+                                     supersample=self.supersample)
+        exx, eyy, ezz = eps3
         b1, b2 = dual_vectors(a1, a2)
-        # Kottke blends an interface normal against the cartesian axes, so
-        # it is only meaningful when the cell axes ARE the cartesian ones.
-        # Oblique falls back to scalar eps for TE, which costs an order of
-        # convergence on a staircased boundary and is stated in the task.
-        self._eps_te = (blend_te_supersampled(blocks)
-                        if abs(float(b1 @ b2)) < 1e-12 else None)
+        orthogonal = abs(float(b1 @ b2)) < 1e-12
+        isotropic = (np.allclose(exx, ezz, rtol=0, atol=1e-12)
+                     and np.allclose(eyy, ezz, rtol=0, atol=1e-12))
+        # TE takes the in-plane pair, TM the axial component. Three ways to
+        # get the pair, in decreasing accuracy and increasing generality:
+        if isotropic and orthogonal:
+            # Kottke subpixel smoothing. It blends an interface normal
+            # against the CARTESIAN axes and assumes a scalar contrast, so
+            # it needs both conditions -- and it is what the rectangular
+            # goldens were measured with, so this branch must stay first.
+            self._eps_te = blend_te_supersampled(blocks3[2])
+        elif isotropic:
+            # oblique + isotropic: scalar eps, ~1st order on a staircase
+            self._eps_te = None
+        else:
+            # anisotropic: per-component coverage average. Kottke has no
+            # meaning here -- there is no single contrast to blend across
+            # the interface when the two sides differ per component.
+            self._eps_te = (exx, eyy)
         self._a1, self._a2 = a1, a2
-        return torch.as_tensor(eps, dtype=torch.float64), du
+        self._eps_diag = eps3
+        self._isotropic = isotropic
+        return torch.as_tensor(ezz, dtype=torch.float64), du
+
 
