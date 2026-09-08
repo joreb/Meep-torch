@@ -54,6 +54,14 @@ from .parity import EVEN_Z, ODD_Z
 from ..mp.vec import Vector3
 from ..mp.verbosity_mgr import verbosity
 
+_FIELDS_MSG = ("{} is not ported. The 2D eigensolve does export mode "
+               "fields now (get_efield/get_dfield/get_hfield/get_bfield, "
+               "compute_field_energy, compute_energy_in_objects, "
+               "fix_field_phase, output_*), so this one is missing for "
+               "its own reason rather than for want of eigenvectors -- "
+               "see wiki/tasks/port_mpb-eigensolver.md")
+
+
 class FieldsMixin(OutputMixin):
     """Mode fields and energies for a 2D ModeSolver.
 
@@ -421,3 +429,26 @@ class FieldsMixin(OutputMixin):
             self._vecs[:, self._curfield_band - 1] *= rot
         return self._curfield
 
+    # -- not ported ---------------------------------------------------------
+    # These sit next to the field getters that ARE backed, so the contrast
+    # is visible in one place: everything above comes from the 2D
+    # eigensolve's vectors, everything here is missing for a reason of its
+    # own rather than for want of eigenvectors.
+
+    def _no_fields(self, name):
+        raise NotImplementedError(_FIELDS_MSG.format(name))
+
+    def get_charge_density(self, which_band, bloch_phase=True):
+        self._no_fields("get_charge_density")
+
+    def get_poynting(self, which_band):
+        self._no_fields("get_poynting")
+
+    def get_eigenvectors(self, first_band, num_bands):
+        self._no_fields("get_eigenvectors")
+
+    def compute_group_velocities(self):
+        self._no_fields("compute_group_velocities")
+
+    def randomize_fields(self):
+        self._no_fields("randomize_fields")

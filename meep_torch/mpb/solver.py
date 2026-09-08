@@ -44,6 +44,7 @@ import time
 import numpy as np
 import torch
 
+from .array import MPBArray
 from .backends import BackendMixin
 from .fields import FieldsMixin
 from .parity import (EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z, PARITY_NAMES)
@@ -69,31 +70,6 @@ if not hasattr(verbosity, "mpb"):
 inf = math.inf
 
 _PARITY_NAMES = PARITY_NAMES
-
-_FIELDS_MSG = ("{} is not ported. The 2D eigensolve does export mode "
-               "fields now (mpb/fields.py: get_efield/get_dfield/"
-               "get_hfield/get_bfield, compute_field_energy, "
-               "compute_energy_in_objects, fix_field_phase, output_*), so "
-               "this one is missing for its own reason rather than for "
-               "want of eigenvectors -- see wiki/tasks/"
-               "port_mpb-eigensolver.md")
-
-
-class MPBArray(np.ndarray):
-    def __new__(cls, input_array, lattice, kpoint=None, bloch_phase=False):
-        obj = np.asarray(input_array).view(cls)
-        obj.lattice = lattice
-        obj.kpoint = kpoint
-        obj.bloch_phase = bloch_phase
-        return obj
-
-    def __array_finalize__(self, obj):
-        if obj is None:
-            return
-        self.lattice = getattr(obj, "lattice", None)
-        self.kpoint = getattr(obj, "kpoint", None)
-        self.bloch_phase = getattr(obj, "bloch_phase", False)
-
 
 class ModeSolver(FieldsMixin, BackendMixin, RasterMixin):
     # Bloch-FDTD backend knobs (meep-torch extensions, not meep API):
@@ -502,27 +478,3 @@ class ModeSolver(FieldsMixin, BackendMixin, RasterMixin):
         self.is_negative_epsilon_ok = True
         self.target_freq = 1 / inf
 
-    # -- fields ------------------------------------------------------------
-    # get_efield/get_dfield/get_hfield/get_bfield, multiply_bloch_phase,
-    # fix_field_phase, compute_field_energy, compute_energy_in_objects,
-    # get_dpwr/get_bpwr/get_tot_pwr and the output_* writers come from
-    # FieldsMixin (mpb/fields.py), backed by the 2D eigensolve's vectors.
-    # What is left below genuinely has no backing yet.
-
-    def _no_fields(self, name):
-        raise NotImplementedError(_FIELDS_MSG.format(name))
-
-    def get_charge_density(self, which_band, bloch_phase=True):
-        self._no_fields("get_charge_density")
-
-    def get_poynting(self, which_band):
-        self._no_fields("get_poynting")
-
-    def get_eigenvectors(self, first_band, num_bands):
-        self._no_fields("get_eigenvectors")
-
-    def compute_group_velocities(self):
-        self._no_fields("compute_group_velocities")
-
-    def randomize_fields(self):
-        self._no_fields("randomize_fields")

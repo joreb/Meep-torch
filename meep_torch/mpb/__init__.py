@@ -18,9 +18,10 @@ from .band_functions import (apply_band_func, apply_band_func_thunk,
                              output_efield_z, output_epsilon, output_hfield,
                              output_hfield_x, output_hfield_y, output_hfield_z,
                              output_tot_pwr)
+from .array import MPBArray
 from .mpb_data import MPBData, map_data
-from .solver import (EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z, ModeSolver,
-                     MPBArray)
+from .solver import (EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z,
+                     ModeSolver)
 
 
 def with_hermitian_epsilon():
