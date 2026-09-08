@@ -109,9 +109,20 @@ def test_m_without_cylindrical_names_the_fix():
         mp.Simulation(resolution=10, cell_size=mp.Vector3(2, 2), m=1)
 
 
-def test_force_complex_fields_still_raises_outside_cylindrical():
-    """The cylindrical exemption must not switch the guard off everywhere:
-    BOR fields are complex by construction, cartesian ones are not."""
+def test_force_complex_fields_is_2d_and_cylindrical_only():
+    """2D cartesian carries a companion imaginary field set now -- it is
+    what solve_cw solves for -- so force_complex_fields is accepted there
+    as well as in cylindrical, where BOR fields are complex by
+    construction. 1D and 3D still raise: those steppers have no companion
+    set.
+
+    This asserted the opposite until 2026-09-08. It was written when the
+    guard was blanket, and the solve_cw port (e2eb7ab) superseded it; the
+    failure went unnoticed for a day because the work was gated on
+    `pytest tests/mp_parity` and this test lives in tests/examples.
+    """
+    assert mp.Simulation(resolution=10, cell_size=mp.Vector3(2, 2),
+                         force_complex_fields=True).force_complex_fields
     with pytest.raises(NotImplementedError, match="force_complex_fields"):
-        mp.Simulation(resolution=10, cell_size=mp.Vector3(2, 2),
-                      force_complex_fields=True)
+        mp.Simulation(resolution=10, cell_size=mp.Vector3(2, 2, 2),
+                      dimensions=3, force_complex_fields=True)
