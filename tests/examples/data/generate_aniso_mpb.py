@@ -24,6 +24,13 @@ RES, NB = 32, 8
 # Gamma/M/K list and then immediately overwrites it with
 # `mp.interpolate(4, k_points)`, where k_points is still the square one.
 # That quirk is upstream's; reproduce the state, not the intent.
+#
+# One deliberate difference from the tutorial: it interpolates the ALREADY
+# interpolated k_points a second time, so its path is 76 points where this
+# fixture uses 16. That is fine for a parity gate -- the test feeds ref["k"]
+# to both engines, so it is like-for-like -- and the gap barely moves with
+# the density (fdfd reads 25.639% on both). It is NOT the tutorial's path,
+# so do not read the fixture's numbers as the tutorial's.
 TRI = mp.Lattice(size=mp.Vector3(1, 1),
                  basis1=mp.Vector3(math.sqrt(3) / 2, 0.5),
                  basis2=mp.Vector3(math.sqrt(3) / 2, -0.5))
