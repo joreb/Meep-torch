@@ -116,10 +116,33 @@ def cell_centres(a1, a2, nu: int, nv: int, supersample: int = 1):
     return A[0, 0] * U + A[0, 1] * V, A[1, 0] * U + A[1, 1] * V
 
 
-def object_mask_2d(obj, X, Y, a1, a2, centre_shift):
-    """Boolean mask of sample points inside ``obj`` (min-image periodic)."""
+def object_mask_2d(obj, X, Y, a1, a2, centre_shift, basis=None):
+    """Boolean mask of sample points inside ``obj`` (min-image periodic).
+
+    ``basis`` is the pair of UNIT lattice basis vectors. MPB reads a
+    geometric object's ``center`` in LATTICE coordinates -- ``center`` is
+    measured along basis1 and basis2, not along x and y -- so it has to be
+    mapped before it can be compared with cartesian sample points.
+
+    Two things make this easy to get wrong, and it was:
+
+      - for an identity basis the two readings coincide, so every square
+        and rectangular fixture in the repo agrees either way;
+      - it scales with the BASIS only, not with ``Lattice.size``. Measured
+        against meep.mpb: on ``size=(2,2)`` with an identity basis,
+        ``center=(0.25, 0)`` lands at cartesian (0.25, 0), not (0.5, 0);
+        on the triangular basis ``center=(1/6, 1/6)`` lands at
+        (1/6)(b1 + b2) = (0.2887, 0).
+
+    ``basis=None`` keeps the old cartesian reading, for callers with no
+    lattice to hand.
+    """
     c = obj.center - centre_shift
-    dx, dy = frac_min_image(a1, a2, (X - float(c.x), Y - float(c.y)))
+    cx, cy = float(c.x), float(c.y)
+    if basis is not None:
+        b1, b2 = basis
+        cx, cy = (cx * b1[0] + cy * b2[0], cx * b1[1] + cy * b2[1])
+    dx, dy = frac_min_image(a1, a2, (X - cx, Y - cy))
     if isinstance(obj, (Cylinder, Sphere)):
         return dx ** 2 + dy ** 2 < obj.radius ** 2
     if isinstance(obj, Block):
@@ -139,7 +162,7 @@ def object_mask_2d(obj, X, Y, a1, a2, centre_shift):
 
 
 def rasterize_2d(a1, a2, nu: int, nv: int, geometry, geometry_center,
-                 default_material, supersample: int = 4):
+                 default_material, supersample: int = 4, basis=None):
     """Supersampled coverage epsilon on the (possibly oblique) cell.
 
     LAST-listed object wins, which is meep's and MPB's documented rule.
@@ -161,7 +184,7 @@ def rasterize_2d(a1, a2, nu: int, nv: int, geometry, geometry_center,
         fine[:] = np.asarray(eps_diag_of(default_material))[:, None, None]
 
     for obj in geometry:
-        mask = object_mask_2d(obj, X, Y, a1, a2, geometry_center)
+        mask = object_mask_2d(obj, X, Y, a1, a2, geometry_center, basis)
         vals = eps_diag_of(obj.material)
         for c in range(3):
             fine[c][mask] = vals[c]
@@ -285,6 +308,18 @@ class RasterMixin:
                         if len(axes) == 2 else None)
         return torch.as_tensor(eps, dtype=torch.float64), d[0]
 
+    def _basis_vectors(self):
+        """The UNIT lattice basis vectors b1, b2 (no size scaling).
+
+        Object centres are measured along these; the CELL vectors a_i =
+        b_i * size_i are what the grid spans. Conflating the two is the
+        difference between a rod at (0.25, 0) and one at (0.5, 0) on a
+        size-2 cell.
+        """
+        lat = self.geometry_lattice
+        return ((float(lat.basis1.x), float(lat.basis1.y)),
+                (float(lat.basis2.x), float(lat.basis2.y)))
+
     def _lattice_vectors(self):
         """Cartesian a1, a2 of the 2D cell (rows of get_lattice)."""
         lat = self.get_lattice()
@@ -312,7 +347,8 @@ class RasterMixin:
         eps3, blocks3 = rasterize_2d(a1, a2, nu, nv, self.geometry,
                                      self.geometry_center,
                                      self.default_material,
-                                     supersample=self.supersample)
+                                     supersample=self.supersample,
+                                     basis=self._basis_vectors())
         exx, eyy, ezz = eps3
         b1, b2 = dual_vectors(a1, a2)
         orthogonal = abs(float(b1 @ b2)) < 1e-12

@@ -474,6 +474,36 @@ class ModeSolver(FieldsMixin, BackendMixin, RasterMixin):
         eps, _ = self._eps
         return MPBArray(eps.cpu().numpy(), self.get_lattice())
 
+    def get_epsilon_tensor(self, c1, c2, imag=0, inv=False):
+        """MPB get_epsilon_tensor: one component of the epsilon tensor.
+
+        ``c1``/``c2`` are 0/1/2 for x/y/z. The 2D operators are built from a
+        DIAGONAL epsilon, so every off-diagonal component is identically
+        zero and ``epsilon_offdiag`` raises at construction. ``imag`` is
+        accepted for signature parity and must be 0 --
+        ``with_hermitian_epsilon()`` is False here.
+
+        The diagonal is not three copies of ``get_epsilon()``: TE runs on
+        the in-plane pair, which is the Kottke-smoothed diagonal on an
+        isotropic rectangular cell and the per-component coverage average
+        on an anisotropic one, while TM runs on the axial component. This
+        is the one accessor that shows the structure each polarization
+        actually sees.
+        """
+        if imag:
+            raise NotImplementedError(
+                "imaginary epsilon: with_hermitian_epsilon() is False")
+        if not (0 <= c1 <= 2 and 0 <= c2 <= 2):
+            raise ValueError(f"tensor components are 0/1/2, got {c1}, {c2}")
+        ezz = np.asarray(self.get_epsilon())
+        if c1 != c2:
+            return MPBArray(np.zeros_like(ezz), self.get_lattice())
+        te = getattr(self, "_eps_te", None)
+        diag = ([np.asarray(te[0]), np.asarray(te[1]), ezz]
+                if te is not None else [ezz, ezz, ezz])
+        out = 1.0 / diag[c1] if inv else diag[c1]
+        return MPBArray(np.asarray(out), self.get_lattice())
+
     def allow_negative_epsilon(self):
         self.is_negative_epsilon_ok = True
         self.target_freq = 1 / inf

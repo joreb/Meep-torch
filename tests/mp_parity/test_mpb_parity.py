@@ -956,3 +956,48 @@ def test_oblique_fields_normalise_and_satisfy_faraday():
     inside = ms.compute_energy_in_objects(
         [Cylinder(0.2, material=Medium(epsilon=12))])
     assert 0.5 < inside < 1.0, inside
+
+
+def test_object_centres_are_lattice_coordinates():
+    """MPB reads a geometric object's `center` in LATTICE coordinates.
+
+    Gated on the honeycomb, which is the cheapest structure that can tell
+    the two readings apart: two rods at +-(1/6, 1/6) on the triangular
+    basis. Under the cartesian reading they land at +-(0.1667, 0.1667)
+    instead of +-(0.2887, 0) and the result is a different crystal that
+    still solves cleanly -- which is exactly why nothing caught it. Every
+    other fixture in the repo puts its objects at the origin, or on an
+    identity basis where the two readings coincide.
+
+    Measured against honey_rods_mpb.json: 0.74% worst at resolution 32,
+    the same order as the other oblique TM gates.
+
+    The mapping uses the UNIT basis vectors and does NOT scale with
+    Lattice.size -- checked against meep.mpb on size=(2,2) with an
+    identity basis, where center=(0.25, 0) stays at cartesian (0.25, 0).
+    """
+    ref = json.load(open(DATA / "honey_rods_mpb.json"))
+    rod = lambda c: Cylinder(ref["r"], center=c,
+                             material=Medium(epsilon=ref["eps"]))
+    ms = ModeSolver(geometry_lattice=TRI, resolution=32, num_bands=4,
+                    k_points=[Vector3()],
+                    geometry=[rod(Vector3(1 / 6, 1 / 6)),
+                              rod(Vector3(-1 / 6, -1 / 6))])
+    ms.run_tm()
+    got, want = list(ms.get_freqs()), ref["gamma"][:4]
+    worst = max(abs(g - w) / w for g, w in zip(got, want) if w > 1e-9)
+    print(f"honeycomb (off-origin rods, oblique basis): worst {worst:.4%}")
+    assert worst < 0.02, f"honeycomb bands off by {worst:.2%}"
+
+    # and the size scaling: an identity basis must be untouched by the map
+    sq = ModeSolver(geometry_lattice=Lattice(size=Vector3(2, 2)),
+                    resolution=16, num_bands=1, k_points=[Vector3(0.1)],
+                    geometry=[Cylinder(0.2, center=Vector3(0.25, 0),
+                                       material=Medium(epsilon=12))])
+    sq.init_params(ODD_Z, True)
+    eps = np.asarray(sq.get_epsilon())
+    nu = eps.shape[0]
+    # the rod centre sits a quarter of a UNIT basis vector from the origin,
+    # i.e. at cell fraction 0.25/2 = 0.125, not 0.25
+    col = int(round((0.125 + 0.5) * nu))
+    assert eps[col, nu // 2] > 6.0, "size=2 cell: centre scaled with size"

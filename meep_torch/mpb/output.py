@@ -150,19 +150,12 @@ class OutputMixin:
             f["data"] = data
             self._write_lattice(f)
             if t == "n":
-                zero = np.zeros_like(data)
-                # the TE operator runs on a smoothed DIAGONAL tensor when
-                # subpixel smoothing produced one, so xx/yy are not the
-                # scalar eps; writing the scalar into all three would
-                # misreport the structure the solver actually used
-                te = getattr(self, "_eps_te", None)
-                diag = ([np.asarray(te[0]), np.asarray(te[1]), data]
-                        if te is not None else [data, data, data])
+                # one source for the tensor, shared with get_epsilon_tensor:
+                # xx/yy are NOT the scalar eps when the TE operator runs on
+                # a smoothed or anisotropic diagonal
                 for inv, name in ((False, "epsilon"), (True, "epsilon_inverse")):
                     for c1 in range(3):
                         for c2 in range(c1, 3):
                             key = f"{name}.{_COMPONENTS[c1]}{_COMPONENTS[c2]}"
-                            if c1 != c2:
-                                f[key] = zero
-                            else:
-                                f[key] = 1.0 / diag[c1] if inv else diag[c1]
+                            f[key] = np.asarray(
+                                self.get_epsilon_tensor(c1, c2, inv=inv))

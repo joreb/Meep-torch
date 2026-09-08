@@ -358,7 +358,8 @@ class FieldsMixin(OutputMixin):
         X, Y = cell_centres(a1, a2, eps.shape[0], eps.shape[1])
         taken = np.zeros(eps.shape, dtype=bool)
         for obj in objs:
-            taken |= object_mask_2d(obj, X, Y, a1, a2, self.geometry_center)
+            taken |= object_mask_2d(obj, X, Y, a1, a2, self.geometry_center,
+                                    self._basis_vectors())
         return taken
 
     def compute_energy_in_objects(self, objs):
