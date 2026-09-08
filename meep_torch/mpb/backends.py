@@ -158,7 +158,7 @@ class BackendMixin:
     def _solve_k(self, k):
         eps, dx = self._eps
         kc = reciprocal_to_cartesian(Vector3(*k), self.geometry_lattice)
-        if len(self._active_axes()) == 2:
+        if len(self._active_axes()) in (1, 2):
             # 2D goes through the FDFD Bloch eigensolve: the N lowest
             # eigenvalues are complete and ordered, so band n is eigenvalue
             # n and there is no band-numbering step to get wrong. The
@@ -172,7 +172,9 @@ class BackendMixin:
             # basis, and kc . a_i == 2 pi k_i (checked), so the fractional
             # components are the Bloch wrap phases directly and no
             # cartesian round trip is needed.
-            k1, k2 = float(k[0]), float(k[1])
+            # a 1D cell has no second reciprocal component to walk
+            k1 = float(k[0])
+            k2 = float(k[1]) if len(self._active_axes()) == 2 else 0.0
 
             if self.backend not in ("fdfd", "planewave"):
                 raise ValueError(
@@ -208,7 +210,16 @@ class BackendMixin:
                         f"with the finite-difference backend, which is "
                         f"matrix-free and has no such limit.") from exc
 
-            if self._parity == NO_PARITY:
+            if self._parity == NO_PARITY and len(self._active_axes()) == 1:
+                # 1D: TE and TM are degenerate -- nothing distinguishes the
+                # two in-plane directions when the structure varies along
+                # one axis -- so the union would report every band TWICE.
+                # meep.mpb reports each once (bragg_sine_mpb.json), and the
+                # harminv path this replaced called the same case
+                # "1D degenerate TM". Solve TM and label it.
+                freqs, vecs = solve("tm")
+                self._band_pol = ["tm"] * len(freqs)
+            elif self._parity == NO_PARITY:
                 # 2D no-parity is the UNION of the two polarizations. They
                 # decouple completely in a z-invariant structure, so there
                 # is no third operator to solve: run both and merge by

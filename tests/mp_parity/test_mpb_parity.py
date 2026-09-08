@@ -68,15 +68,15 @@ def test_unbacked_paths_raise():
     for p in (mp_mpb.EVEN_Y, mp_mpb.ODD_Y, mp_mpb.EVEN_Y + mp_mpb.EVEN_Z):
         with pytest.raises(NotImplementedError):
             ms.run_parity(p, True)
-    # 2D DOES export fields now; the field getters raise on the 1D/3D
-    # harminv backend instead, which recovers frequencies from a time
-    # series and has no eigenvectors to hand out.
-    ms1 = ModeSolver(resolution=8, num_bands=1, k_points=[Vector3(0.1)],
-                     geometry_lattice=Lattice(size=Vector3(1, 0, 0)),
+    # 1D and 2D both export fields now (both go through the FDFD Bloch
+    # eigensolve). Only 3D is still harminv, which recovers frequencies
+    # from a time series and has no eigenvectors to hand out.
+    ms3 = ModeSolver(resolution=6, num_bands=1, k_points=[Vector3(0.1)],
+                     geometry_lattice=Lattice(size=Vector3(1, 1, 1)),
                      geometry=[])
-    ms1.run_tm()
+    ms3.run()
     with pytest.raises(NotImplementedError, match="eigenvectors"):
-        ms1.get_efield(1)
+        ms3.get_efield(1)
     for call in (lambda: ms.get_charge_density(1), lambda: ms.get_poynting(1),
                  lambda: ms.get_eigenvectors(1, 1),
                  lambda: ms.compute_group_velocities(),
@@ -1001,3 +1001,72 @@ def test_object_centres_are_lattice_coordinates():
     # i.e. at cell fraction 0.25/2 = 0.125, not 0.25
     col = int(round((0.125 + 0.5) * nu))
     assert eps[col, nu // 2] > 6.0, "size=2 cell: centre scaled with size"
+
+
+def test_1d_lattice_goes_through_the_eigensolve_with_fields():
+    """A 1D cell is the same eigenproblem with one transverse sample.
+
+    It used to route to Bloch-FDTD + harminv, which recovers frequencies
+    from a time series and has NO eigenvectors, so every field getter
+    raised -- `ms.run_tm(mpb.output_hfield_y)`, which is what the upstream
+    Bragg example does, could not run at all. Routing it through the FDFD
+    eigensolve buys complete ordered bands and the fields.
+
+    Gated against bragg_mpb.json, the quarter-wave stack. The structure is
+    a Cylinder along X with radius=inf and finite height -- a SLAB -- which
+    is its own check: testing only the radius fills the cell with the high
+    index and solves a uniform medium that still produces plausible bands.
+    """
+    from meep_torch import mpb as _mpb
+    ref = json.load(open(DATA / "bragg_mpb.json"))
+    n_lo, n_hi = ref["n_lo"], ref["n_hi"]
+    w_hi = n_lo / (n_hi + n_lo)
+    ms = ModeSolver(num_bands=3, resolution=32,
+                    k_points=[Vector3(k) for k in ref["kx"]],
+                    geometry_lattice=Lattice(size=Vector3(1)),
+                    default_material=Medium(index=n_lo),
+                    geometry=[Cylinder(material=Medium(index=n_hi),
+                                       center=Vector3(), axis=Vector3(1),
+                                       radius=math.inf, height=w_hi)])
+    ms.run_tm()
+
+    eps = np.asarray(ms.get_epsilon())
+    assert eps.shape[1] == 1                       # one transverse sample
+    assert float((eps > 5).mean()) == pytest.approx(w_hi, abs=0.02), (
+        "the slab must occupy the quarter-wave fraction, not the whole cell")
+
+    worst = max(abs(g - w) / w
+                for i in range(len(ref["kx"]))
+                for g, w in zip(ms.all_freqs[i], ref["bands"][i][:3]))
+    print(f"1D Bragg vs mpb: worst {worst:.4%}")
+    assert worst < 0.02
+
+    # the fields the harminv path could never provide
+    E = ms.get_efield(1)
+    H = ms.get_hfield(1)
+    assert E.shape == (32, 1, 1, 3) and H.shape == (32, 1, 1, 3)
+    assert np.abs(H[..., 0, 1]).max() > 0.0        # Hy, what output_hfield_y writes
+    ms.get_dfield(1)
+    assert ms.compute_field_energy()[0] == pytest.approx(1.0, abs=1e-8)
+
+
+def test_1d_no_parity_is_not_doubled():
+    """TE and TM are degenerate in 1D, so the no-parity union would report
+    every band twice. meep.mpb reports each once."""
+    ref = json.load(open(DATA / "bragg_sine_mpb.json"))
+
+    def eps_func(p):
+        return Medium(index=ref["index_min"] + 0.5
+                      * (ref["index_max"] - ref["index_min"])
+                      * (1 + math.cos(2 * math.pi * p.x)))
+
+    ms = ModeSolver(num_bands=3, resolution=32, k_points=[Vector3(0.3)],
+                    geometry_lattice=Lattice(size=Vector3(1)),
+                    default_material=eps_func)
+    ms.run()
+    got = list(ms.get_freqs())
+    want = ref["bands"][ref["kx"].index(0.3)][:3]
+    assert len(set(round(f, 9) for f in got)) == 3, f"doubled bands: {got}"
+    worst = max(abs(g - w) / w for g, w in zip(got, want))
+    print(f"1D sine no-parity vs mpb: worst {worst:.4%}")
+    assert worst < 0.02

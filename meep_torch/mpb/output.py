@@ -38,7 +38,8 @@ class OutputMixin:
         """MPB parity_string (mpb/mpb.c): a 2D run says "tm"/"te", a 3D one
         "zodd"/"zeven". This is the ``.tm``/``.te`` suffix on output files.
         """
-        two_d = len(self._active_axes()) == 2
+        # MPB's rule is nz == 1, which a 1D cell also satisfies
+        two_d = len(self._active_axes()) <= 2
         if self._parity == EVEN_Z:
             return "te" if two_d else "zeven"
         if self._parity == ODD_Z:

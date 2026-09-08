@@ -143,8 +143,32 @@ def object_mask_2d(obj, X, Y, a1, a2, centre_shift, basis=None):
         b1, b2 = basis
         cx, cy = (cx * b1[0] + cy * b2[0], cx * b1[1] + cy * b2[1])
     dx, dy = frac_min_image(a1, a2, (X - cx, Y - cy))
-    if isinstance(obj, (Cylinder, Sphere)):
+    if isinstance(obj, Sphere):
         return dx ** 2 + dy ** 2 < obj.radius ** 2
+    if isinstance(obj, Cylinder):
+        # A cylinder is |d.axis| < height/2 AND |d_perp| < radius. The
+        # default axis is z, which is out of the 2D plane: then the
+        # parallel part is identically 0, the height test is vacuous, and
+        # this reduces to the disc every other example uses.
+        #
+        # Written out because MPB's 1D Bragg stack is a cylinder along X
+        # with radius=inf and finite height -- a SLAB. Testing only the
+        # radius made that fill the whole cell with the high index and
+        # solve a uniform medium, silently: the bands come back, they are
+        # just a different structure's.
+        ax = np.array([float(obj.axis.x), float(obj.axis.y)])
+        nrm = float(np.hypot(*ax))
+        if nrm > 0:
+            ax = ax / nrm
+            d_par = dx * ax[0] + dy * ax[1]
+            d_perp2 = np.clip(dx ** 2 + dy ** 2 - d_par ** 2, 0.0, None)
+        else:                       # axis out of plane: no parallel extent
+            d_par = np.zeros_like(dx)
+            d_perp2 = dx ** 2 + dy ** 2
+        inside = d_perp2 < obj.radius ** 2
+        if math.isfinite(obj.height):
+            inside = inside & (np.abs(d_par) < obj.height / 2)
+        return inside
     if isinstance(obj, Block):
         from ..mp.vec import Vector3
         if (obj.e1 != Vector3(1, 0, 0) or obj.e2 != Vector3(0, 1, 0)
@@ -238,8 +262,8 @@ class RasterMixin:
         if not axes:
             raise ValueError("geometry_lattice.size has no nonzero component")
         gs = self._adjust_grid_size()
-        if len(axes) == 2:
-            return self._rasterize_lattice_2d(gs)
+        if len(axes) in (1, 2):
+            return self._rasterize_lattice_2d(gs, axes)
         # 1D/3D still rasterize on a cartesian box, which silently solves a
         # sheared structure on an oblique basis. 2D goes through the
         # lattice-coordinate path above and needs no such guard.
@@ -326,7 +350,7 @@ class RasterMixin:
         return (float(lat[0][0]), float(lat[0][1])), \
                (float(lat[1][0]), float(lat[1][1]))
 
-    def _rasterize_lattice_2d(self, gs):
+    def _rasterize_lattice_2d(self, gs, axes=(0, 1)):
         """2D epsilon on the lattice cell, oblique or not (mpb/raster.py).
 
         The grid is uniform in fractional coordinates, so a triangular cell
@@ -337,8 +361,17 @@ class RasterMixin:
         from .raster import rasterize_2d
         a1, a2 = self._lattice_vectors()
         nu, nv = int(gs[0]), int(gs[1])
+        if len(axes) == 1:
+            # A 1D lattice is the same eigenproblem with ONE sample across
+            # the transverse axis: the structure cannot vary there and
+            # k_y = 0, so the v-difference operator is identically zero and
+            # A collapses to -d2/dx2. Routing it here rather than to
+            # harminv buys complete, correctly ordered bands AND the
+            # eigenvectors the field getters need -- harminv has neither.
+            nv = 1
+            a2 = (0.0, 1.0)          # unit transverse cell; |a1 x a2| = Lx
         du = math.hypot(*a1) / nu
-        dv = math.hypot(*a2) / nv
+        dv = math.hypot(*a2) / nv if len(axes) == 2 else du
         if abs(du - dv) > 1e-9 * max(du, dv):
             raise NotImplementedError(
                 f"anisotropic grid cells (|a1|/nu = {du:.6g} vs |a2|/nv = "
@@ -356,7 +389,12 @@ class RasterMixin:
                      and np.allclose(eyy, ezz, rtol=0, atol=1e-12))
         # TE takes the in-plane pair, TM the axial component. Three ways to
         # get the pair, in decreasing accuracy and increasing generality:
-        if isotropic and orthogonal:
+        if len(axes) == 1:
+            # 1D: TE and TM are degenerate (nothing distinguishes the two
+            # in-plane directions when the structure varies along one
+            # axis), and Kottke has no transverse extent to blend across.
+            self._eps_te = None
+        elif isotropic and orthogonal:
             # Kottke subpixel smoothing. It blends an interface normal
             # against the CARTESIAN axes and assumes a scalar contrast, so
             # it needs both conditions -- and it is what the rectangular
