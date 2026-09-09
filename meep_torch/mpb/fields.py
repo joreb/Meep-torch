@@ -451,5 +451,14 @@ class FieldsMixin(OutputMixin):
     def compute_group_velocities(self):
         self._no_fields("compute_group_velocities")
 
+    def compute_group_velocity_component(self, direction):
+        self._no_fields("compute_group_velocity_component")
+
+    def compute_yparities(self):
+        self._no_fields("compute_yparities")
+
+    def compute_zparities(self):
+        self._no_fields("compute_zparities")
+
     def randomize_fields(self):
         self._no_fields("randomize_fields")

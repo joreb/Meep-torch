@@ -279,10 +279,11 @@ class Backend3DMixin:
 
     def _compute_parities(self, axis: int):
         if getattr(self, "_vecs3d", None) is None:
-            raise RuntimeError(
-                "no 3D eigenvectors available: parities are an expectation "
-                "value on the mode, so a planewave-backend run has to have "
-                "happened first")
+            # Not a 3D planewave run: hand back to the 2D layer so its own
+            # NotImplementedError stands. Raising a different exception type
+            # here would quietly change the contract for every 2D caller.
+            return super().compute_yparities() if axis == 1 \
+                else super().compute_zparities()
         return list(MirrorParity(self._op3d, axis=axis,
                                  even=True).expectation(self._vecs3d))
 
@@ -296,7 +297,7 @@ class Backend3DMixin:
         ``omega = 0`` report 0 rather than dividing by it.
         """
         if getattr(self, "_vecs3d", None) is None:
-            raise RuntimeError("no 3D eigenvectors available: run first")
+            return super().compute_group_velocity_component(direction)
         op = self._op3d
         d = np.asarray([float(direction.x), float(direction.y),
                         float(direction.z)]
@@ -324,6 +325,8 @@ class Backend3DMixin:
 
     def compute_group_velocities(self):
         """One ``Vector3`` per band, in the lattice's own reciprocal basis."""
+        if getattr(self, "_vecs3d", None) is None:
+            return super().compute_group_velocities()
         from ..mp.vec import Vector3
         a1, a2, a3 = self._lattice_3d()
         B, _ = reciprocal_duals_3d(a1, a2, a3)

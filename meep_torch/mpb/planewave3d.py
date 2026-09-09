@@ -301,7 +301,7 @@ def assemble_dense_3d(eps_inv, K: np.ndarray, grid_shape) -> np.ndarray:
     return 0.5 * (theta + theta.conj().T)
 
 
-def _eig_residuals(op: "ThetaOperator", vals, vecs) -> np.ndarray:
+def _eig_residuals(op: "ThetaOperator", vals, vecs, scale=None) -> np.ndarray:
     """Relative ``||Theta v - lambda v|| / lambda`` per column.
 
     The only honest convergence statement. scipy's LOBPCG reports its own
@@ -319,7 +319,16 @@ def _eig_residuals(op: "ThetaOperator", vals, vecs) -> np.ndarray:
     # per-band denominator turns their round-off residual into 1e+11 and
     # fails a converged solve. The zero bands are physical and their
     # eigenvectors are as accurate as any other.
-    scale = max(float(np.max(np.abs(vals))) if vals.size else 0.0, 1e-300)
+    # The scale comes from the whole solved BLOCK, not from the bands being
+    # returned. At Gamma on an empty lattice every requested band can be one
+    # of the two omega = 0 modes, and a scale taken from those alone is zero
+    # -- the normalisation then divides round-off by 1e-300 and fails a
+    # perfectly converged solve (measured 4.2e+04). Falling back to the
+    # operator's own magnitude keeps the criterion meaningful there.
+    if scale is None:
+        scale = float(np.max(np.abs(vals))) if vals.size else 0.0
+    if not scale > 0:
+        scale = float(np.max(np.sum(op.K ** 2, axis=1))) or 1.0
     return np.linalg.norm(R, axis=0) / scale
 
 
@@ -344,7 +353,7 @@ def theta_matvec_residual(eps_inv, K, grid_shape, n_probe: int = 4,
 
 # --- public API -----------------------------------------------------------
 
-def _freqs_3d(vals) -> np.ndarray:
+def _freqs_3d(vals, scale=None) -> np.ndarray:
     """omega^2 -> f = omega/2pi, sharing the 2D module's zero/negative rule.
 
     An eigenvalue below ``-1e-12 * max`` is not round-off: the operator is
@@ -354,7 +363,14 @@ def _freqs_3d(vals) -> np.ndarray:
     ``omega = 0`` band, which is what clamping would do.
     """
     vals = np.asarray(vals, dtype=float)
-    hi = max(float(vals.max()) if vals.size else 0.0, 1e-300)
+    # Same scaling argument as the residual gate: the threshold that
+    # separates "round-off zero" from "indefinite operator" has to come
+    # from the operator, not from the bands being returned. At Gamma with
+    # num_bands = 1 the only returned band IS the zero mode, and a
+    # self-scaled threshold turned its -7.1e-15 into a hard error.
+    if scale is None:
+        scale = float(vals.max()) if vals.size else 0.0
+    hi = max(float(scale), 1e-300)
     if vals.size and vals.min() < -1e-12 * hi:
         raise ValueError(
             f"operator is indefinite (eigenvalue {vals.min():.4g}): the "
@@ -438,7 +454,9 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
     order = np.argsort(np.real(vals))
     vals, vecs = np.real(vals)[order], vecs[:, order]
 
-    res = _eig_residuals(op, vals[:num_bands], vecs[:, :num_bands])
+    block_scale = float(np.max(np.abs(vals))) if vals.size else 0.0
+    res = _eig_residuals(op, vals[:num_bands], vecs[:, :num_bands],
+                         scale=block_scale)
     if np.max(res, initial=0.0) > residual_tol:
         raise RuntimeError(
             f"planewave 3D eigensolve did not converge: worst band residual "
@@ -447,7 +465,7 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
             f"raise extra (currently {extra}; degenerate levels need room), "
             f"or loosen residual_tol knowingly.")
 
-    freqs = _freqs_3d(vals[:num_bands])
+    freqs = _freqs_3d(vals[:num_bands], scale=block_scale)
     if not return_vectors:
         return freqs
     return freqs, vecs[:, :num_bands]

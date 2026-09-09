@@ -68,15 +68,16 @@ def test_unbacked_paths_raise():
     for p in (mp_mpb.EVEN_Y, mp_mpb.ODD_Y, mp_mpb.EVEN_Y + mp_mpb.EVEN_Z):
         with pytest.raises(NotImplementedError):
             ms.run_parity(p, True)
-    # 1D and 2D both export fields now (both go through the FDFD Bloch
-    # eigensolve). Only 3D is still harminv, which recovers frequencies
-    # from a time series and has no eigenvectors to hand out.
+    # 1D, 2D and now 3D all export fields: 3D moved onto the planewave
+    # eigensolve, which has eigenvectors where harminv had none. This
+    # assertion used to be the reverse and its premise expired with that
+    # move -- an empty 3D lattice at k = 0.1 is the analytic case, f = |K|.
     ms3 = ModeSolver(resolution=6, num_bands=1, k_points=[Vector3(0.1)],
                      geometry_lattice=Lattice(size=Vector3(1, 1, 1)),
                      geometry=[])
     ms3.run()
-    with pytest.raises(NotImplementedError, match="eigenvectors"):
-        ms3.get_efield(1)
+    assert abs(float(ms3.all_freqs[0][0]) - 0.1) < 1e-9
+    assert ms3.get_efield(1).shape == (6, 6, 6, 3)
     for call in (lambda: ms.get_charge_density(1), lambda: ms.get_poynting(1),
                  lambda: ms.get_eigenvectors(1, 1),
                  lambda: ms.compute_group_velocities(),
@@ -285,14 +286,22 @@ def test_gamma_tm_band1_is_zero():
     assert abs(ms.all_freqs[0][1] - ref["bands"][0][1]) / ref["bands"][0][1] <= 0.02
 
 
-def test_gamma_3d_no_parity_raises():
-    """3D no-parity has more than one omega = 0 mode at Gamma and the
-    multiplicity is not established, so band numbering must refuse."""
-    ms = ModeSolver(num_bands=1, resolution=8, k_points=[Vector3()],
+def test_gamma_3d_no_parity_numbers_its_zero_modes():
+    """3D at Gamma: exactly TWO omega = 0 modes, then the analytic bands.
+
+    This test used to assert that band numbering REFUSED here, because
+    harminv could not establish the multiplicity from a time series. The
+    planewave operator does not have to guess it: the K_G = 0 row carries
+    both transverse components and nothing else is null, so the count is
+    structural. On an empty lattice the rest are |K_G|/2pi exactly, and
+    the first nonzero shell of a unit cubic cell is f = 1.
+    """
+    ms = ModeSolver(num_bands=4, resolution=6, k_points=[Vector3()],
                     geometry_lattice=Lattice(size=Vector3(1, 1, 1)))
-    ms.fmax, ms.t_end = 0.4, 150.0
-    with pytest.raises(NotImplementedError, match="Gamma"):
-        ms.run()
+    ms.run()
+    f = np.array(ms.all_freqs[0])
+    assert list(f[:2]) == [0.0, 0.0]
+    assert np.abs(f[2:] - 1.0).max() < 1e-9
 
 
 # --- band gates vs committed meep.mpb oracles -----------------------------
