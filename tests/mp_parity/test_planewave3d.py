@@ -239,3 +239,75 @@ def test_parity_expectation_is_plus_or_minus_one_on_a_pure_sector():
     for even, want in ((True, 1.0), (False, -1.0)):
         P = zparity_operator(op, even=even)
         assert np.abs(P.expectation(P(X)) - want).max() < 1e-10
+
+
+# --- the oblique primitive cell -------------------------------------------
+
+def _diamond_primitive(resolution=16, mesh_size=5, k=(0, 0.5, 0.5),
+                       num_bands=5):
+    """MPB's own mpb_diamond.py cell: fcc primitive, 2 spheres, oblique.
+
+    This is the gate a rectangular supercell cannot stand in for: a
+    supercell folds the bands, and a wrong oblique operator can fold the
+    same way and still agree.
+    """
+    from meep_torch import mpb
+    s = math.sqrt(0.5)
+    lattice = mp.Lattice(basis_size=mp.Vector3(s, s, s),
+                         basis1=mp.Vector3(0, 1, 1),
+                         basis2=mp.Vector3(1, 0, 1),
+                         basis3=mp.Vector3(1, 1, 0))
+    geometry = [mp.Sphere(0.25, center=mp.Vector3(c, c, c),
+                          material=mp.Medium(epsilon=11.56))
+                for c in (0.125, -0.125)]
+    ms = mpb.ModeSolver(geometry_lattice=lattice, geometry=geometry,
+                        k_points=[mp.Vector3(*k)], resolution=resolution,
+                        num_bands=num_bands, mesh_size=mesh_size)
+    ms.run()
+    return ms
+
+
+def test_oblique_primitive_cell_is_solved_directly():
+    """The fcc basis is 60 degrees; the FDTD path refuses it outright."""
+    ms = _diamond_primitive()
+    assert ms._use_3d_path()
+    assert len(ms.all_freqs[0]) == 5
+
+
+@pytest.mark.parametrize("kname,ki", [("X", 0), ("L", 2), ("Gamma", 3)])
+def test_diamond_primitive_vs_mpb_oracle(kname, ki):
+    """1.5%: measured worst is 1.259% at resolution 16.
+
+    Not 1%, and the reason is worth keeping rather than tightening away.
+    Both sides are resolution-16 calculations, and what is left after the
+    analytic interface normal is the residual difference between two
+    subpixel-smoothing implementations. It converges -- 2.914 / 1.980 /
+    1.685% at resolution 16 / 24 / 32 with the moment normal -- so a
+    tighter gate here would be a statement about resolution, not about
+    correctness.
+    """
+    path = os.path.join(DATA, "diamond_primitive_mpb.json")
+    d = json.load(open(path))
+    ref = np.array(d["bands"][ki])
+    ms = _diamond_primitive(k=tuple(d["k"][ki]))
+    got = np.array(ms.all_freqs[0])
+    nz = ref > 1e-9
+    rel = np.abs(got[nz] - ref[nz]) / ref[nz]
+    assert rel.max() < 0.015, f"{kname}: worst {rel.max():.3%}, got {got}, mpb {ref}"
+    # the omega = 0 bands at Gamma must come back exactly zero, not small
+    assert np.all(got[~nz] == 0.0)
+
+
+def test_analytic_normal_beats_the_moment_estimate_on_degeneracy():
+    """The cubic symmetry is the discriminator, not the band values.
+
+    A moment-estimated normal is anisotropic on a cubic block and splits
+    the triple degeneracy at Gamma; the analytic one keeps it. Comparing
+    the SPLITTING rather than the frequency is what makes this test able to
+    fail for the right reason.
+    """
+    ms = _diamond_primitive(k=(0, 0, 0))
+    f = np.array(ms.all_freqs[0])
+    upper = f[f > 1e-9]
+    assert len(upper) == 3
+    assert (upper.max() - upper.min()) / upper.mean() < 1e-3

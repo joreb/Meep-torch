@@ -45,6 +45,7 @@ import numpy as np
 import torch
 
 from .array import MPBArray
+from .backend3d import Backend3DMixin
 from .backends import BackendMixin
 from .fields import FieldsMixin
 from .parity import (EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z, PARITY_NAMES)
@@ -71,7 +72,7 @@ inf = math.inf
 
 _PARITY_NAMES = PARITY_NAMES
 
-class ModeSolver(FieldsMixin, BackendMixin, RasterMixin):
+class ModeSolver(Backend3DMixin, FieldsMixin, BackendMixin, RasterMixin):
     # Bloch-FDTD backend knobs (meep-torch extensions, not meep API):
     courant = 0.4        # dt = courant * dx (2D; the 3D stepper sets its own)
     t_end = 300.0        # run length per k-point
@@ -258,7 +259,17 @@ class ModeSolver(FieldsMixin, BackendMixin, RasterMixin):
         self._check_parity_supported(p)
         self._parity = p
         self.parity = self.get_parity_string()
-        self._eps = self._rasterize_epsilon()
+        # The 3D planewave path owns its own rasterization: it needs an
+        # inverse-dielectric TENSOR on a lattice-coordinate grid, which
+        # _rasterize_epsilon does not produce, and it is not subject to
+        # the orthogonal-basis guard that path carries -- the operator
+        # only ever sees the reciprocal duals, so an oblique cell is
+        # solved directly rather than through a rectangular supercell.
+        if self._use_3d_path():
+            self._eps = self._eps_3d_for_reporting()
+            self._eps_te = None
+        else:
+            self._eps = self._rasterize_epsilon()
         # meep: kpoint_index counts solves within a run and shows up in
         # every output filename (e.g. e.k01.b02.z.tm.h5)
         self.kpoint_index = 0

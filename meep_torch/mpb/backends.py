@@ -24,7 +24,8 @@ import numpy as np
 import torch
 
 from .eigensolver import bloch_bands_2d, lattice_gradients
-from .parity import EVEN_Z, NO_PARITY, ODD_Z, PARITY_NAMES
+from .parity import (EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z,
+                     PARITY_NAMES)
 from ..core.sources import GaussianPulse
 from ..core.stepper_bloch2 import init_bloch2_state, step_bloch2_tm
 from ..modes.harminv import harminv
@@ -114,6 +115,13 @@ class BackendMixin:
 
     def _check_parity_supported(self, p):
         ndims = len(self._active_axes())
+        if self._use_3d_path():
+            # The planewave path solves inside a mirror sector, so the 3D
+            # z-parities the FDTD backend could never do are available;
+            # combined parities are not, and say so where they are asked
+            # for rather than here.
+            if p in (NO_PARITY, EVEN_Z, ODD_Z, EVEN_Y, ODD_Y):
+                return
         if p == ODD_Z and ndims in (1, 2):
             return
         if p == EVEN_Z and ndims == 2:
@@ -156,6 +164,12 @@ class BackendMixin:
             "frequency mode). Use a non-zero k, or run TM/zodd in 1D/2D")
 
     def _solve_k(self, k):
+        # 3D (and the size=(0,y,z) cross-section) go to the planewave
+        # operator before eps is rasterized at all: that path uses its own
+        # lattice-coordinate rasterizer and an inverse-dielectric TENSOR,
+        # which _rasterize_epsilon does not produce.
+        if self._use_3d_path():
+            return self._solve_k_3d(k)
         eps, dx = self._eps
         kc = reciprocal_to_cartesian(Vector3(*k), self.geometry_lattice)
         if len(self._active_axes()) in (1, 2):

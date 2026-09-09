@@ -312,8 +312,14 @@ def _eig_residuals(op: "ThetaOperator", vals, vecs) -> np.ndarray:
     the residual against the operator costs one apply per band and does not
     depend on believing any of that.
     """
-    R = op.matmat(vecs) - vecs * np.asarray(vals, dtype=complex)[None, :]
-    scale = np.maximum(np.abs(np.asarray(vals, dtype=float)), 1e-300)
+    vals = np.asarray(vals, dtype=float)
+    R = op.matmat(vecs) - vecs * vals.astype(complex)[None, :]
+    # Normalised by the SPECTRAL scale, not by each band's own eigenvalue.
+    # At Gamma the K_G = 0 row makes two eigenvalues exactly zero, and a
+    # per-band denominator turns their round-off residual into 1e+11 and
+    # fails a converged solve. The zero bands are physical and their
+    # eigenvectors are as accurate as any other.
+    scale = max(float(np.max(np.abs(vals))) if vals.size else 0.0, 1e-300)
     return np.linalg.norm(R, axis=0) / scale
 
 

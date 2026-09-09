@@ -59,3 +59,52 @@ out = {"a_conv": A_CONV, "r": R, "eps": EPS, "k": [0.0, 0.5, 0.5],
        "bands": bands}
 json.dump(out, open(os.path.join(HERE, "diamond_mpb.json"), "w"), indent=1)
 print("diamond SC-X bands:", bands[0])
+
+# --- fcc PRIMITIVE cell, added 2026-09-09 ---------------------------------
+#
+# The conventional-cell oracle above exists because the meep-torch side
+# could only rasterize a cartesian box. The 3D planewave backend solves the
+# oblique primitive cell directly, so it wants an oracle on the SAME cell
+# rather than a folded one -- a supercell gate cannot tell a correct
+# oblique operator from one that happens to fold the same way.
+#
+# This is mpb_diamond.py's own cell: 2 spheres, basis (0,1,1)/(1,0,1)/(1,1,0)
+# at basis_size sqrt(0.5), r = 0.25, at the high-symmetry points the
+# example visits.
+def _primitive():
+    import math
+
+    ms_p = mpb.ModeSolver(
+        num_bands=5,
+        resolution=16,
+        mesh_size=5,
+        geometry_lattice=mp.Lattice(
+            basis_size=mp.Vector3(math.sqrt(0.5), math.sqrt(0.5),
+                                  math.sqrt(0.5)),
+            basis1=mp.Vector3(0, 1, 1),
+            basis2=mp.Vector3(1, 0, 1),
+            basis3=mp.Vector3(1, 1, 0)),
+        geometry=[
+            mp.Sphere(0.25, center=mp.Vector3(0.125, 0.125, 0.125),
+                      material=mp.Medium(epsilon=EPS)),
+            mp.Sphere(0.25, center=mp.Vector3(-0.125, -0.125, -0.125),
+                      material=mp.Medium(epsilon=EPS))],
+        k_points=[mp.Vector3(0, 0.5, 0.5),        # X
+                  mp.Vector3(0, 0.625, 0.375),    # U
+                  mp.Vector3(0, 0.5, 0),          # L
+                  mp.Vector3(0, 0, 0),            # Gamma
+                  mp.Vector3(0, 0.5, 0.25)],      # W
+    )
+    ms_p.run()
+    return {"r": 0.25, "eps": EPS, "resolution": 16, "mesh_size": 5,
+            "basis_size": math.sqrt(0.5),
+            "k": [[0, 0.5, 0.5], [0, 0.625, 0.375], [0, 0.5, 0],
+                  [0, 0, 0], [0, 0.5, 0.25]],
+            "bands": [list(map(float, row)) for row in ms_p.all_freqs]}
+
+
+if __name__ == "__main__":
+    json.dump(_primitive(),
+              open(os.path.join(HERE, "diamond_primitive_mpb.json"), "w"),
+              indent=1)
+    print("wrote diamond_primitive_mpb.json")
