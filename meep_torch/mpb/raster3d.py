@@ -93,8 +93,19 @@ def cell_centres_3d(a1, a2, a3, n1: int, n2: int, n3: int,
     MPB's own parameter name and meaning.
     """
     A = lattice_matrix_3d(a1, a2, a3)
-    ns = (n1 * mesh_size, n2 * mesh_size, n3 * mesh_size)
-    axes = [(np.arange(n) + 0.5) / n - 0.5 for n in ns]
+    n = (n1, n2, n3)
+    m = mesh_size
+    # Coarse cell i is centred on u = i/n -- MPB's own sampling, and the
+    # SAME grid numpy's ifftn reconstructs on. The 2D path uses centres at
+    # (i + 0.5)/n - 1/2 instead and gets away with it because a rigid
+    # half-cell shift is a diagonal unitary similarity, invisible in the
+    # spectrum. It is NOT invisible to a mirror: a structure symmetric
+    # about u = 0 on the offset grid is symmetric about a half-cell-shifted
+    # point on the FFT's grid, so the parity operator about index 0 stops
+    # being a symmetry of eta and the projected solve returns garbage.
+    # Sub-samples straddle the cell centre: u = (i + (j + 0.5)/m - 0.5)/n.
+    axes = [(np.arange(n[a] * m) + 0.5) / (n[a] * m) - 0.5 / n[a]
+            for a in range(3)]
     F = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
     return F @ A.T
 

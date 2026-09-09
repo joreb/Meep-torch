@@ -401,8 +401,24 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
 
     apply_a, apply_m = op.matmat, op.precond
     if parity is not None:
-        apply_a = lambda X: parity(op.matmat(parity(X)))      # noqa: E731
-        apply_m = lambda X: parity(op.precond(parity(X)))     # noqa: E731
+        # P Theta P alone is WRONG for a smallest-eigenvalue solver: it
+        # sends the entire discarded sector to zero, so the bottom of the
+        # spectrum is a null space of dimension ~N/2 and lobpcg returns
+        # that instead of the bands (measured: residual 0.89, and the
+        # "frequencies" are round-off). Lifting the complement above the
+        # spectrum with a shift makes the wanted sector the true bottom.
+        # The shift is an upper bound on Theta's spectrum: |K|^2 times the
+        # largest eigenvalue of eta, doubled.
+        eta_hi = float(np.max(np.linalg.eigvalsh(op.eta.reshape(-1, 3, 3))))
+        shift = 2.0 * float(np.max(np.sum(op.K ** 2, axis=1))) * max(eta_hi, 1e-300)
+
+        def apply_a(X, _p=parity, _op=op, _s=shift):
+            PX = _p(X)
+            return _p(_op.matmat(PX)) + _s * (X - PX)
+
+        def apply_m(X, _p=parity, _op=op, _s=shift):
+            PX = _p(X)
+            return _p(_op.precond(PX)) + (1.0 / _s) * (X - PX)
 
     block = min(num_bands + max(extra, 0), op.n)
     rng = np.random.default_rng(seed)

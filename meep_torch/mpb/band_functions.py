@@ -23,6 +23,7 @@ __all__ = [
     "fix_hfield_phase", "fix_bfield_phase", "fix_dfield_phase",
     "fix_efield_phase", "combine_band_functions", "output_at_kpoint",
     "apply_band_func", "apply_band_func_thunk", "output_epsilon",
+    "display_yparities", "display_zparities", "display_group_velocities",
 ]
 
 
@@ -109,6 +110,27 @@ fix_hfield_phase = _fix("h")
 fix_bfield_phase = _fix("b")
 fix_dfield_phase = _fix("d")
 fix_efield_phase = _fix("e")
+
+
+def display_yparities(ms):
+    """Band function (thunk): MPB's ``yparity:, <k>, p1, p2, ...`` line."""
+    ms.display_kpoint_data("yparity", ms.compute_yparities())
+
+
+def display_zparities(ms):
+    """Band function (thunk): MPB's ``zparity:, <k>, p1, p2, ...`` line.
+
+    The numbers are ``<h|M_z|h>`` on each eigenvector: +1 for an exactly
+    even mode, -1 for odd. A run inside a parity sector prints 1.0 for
+    every band, which is what makes the line a check rather than a
+    decoration -- anything else means the sector was not held.
+    """
+    ms.display_kpoint_data("zparity", ms.compute_zparities())
+
+
+def display_group_velocities(ms):
+    """Band function (thunk): MPB's ``velocity:, <k>, v1, v2, ...`` line."""
+    ms.display_kpoint_data("velocity", ms.compute_group_velocities())
 
 
 def _num_args(fn):

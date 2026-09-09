@@ -311,3 +311,123 @@ def test_analytic_normal_beats_the_moment_estimate_on_degeneracy():
     upper = f[f > 1e-9]
     assert len(upper) == 3
     assert (upper.max() - upper.min()) / upper.mean() < 1e-3
+
+
+# --- z-parity, cross-section, fields, velocities ---------------------------
+
+def _hole_slab():
+    from meep_torch import mpb
+    return mpb.ModeSolver(
+        num_bands=3, resolution=mp.Vector3(16, 16, 16),
+        geometry_lattice=mp.Lattice(
+            size=mp.Vector3(1, 1, 4),
+            basis1=mp.Vector3(math.sqrt(3) / 2, 0.5),
+            basis2=mp.Vector3(math.sqrt(3) / 2, -0.5)),
+        geometry=[mp.Block(material=mp.Medium(epsilon=12),
+                           size=mp.Vector3(mp.inf, mp.inf, 0.5)),
+                  mp.Cylinder(0.3, material=mp.air, height=mp.inf)],
+        k_points=[mp.Vector3(-1 / 3, 1 / 3)], mesh_size=5)
+
+
+def test_parity_run_forces_an_odd_grid_on_the_mirrored_axis():
+    """The extra grid line: 64 -> 65 along z under zeven."""
+    ms = _hole_slab()
+    ms._parity = 0
+    assert ms._grid_3d()[2] == 64
+    from meep_torch.mpb.parity import EVEN_Z
+    ms._parity = EVEN_Z
+    assert ms._grid_3d()[2] == 65
+
+
+def test_hole_slab_zeven_at_K_vs_mpb_oracle():
+    """run_zeven in 3D: solved INSIDE the sector, not filtered after."""
+    ref = np.array(json.load(open(os.path.join(DATA, "hole_slab_mpb.json")))
+                   ["K_zeven"])
+    ms = _hole_slab()
+    ms.run_zeven()
+    got = np.array(ms.all_freqs[0])
+    rel = np.abs(got - ref) / ref
+    assert rel.max() < 0.02, f"worst {rel.max():.3%}, got {got}, mpb {ref}"
+    # every returned band must actually BE z-even, not merely nearby
+    assert np.abs(np.array(ms.compute_zparities()) - 1.0).max() < 1e-6
+
+
+def _strip():
+    from meep_torch import mpb
+    r = json.load(open(os.path.join(DATA, "strip_mpb.json")))
+    h, w = r["h"], r["w"]
+    geometry = [
+        mp.Block(material=mp.Medium(index=r["n_ox"]),
+                 size=mp.Vector3(mp.inf, mp.inf, 1 - h / 2),
+                 center=mp.Vector3(0, 0, (-1 - h / 2) / 2)),
+        mp.Block(material=mp.Medium(index=r["n_si"]),
+                 size=mp.Vector3(mp.inf, w, h))]
+    ms = mpb.ModeSolver(geometry_lattice=mp.Lattice(size=mp.Vector3(0, 2, 2)),
+                        geometry=geometry,
+                        k_points=[mp.Vector3(b, 0, 0) for b in r["beta"]],
+                        resolution=32, num_bands=2, mesh_size=5)
+    return ms, r
+
+
+def test_strip_cross_section_routes_to_the_3d_path():
+    """size=(0,y,z) has two nonzero axes and is NOT a 2D crystal."""
+    ms, _ = _strip()
+    assert ms._is_cross_section() and ms._use_3d_path()
+    assert ms._grid_3d()[0] == 1
+
+
+def test_strip_dispersion_vs_mpb_oracle():
+    ms, r = _strip()
+    ms.run()
+    got, ref = np.array(ms.all_freqs), np.array(r["bands"])
+    rel = np.abs(got - ref) / ref
+    assert rel.max() < 0.015, f"worst {rel.max():.3%}, got {got}, mpb {ref}"
+
+
+def _small_diamond_run(res=12, k=(0, 0.3, 0.2), num_bands=4):
+    return _diamond_primitive(resolution=res, k=k, num_bands=num_bands)
+
+
+def test_field_energy_identities():
+    """int |H|^2 = 1 AND int Re(E* . D) = 1.
+
+    The second is the one with teeth: it closes only if the operator, the
+    reconstruction and the normalisation all agree, so it catches a wrong
+    factor anywhere in the chain that |H|^2 alone would not.
+    """
+    ms = _small_diamond_run()
+    _, volume = reciprocal_duals_3d(*ms._lattice_3d())
+    cell = volume / np.prod(ms._grid_3d())
+    for band in (1, 3):
+        E, D, H = (ms.get_efield(band), ms.get_dfield(band),
+                   ms.get_hfield(band))
+        assert H.shape == ms._grid_3d() + (3,)
+        assert abs(float(np.sum(np.abs(H) ** 2) * cell) - 1.0) < 1e-9
+        assert abs(float(np.sum(np.real(np.conj(E) * D)) * cell) - 1.0) < 1e-6
+
+
+def test_bloch_and_envelope_differ_by_a_unit_phase():
+    ms = _small_diamond_run()
+    Hb = ms.get_hfield(3)
+    He = ms.get_hfield(3, bloch_phase=False)
+    sel = np.abs(He) > 1e-12
+    assert np.abs(np.abs(Hb[sel] / He[sel]) - 1.0).max() < 1e-12
+
+
+def test_group_velocity_matches_central_differences():
+    """Hellmann-Feynman against df/dk, which needs no second solve to be
+    right but is worth one to prove."""
+    k0, d = (0.0, 0.30, 0.20), 1e-3
+    ms = _small_diamond_run(k=k0)
+    got = np.array([[getattr(v, c) for c in "xyz"]
+                    for v in ms.compute_group_velocities()])
+    fd = []
+    for axis in range(3):
+        kp, km = list(k0), list(k0)
+        kp[axis] += d
+        km[axis] -= d
+        fp = np.array(_small_diamond_run(k=tuple(kp)).all_freqs[0])
+        fm = np.array(_small_diamond_run(k=tuple(km)).all_freqs[0])
+        fd.append((fp - fm) / (2 * d))
+    fd = np.array(fd).T
+    assert np.abs(got - fd).max() < 1e-3, f"got {got}, fd {fd}"

@@ -25,8 +25,9 @@ import numpy as np
 
 from .parity import EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z
 from .parity3d import MirrorParity
-from .planewave3d import (ThetaOperator, kvectors_3d, planewave_bands_3d,
-                          reciprocal_duals_3d)
+from .fields3d import planewave_fields_3d
+from .planewave3d import (ThetaOperator, kvectors_3d, lattice_grid_3d,
+                          planewave_bands_3d, reciprocal_duals_3d)
 from .raster3d import eps_inv_from_geometry
 
 __all__ = ["Backend3DMixin"]
@@ -34,6 +35,34 @@ __all__ = ["Backend3DMixin"]
 # parity flag -> (mirror axis, even?)
 _PARITY_AXIS = {EVEN_Z: (2, True), ODD_Z: (2, False),
                 EVEN_Y: (1, True), ODD_Y: (1, False)}
+
+
+def _symmetrize_eta(eta: np.ndarray, axis: int) -> np.ndarray:
+    """Force the inverse-dielectric tensor to be exactly mirror-symmetric.
+
+    Solving inside a mirror sector is only meaningful if the STRUCTURE has
+    that mirror, and "the geometry is symmetric" is not the same statement
+    as "the rasterized array is symmetric". Measured on the hole slab: the
+    two z-planes holding the slab surface came out asymmetric by 8.8e-2 in
+    epsilon, because the surface falls between sub-samples and the strict
+    inequality in the mask does not land identically on the two sides.
+
+    That is tiny and it is fatal. It leaves [M, Theta] at 3.8e-05 instead
+    of round-off, the sector stops being an invariant subspace, and the
+    eigensolve then stalls at a residual floor of 2e-3 that no number of
+    iterations moves -- 1000 and 3000 iterations gave the same answer.
+
+    A tensor mirrors as ``T eta(sigma r) T`` with ``T`` the reflection, not
+    as ``eta(sigma r)``: the off-diagonal components touching the mirrored
+    axis flip sign. Averaging with that is a projection onto the symmetric
+    part, so it is idempotent and does nothing at all to a structure that
+    was already symmetric.
+    """
+    idx = (-np.arange(eta.shape[axis])) % eta.shape[axis]
+    T = np.eye(3)
+    T[axis, axis] = -1.0
+    mirrored = np.einsum("ij,...jk,kl->...il", T, np.take(eta, idx, axis=axis), T)
+    return 0.5 * (eta + mirrored)
 
 
 class Backend3DMixin:
@@ -166,6 +195,9 @@ class Backend3DMixin:
         eta, _ = self._eps_inv_3d()
         B, _ = reciprocal_duals_3d(a1, a2, a3)
         kc = 2 * np.pi * (np.asarray([float(x) for x in k], dtype=float) @ B)
+        flag = self._parity & (EVEN_Z | ODD_Z | EVEN_Y | ODD_Y)
+        if flag in _PARITY_AXIS:
+            eta = _symmetrize_eta(eta, _PARITY_AXIS[flag][0])
         op = ThetaOperator(eta, kvectors_3d(*grid, B, kc), grid)
         proj = self._parity_projector_3d(op)
         freqs, vecs = planewave_bands_3d(
@@ -180,6 +212,61 @@ class Backend3DMixin:
         self._kc3d = kc
         self._band_pol = None
         return [float(f) for f in freqs]
+
+    # -- mode fields -------------------------------------------------------
+
+    def _fields3d(self, which_band, bloch_phase=True):
+        """``(E, D, H)`` for a 1-based band, or None if this was not a 3D run.
+
+        Returning None rather than raising is what lets the 2D FieldsMixin
+        keep its own error message: this mixin sits ahead of it in the MRO,
+        so every getter has to be able to hand the call back.
+        """
+        if getattr(self, "_vecs3d", None) is None:
+            return None
+        nb = self._vecs3d.shape[1]
+        if not 1 <= which_band <= nb:
+            raise ValueError(
+                f"band {which_band} out of range 1..{nb} (num_bands)")
+        a1, a2, a3 = self._lattice_3d()
+        _, volume = reciprocal_duals_3d(a1, a2, a3)
+        r = None
+        if bloch_phase:
+            _, _, _, r = lattice_grid_3d(*self._grid_3d(), a1, a2, a3)
+        return planewave_fields_3d(
+            self._op3d, self._vecs3d[:, which_band - 1],
+            float(self._omegas[which_band - 1]), volume,
+            envelope=not bloch_phase, r=r)
+
+    def get_efield(self, which_band, bloch_phase=True):
+        f = self._fields3d(which_band, bloch_phase)
+        return f[0] if f is not None else super().get_efield(which_band, bloch_phase)
+
+    def get_dfield(self, which_band, bloch_phase=True):
+        f = self._fields3d(which_band, bloch_phase)
+        return f[1] if f is not None else super().get_dfield(which_band, bloch_phase)
+
+    def get_hfield(self, which_band, bloch_phase=True):
+        f = self._fields3d(which_band, bloch_phase)
+        return f[2] if f is not None else super().get_hfield(which_band, bloch_phase)
+
+    def get_bfield(self, which_band, bloch_phase=True):
+        # mu = 1, so B is H; separate entry point because the type letter
+        # drives compute_field_energy and the output filenames.
+        f = self._fields3d(which_band, bloch_phase)
+        return f[2] if f is not None else super().get_bfield(which_band, bloch_phase)
+
+    def get_dpwr(self, band):
+        f = self._fields3d(band, bloch_phase=False)
+        if f is None:
+            return super().get_dpwr(band)
+        return np.sum(np.abs(f[1]) ** 2, axis=-1)
+
+    def get_bpwr(self, band):
+        f = self._fields3d(band, bloch_phase=False)
+        if f is None:
+            return super().get_bpwr(band)
+        return np.sum(np.abs(f[2]) ** 2, axis=-1)
 
     # -- MPB reporters that need the eigenvector ---------------------------
 
@@ -224,9 +311,15 @@ class Backend3DMixin:
         eta_dH = op._eta_apply(dH)
         val = (np.einsum("gim,gim->m", dH.conj(), eta_AH)
                + np.einsum("gim,gim->m", AH.conj(), eta_dH))
+        # <h|dTheta/dk|h> / (2 omega) is d(omega)/d(k_frac). meep reports
+        # the velocity in units of c, i.e. d(f)/d(k_frac) with f = omega/2pi
+        # and k in units of 2pi/a, so the 2pi comes back out. Checked
+        # against central differences of the bands: the ratio was 6.28321
+        # on every band and every axis before this factor.
         out = []
         for n, w in enumerate(self._omegas):
-            out.append(0.0 if w <= 0 else float(np.real(val[n]) / (2 * w)))
+            out.append(0.0 if w <= 0
+                       else float(np.real(val[n]) / (2 * w)) / (2 * np.pi))
         return out
 
     def compute_group_velocities(self):
