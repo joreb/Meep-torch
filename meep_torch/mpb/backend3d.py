@@ -238,35 +238,57 @@ class Backend3DMixin:
             float(self._omegas[which_band - 1]), volume,
             envelope=not bloch_phase, r=r)
 
+    def _get3d(self, which_band, idx, ftype, bloch_phase):
+        """One 3D getter: load curfield, then hand back what was asked.
+
+        Returning the array WITHOUT loading curfield was the bug behind
+        both "no field loaded to output" (output_hfield_z) and
+        "needs a D, H or B field loaded first" (output_dpwr): every writer
+        and every energy function reads curfield, not the return value.
+        The 2D path gets this from _finish; the 3D getters bypassed it.
+        """
+        f = self._fields3d(which_band, bloch_phase=False)   # envelope
+        if f is None:
+            return None
+        return self._finish3d(f[idx], ftype, which_band, bloch_phase)
+
+    def _finish3d(self, env, ftype, which_band, bloch_phase):
+        self._set_curfield(env, ftype, which_band)
+        out = env * self._bloch_phase_grid()[..., None] if bloch_phase else env
+        return self._as_mpb(out, bloch_phase)
+
     def get_efield(self, which_band, bloch_phase=True):
-        f = self._fields3d(which_band, bloch_phase)
-        return f[0] if f is not None else super().get_efield(which_band, bloch_phase)
+        f = self._get3d(which_band, 0, "e", bloch_phase)
+        return f if f is not None else super().get_efield(which_band, bloch_phase)
 
     def get_dfield(self, which_band, bloch_phase=True):
-        f = self._fields3d(which_band, bloch_phase)
-        return f[1] if f is not None else super().get_dfield(which_band, bloch_phase)
+        f = self._get3d(which_band, 1, "d", bloch_phase)
+        return f if f is not None else super().get_dfield(which_band, bloch_phase)
 
     def get_hfield(self, which_band, bloch_phase=True):
-        f = self._fields3d(which_band, bloch_phase)
-        return f[2] if f is not None else super().get_hfield(which_band, bloch_phase)
+        f = self._get3d(which_band, 2, "h", bloch_phase)
+        return f if f is not None else super().get_hfield(which_band, bloch_phase)
 
     def get_bfield(self, which_band, bloch_phase=True):
         # mu = 1, so B is H; separate entry point because the type letter
         # drives compute_field_energy and the output filenames.
-        f = self._fields3d(which_band, bloch_phase)
-        return f[2] if f is not None else super().get_bfield(which_band, bloch_phase)
+        f = self._get3d(which_band, 2, "b", bloch_phase)
+        return f if f is not None else super().get_bfield(which_band, bloch_phase)
 
-    def get_dpwr(self, band):
-        f = self._fields3d(band, bloch_phase=False)
-        if f is None:
-            return super().get_dpwr(band)
-        return np.sum(np.abs(f[1]) ** 2, axis=-1)
+    def get_poynting(self, which_band):
+        """MPB get_poynting: ``Re(conj(E) x H)``, the time-averaged flux.
 
-    def get_bpwr(self, band):
-        f = self._fields3d(band, bloch_phase=False)
+        Curfield type "v" so the output writers treat it as a vector field
+        and name the file ``flux.``. No factor of 1/2: MPB does not carry
+        one either, and the examples compare components rather than
+        absolute powers.
+        """
+        f = self._fields3d(which_band, bloch_phase=False)
         if f is None:
-            return super().get_bpwr(band)
-        return np.sum(np.abs(f[2]) ** 2, axis=-1)
+            return super().get_poynting(which_band)
+        E, _, H = f
+        S = np.real(np.cross(np.conj(E), H))
+        return self._finish3d(S.astype(complex), "v", which_band, False)
 
     # -- MPB reporters that need the eigenvector ---------------------------
 
@@ -299,9 +321,16 @@ class Backend3DMixin:
         if getattr(self, "_vecs3d", None) is None:
             return super().compute_group_velocity_component(direction)
         op = self._op3d
-        d = np.asarray([float(direction.x), float(direction.y),
-                        float(direction.z)]
-                       if hasattr(direction, "x") else direction, dtype=float)
+        # meep's semantics: `direction` is in the RECIPROCAL basis, so a
+        # step of 1 along component i is a step of 2pi b_i in cartesian k.
+        # find_k passes a direction normalised in CARTESIAN space, which
+        # only agrees with a reciprocal-basis unit vector on a cubic cell.
+        d_frac = np.asarray([float(direction.x), float(direction.y),
+                             float(direction.z)]
+                            if hasattr(direction, "x") else direction,
+                            dtype=float)
+        B, _ = reciprocal_duals_3d(*self._lattice_3d())
+        d = 2 * np.pi * (d_frac @ B)
         V = self._vecs3d
         H = op.to_cartesian(V)                        # (N_G, 3, nb)
         AH = np.cross(op.K[:, :, None], H, axisa=1, axisb=1, axisc=1)
@@ -328,9 +357,8 @@ class Backend3DMixin:
         if getattr(self, "_vecs3d", None) is None:
             return super().compute_group_velocities()
         from ..mp.vec import Vector3
-        a1, a2, a3 = self._lattice_3d()
-        B, _ = reciprocal_duals_3d(a1, a2, a3)
-        cols = [self.compute_group_velocity_component(2 * np.pi * B[i])
-                for i in range(3)]
+        cols = [self.compute_group_velocity_component(
+            Vector3(*(1.0 if j == i else 0.0 for j in range(3))))
+            for i in range(3)]
         return [Vector3(cols[0][n], cols[1][n], cols[2][n])
                 for n in range(len(self._omegas))]

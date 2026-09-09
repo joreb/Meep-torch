@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 import meep_torch.mp as mp
+from meep_torch import mpb
 from meep_torch.mpb.planewave3d import (assemble_dense_3d, kvectors_3d,
                                         planewave_bands_3d,
                                         reciprocal_duals_3d,
@@ -431,3 +432,106 @@ def test_group_velocity_matches_central_differences():
         fd.append((fp - fm) / (2 * d))
     fd = np.array(fd).T
     assert np.abs(got - fd).max() < 1e-3, f"got {got}, fd {fd}"
+
+
+# --- output, poynting, find_k ---------------------------------------------
+
+def test_3d_getters_load_curfield_for_the_output_writers(tmp_path):
+    """The writers and the energy functions read curfield, not the return.
+
+    Returning the array without loading curfield is what produced both
+    "no field loaded to output" (output_hfield_z) and "needs a D, H or B
+    field loaded first" (output_dpwr): the 2D path gets this from _finish
+    and the 3D getters bypassed it.
+    """
+    ms = _hole_slab()
+    ms.filename_prefix = str(tmp_path / "hs")
+    K = mp.Vector3(-1 / 3, 1 / 3)
+    ms.run_zeven(mpb.output_at_kpoint(K, mpb.output_hfield_z))
+    assert ms.get_parity_string() == "zeven"      # 3D says zeven, not te
+    written = sorted(p.name for p in tmp_path.glob("*.h5"))
+    assert written and all(".z.zeven.h5" in n and n.startswith("hs-h.k")
+                           for n in written)
+    import h5py
+    with h5py.File(tmp_path / written[0]) as f:
+        assert {"z.r", "z.i", "lattice vectors", "Bloch wavevector"} <= set(f)
+        assert f["z.r"].shape == ms._grid_3d()
+
+
+def test_3d_output_dpwr_writes_without_a_parity_suffix(tmp_path):
+    ms = _diamond_primitive(resolution=8, num_bands=2)
+    ms.filename_prefix = str(tmp_path / "dm")
+    ms.run(mpb.output_dpwr)
+    written = sorted(p.name for p in tmp_path.glob("*.h5"))
+    assert written == ["dm-dpwr.k01.b01.h5", "dm-dpwr.k01.b02.h5"]
+
+
+def test_3d_poynting_is_real_and_transverse_dominant():
+    """S = Re(conj(E) x H): a guided slab mode carries flux in-plane."""
+    ms = _hole_slab()
+    ms.run_zeven()
+    S = np.asarray(ms.get_poynting(1))
+    assert S.shape == ms._grid_3d() + (3,)
+    assert np.abs(np.imag(S)).max() < 1e-12
+    inplane = np.abs(np.real(S[..., :2])).sum()
+    out = np.abs(np.real(S[..., 2])).sum()
+    assert inplane > out
+
+
+@pytest.mark.parametrize("fn,df,name", [
+    (lambda k: (k * k - 2, 2 * k), None, "increasing"),
+    (lambda k: (2 - k * k, -2 * k), None, "decreasing"),
+    (lambda k: (k * k - 2, 0.0), None, "no-derivative"),
+])
+def test_root_finder_is_orientation_free(fn, df, name):
+    """A band with NEGATIVE group velocity must not read backwards.
+
+    The first version tracked the bracket as "below x"/"above x", which
+    silently assumes f rises with k. On a decreasing function it returned
+    the search bound (0.1) instead of the root (1.414). Frequency does
+    usually rise with |k|, which is why that would have survived every
+    ordinary case.
+    """
+    from meep_torch.mpb.findk import _newton_bisect
+    got = _newton_bisect(fn, 0.1, 10.0, 5.0 if name != "decreasing" else 0.5,
+                         1e-10)
+    assert abs(got - math.sqrt(2)) < 1e-6, f"{name}: got {got}"
+
+
+def test_find_k_round_trips_against_the_solver():
+    """find_k answers k(omega); solving at that k must give back omega.
+
+    That round trip is the whole check -- it needs no oracle and it fails
+    for every way the root find, the direction normalisation or the group
+    velocity could be wrong.
+    """
+    r = json.load(open(os.path.join(DATA, "strip_mpb.json")))
+    ms, _ = _strip()
+    ms.resolution = mp.Vector3(24, 24, 24)
+    omega = 1 / 1.55
+    ks = ms.find_k(0, omega, 1, 2, mp.Vector3(1), 1e-3,
+                   omega * r["n_si"], omega * 0.1, omega * 4)
+    assert len(ks) == 2 and ks[0] > ks[1] > 0
+    ms.num_bands = 2
+    ms.k_points = [mp.Vector3(ks[0], 0, 0)]
+    ms.run()
+    assert abs(float(ms.all_freqs[0][0]) - omega) < 1e-3
+
+
+def test_weak_convergence_warns_instead_of_raising():
+    """MPB does not raise on a marginal miss and neither do we.
+
+    Raising turned mpb_data_analysis into a traceback over a residual of
+    1.259e-05 against a 1e-05 threshold. The stopping rule is now the
+    relative EIGENVALUE change against ms.tolerance, MPB's own; the
+    residual survives as a warning because the eigenvalue history alone
+    cannot see a stalled symmetry sector.
+    """
+    from meep_torch.mpb.planewave3d import planewave_bands_3d
+    eta = _random_eta((8, 8, 8))
+    B, _ = reciprocal_duals_3d(*FCC)
+    kc = 2 * np.pi * (np.array([0.0, 0.5, 0.5]) @ B)
+    with pytest.warns(RuntimeWarning, match="weakly converged"):
+        planewave_bands_3d(eta, *FCC, kc, 5, maxiter=1, residual_warn=1e-12)
+    stats = planewave_bands_3d.last_stats
+    assert set(stats) == {"iterations", "eig_change", "residual", "converged"}

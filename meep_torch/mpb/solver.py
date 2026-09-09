@@ -46,6 +46,7 @@ import torch
 
 from .array import MPBArray
 from .backend3d import Backend3DMixin
+from .findk import FindKMixin
 from .backends import BackendMixin
 from .fields import FieldsMixin
 from .parity import (EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z, PARITY_NAMES)
@@ -72,7 +73,7 @@ inf = math.inf
 
 _PARITY_NAMES = PARITY_NAMES
 
-class ModeSolver(Backend3DMixin, FieldsMixin, BackendMixin, RasterMixin):
+class ModeSolver(FindKMixin, Backend3DMixin, FieldsMixin, BackendMixin, RasterMixin):
     # Bloch-FDTD backend knobs (meep-torch extensions, not meep API):
     courant = 0.4        # dt = courant * dx (2D; the 3D stepper sets its own)
     t_end = 300.0        # run length per k-point

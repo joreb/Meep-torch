@@ -133,9 +133,20 @@ class FieldsMixin(OutputMixin):
         v a2 and kc . a_i = 2 pi k_i, so kc . r = 2 pi (k1 u + k2 v). The
         k components are the ones the user passed in k_points.
         """
+        k = self.current_k if self.current_k is not None else Vector3()
+        if self._use_3d_path():
+            # The 3D path samples at u = i/n (the FFT's own grid), not at
+            # the 2D path's (i + 0.5)/n - 1/2. Using the 2D offsets here
+            # would put a half-cell phase ramp on every exported field.
+            n = self._grid_3d()
+            comp = [float(k.x), float(k.y), float(k.z)]
+            axes = [np.arange(n[i]) / n[i] for i in range(3)]
+            arg = (comp[0] * axes[0][:, None, None]
+                   + comp[1] * axes[1][None, :, None]
+                   + comp[2] * axes[2][None, None, :])
+            return np.exp(2j * np.pi * arg)
         eps, _ = self._grid()
         nu, nv = eps.shape
-        k = self.current_k if self.current_k is not None else Vector3()
         u = (np.arange(nu) + 0.5) / nu - 0.5
         v = (np.arange(nv) + 0.5) / nv - 0.5
         return np.exp(2j * np.pi * (float(k.x) * u[:, None]
@@ -155,6 +166,13 @@ class FieldsMixin(OutputMixin):
         energy density integrates to exactly 1 rather than to 1 plus a
         discretization error. The z component is a cell-centred scalar.
         """
+        if self._use_3d_path():
+            # 3D carries a full inverse-dielectric TENSOR per cell, so this
+            # is a contraction and not three divisions. Using the scalar
+            # epsilon here would drop exactly the off-diagonal part that
+            # Kottke smoothing puts in at every interface.
+            eta, _ = self._eps_inv_3d()
+            return np.einsum("xyzij,xyzj->xyzi", eta, F)
         eps, _ = self._grid()
         out = np.zeros_like(F)
         if getattr(self, "backend", "fdfd") == "planewave":
@@ -190,7 +208,10 @@ class FieldsMixin(OutputMixin):
         """
         from .solver import MPBArray
         arr = np.asarray(arr)
-        if arr.ndim == 3:
+        # meep pads the GRID dims out to 3. A 2D vector field is (nx, ny, 3)
+        # and becomes (nx, ny, 1, 3); a 3D SCALAR is also ndim 3 and must be
+        # left alone, or dpwr comes back as (n1, n2, 1, n3).
+        if arr.ndim == 3 and not self._use_3d_path():
             arr = arr.reshape(arr.shape[0], arr.shape[1], 1, arr.shape[2])
         return MPBArray(arr, self.get_lattice(), self.current_k,
                         bloch_phase=bloch_phase)
@@ -290,16 +311,24 @@ class FieldsMixin(OutputMixin):
         return self._finish(H, "b", which_band, bloch_phase)
 
     def multiply_bloch_phase(self, arr=None):
-        """meep multiply_bloch_phase: envelope -> full Bloch field."""
+        """meep multiply_bloch_phase: envelope -> full Bloch field.
+
+        The component axis is detected by RANK against the phase grid, not
+        by testing ``ndim == 3``: that test means "2D vector field" only
+        while the grid is 2D, and reads a 3D vector field (ndim 4) as a
+        scalar, which then fails to broadcast.
+        """
         ph = self._bloch_phase_grid()
+
+        def _apply(a):
+            return a * (ph[..., None] if a.ndim == ph.ndim + 1 else ph)
+
         if arr is None:
             if self._curfield is None:
                 raise RuntimeError("no current field to phase")
-            self._curfield = self._curfield * (
-                ph[..., None] if self._curfield.ndim == 3 else ph)
+            self._curfield = _apply(self._curfield)
             return self._curfield
-        arr = np.asarray(arr)
-        return arr * (ph[..., None] if arr.ndim == 3 else ph)
+        return _apply(np.asarray(arr))
 
     # -- energies ----------------------------------------------------------
 
