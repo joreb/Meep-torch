@@ -535,3 +535,67 @@ def test_weak_convergence_warns_instead_of_raising():
         planewave_bands_3d(eta, *FCC, kc, 5, maxiter=1, residual_warn=1e-12)
     stats = planewave_bands_3d.last_stats
     assert set(stats) == {"iterations", "eig_change", "residual", "converged"}
+
+
+# --- device path ----------------------------------------------------------
+
+def _has_cuda():
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+
+needs_cuda = pytest.mark.skipif(not _has_cuda(), reason="no CUDA device")
+
+
+@needs_cuda
+def test_cuda_matvec_matches_numpy():
+    """The device apply is a SECOND implementation, not a port of the first.
+
+    The CPU path stays numpy deliberately: every committed gate was
+    measured against numpy's FFT, and torch-on-CPU differs in the last
+    bits. So the two have to be pinned to each other rather than assumed
+    equal by construction.
+    """
+    from meep_torch.mpb.planewave3d import ThetaOperator
+    g = (8, 8, 8)
+    eta = _random_eta(g)
+    B, _ = reciprocal_duals_3d(*FCC)
+    K = kvectors_3d(*g, B, 2 * np.pi * (np.array([0.1, 0.2, 0.3]) @ B))
+    cpu = ThetaOperator(eta, K, g)
+    gpu = ThetaOperator(eta, K, g, device="cuda")
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((cpu.n, 4)) + 1j * rng.standard_normal((cpu.n, 4))
+    a, b = cpu.matmat(X), gpu.matmat(X)
+    assert np.abs(a - b).max() / np.abs(a).max() < 1e-12
+
+
+@needs_cuda
+def test_cuda_bands_match_cpu_on_the_fcc_case():
+    g = (8, 8, 8)
+    eta = _random_eta(g)
+    B, _ = reciprocal_duals_3d(*FCC)
+    kc = 2 * np.pi * (np.array([0.0, 0.5, 0.5]) @ B)
+    cpu = planewave_bands_3d(eta, *FCC, kc, 5)
+    gpu = planewave_bands_3d(eta, *FCC, kc, 5, device="cuda")
+    assert np.abs(cpu - gpu).max() < 1e-12
+
+
+@needs_cuda
+def test_cuda_parity_mirror_matches_cpu():
+    """The projector runs twice per operator apply, so it lives on the
+    device too -- built on the host while the solve ran on the GPU, it
+    cancelled the whole speedup (153 s against 156 s)."""
+    from meep_torch.mpb.planewave3d import ThetaOperator
+    from meep_torch.mpb.parity3d import zparity_operator
+    grid = (8, 8, 7)
+    eta = _z_symmetric_eta(grid)
+    B, _ = reciprocal_duals_3d(*CUBIC)
+    K = kvectors_3d(*grid, B, 2 * np.pi * (np.array([0.2, 0.3, 0.0]) @ B))
+    rng = np.random.default_rng(3)
+    ops = [ThetaOperator(eta, K, grid, device=d) for d in ("cpu", "cuda")]
+    X = rng.standard_normal((ops[0].n, 3)) + 1j * rng.standard_normal((ops[0].n, 3))
+    a, b = [zparity_operator(o, even=True).mirror(X) for o in ops]
+    assert np.abs(a - b).max() / np.abs(a).max() < 1e-12
