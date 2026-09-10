@@ -170,7 +170,7 @@ class BackendMixin:
         # which _rasterize_epsilon does not produce.
         if self._use_3d_path():
             return self._solve_k_3d(k)
-        if str(getattr(self, "device", "cpu")) != "cpu" and not self._warned_device:
+        if str(self.device) != "cpu" and not self._warned_device:
             # ModeSolver.device is read ONLY by the 3D planewave path. It is
             # a class attribute, so it exists on every solver and defaults
             # from MEEP_TORCH_DEVICE -- which the examples set globally.
