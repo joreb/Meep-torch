@@ -528,34 +528,59 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
         # Whole block iteration on the device: cupy's own LOBPCG over the
         # real embedding. See meep_torch.mpb.gpu3d for why the embedding
         # is not optional (cupy's LOBPCG is silently wrong for complex).
+        #
+        # Wrapped, and not defensively-in-general: cupyx's LOBPCG has a
+        # reachable internal state where its active residual block goes
+        # empty and it calls the operator with None --
+        # "AttributeError: 'NoneType' object has no attribute 'ndim'" out
+        # of _interface.dot. Hit on mpb_diamond at the seventh k-point,
+        # after six had already been solved and written. A third-party
+        # solver's edge case must not end a run that has a working
+        # reference path sitting right there, so this falls back to
+        # numpy + scipy for that k-point and says so.
         from .gpu3d import solve_bands_cupy
-        vals, vecs = solve_bands_cupy(op, num_bands, parity=parity, tol=tol,
-                                      maxiter=maxiter, extra=extra, seed=seed)
-        block_scale = float(np.max(np.abs(vals))) if vals.size else 0.0
-        res = _eig_residuals(op, vals[:num_bands], vecs[:, :num_bands],
-                             scale=block_scale)
-        worst = float(np.max(res, initial=0.0))
-        if worst > residual_warn:
-            vals2, vecs2 = solve_bands_cupy(op, num_bands, parity=parity,
-                                            tol=tol * 1e-3, maxiter=maxiter,
-                                            extra=extra + 4, seed=seed + 1)
-            s2 = float(np.max(np.abs(vals2))) if vals2.size else 0.0
-            r2 = _eig_residuals(op, vals2[:num_bands], vecs2[:, :num_bands],
-                                scale=s2)
-            if float(np.max(r2, initial=0.0)) < worst:
-                vals, vecs, worst = vals2, vecs2, float(np.max(r2, initial=0.0))
-        if worst > residual_warn:
+
+        def _device_solve():
+            vals, vecs = solve_bands_cupy(op, num_bands, parity=parity,
+                                          tol=tol, maxiter=maxiter,
+                                          extra=extra, seed=seed)
+            scale = float(np.max(np.abs(vals))) if vals.size else 0.0
+            r = _eig_residuals(op, vals[:num_bands], vecs[:, :num_bands],
+                               scale=scale)
+            worst = float(np.max(r, initial=0.0))
+            if worst > residual_warn:
+                v2, w2 = solve_bands_cupy(op, num_bands, parity=parity,
+                                          tol=tol * 1e-3, maxiter=maxiter,
+                                          extra=extra + 4, seed=seed + 1)
+                s2 = float(np.max(np.abs(v2))) if v2.size else 0.0
+                r2 = _eig_residuals(op, v2[:num_bands], w2[:, :num_bands],
+                                    scale=s2)
+                if float(np.max(r2, initial=0.0)) < worst:
+                    vals, vecs, scale = v2, w2, s2
+                    worst = float(np.max(r2, initial=0.0))
+            return vals, vecs, scale, worst
+
+        try:
+            vals, vecs, block_scale, worst = _device_solve()
+        except Exception as exc:                       # noqa: BLE001
             warnings.warn(
-                f"planewave 3D eigensolve (cupy) is weakly converged: worst "
-                f"band residual {worst:.3e} > {residual_warn:g}",
-                RuntimeWarning, stacklevel=2)
-        planewave_bands_3d.last_stats = {
-            "iterations": -1, "eig_change": float("nan"),
-            "residual": worst, "converged": worst <= residual_warn}
-        freqs = _freqs_3d(vals[:num_bands], scale=block_scale)
-        if not return_vectors:
-            return freqs
-        return freqs, vecs[:, :num_bands]
+                f"the cupy 3D eigensolve failed ({type(exc).__name__}: "
+                f"{exc}); falling back to numpy + scipy for this k-point. "
+                f"The CPU path is the reference, so the bands are unaffected "
+                f"-- only the speed is.", RuntimeWarning, stacklevel=2)
+        else:
+            if worst > residual_warn:
+                warnings.warn(
+                    f"planewave 3D eigensolve (cupy) is weakly converged: "
+                    f"worst band residual {worst:.3e} > {residual_warn:g}",
+                    RuntimeWarning, stacklevel=2)
+            planewave_bands_3d.last_stats = {
+                "iterations": -1, "eig_change": float("nan"),
+                "residual": worst, "converged": worst <= residual_warn}
+            freqs = _freqs_3d(vals[:num_bands], scale=block_scale)
+            if not return_vectors:
+                return freqs
+            return freqs, vecs[:, :num_bands]
 
     apply_a, apply_m = op.matmat, op.precond
     if parity is not None:

@@ -599,3 +599,29 @@ def test_cuda_parity_mirror_matches_cpu():
     X = rng.standard_normal((ops[0].n, 3)) + 1j * rng.standard_normal((ops[0].n, 3))
     a, b = [zparity_operator(o, even=True).mirror(X) for o in ops]
     assert np.abs(a - b).max() / np.abs(a).max() < 1e-12
+
+
+@needs_cuda
+def test_device_solve_failure_falls_back_to_the_cpu_reference(monkeypatch):
+    """A third-party solver's edge case must not end the run.
+
+    cupyx's LOBPCG has a reachable state where its active residual block
+    goes empty and it calls the operator with None. That killed
+    mpb_diamond at the SEVENTH k-point, after six had been solved and
+    written to disk. There is a working reference path sitting right
+    there, so the device failure degrades to it rather than propagating.
+    """
+    import meep_torch.mpb.gpu3d as gpu3d
+    g = (8, 8, 8)
+    eta = _random_eta(g)
+    B, _ = reciprocal_duals_3d(*FCC)
+    kc = 2 * np.pi * (np.array([0.0, 0.5, 0.5]) @ B)
+    ref = planewave_bands_3d(eta, *FCC, kc, 5)
+
+    def boom(*a, **k):
+        raise AttributeError("'NoneType' object has no attribute 'ndim'")
+
+    monkeypatch.setattr(gpu3d, "solve_bands_cupy", boom)
+    with pytest.warns(RuntimeWarning, match="falling back to numpy"):
+        got = planewave_bands_3d(eta, *FCC, kc, 5, device="cuda")
+    assert np.abs(got - ref).max() < 1e-12
