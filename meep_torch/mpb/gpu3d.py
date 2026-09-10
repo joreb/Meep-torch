@@ -65,6 +65,68 @@ def cupy_available() -> bool:
         return False
 
 
+_PATCHED = False
+
+
+class DeviceSolveStalled(RuntimeError):
+    """cupy's LOBPCG could not orthonormalise its residual block."""
+
+
+def _patch_cupy_orthonormalize():
+    """Turn cupy's unguarded ``None`` into an exception we can act on.
+
+    ``cupyx/.../_lobpcg.py`` is a port of scipy's, including the path where
+    a failed Cholesky of the block's Gram matrix sets the block to
+    ``None`` -- but NOT the four lines scipy has immediately after::
+
+        if activeBlockVectorR is None:
+            warnings.warn("Failed at iteration ...")
+            break
+        activeBlockVectorAR = A(activeBlockVectorR)
+
+    cupy goes straight to the call, so the operator receives ``None`` and
+    raises ``AttributeError: 'NoneType' object has no attribute 'ndim'``.
+    An unguarded error path upstream, not a numerical problem.
+
+    Why it fires here is OURS: the real embedding doubles every eigenvalue,
+    so a level 3-fold degenerate at Gamma is 6-fold in the embedded problem
+    and the residual block loses rank as those directions converge
+    together. Measured: 22-column blocks arriving with numerical rank 17
+    and 15, deterministically at Gamma and not at X or U. scipy never sees
+    it because it solves the complex problem directly -- no doubling.
+
+    This raises instead of returning ``None``, which gives scipy's
+    semantics (stop, do not use the broken block) through the one hook
+    reachable from outside: the caller catches it and falls back.
+
+    An earlier version tried to be cleverer -- regularise the Gram matrix
+    with a small ridge so the iteration could CONTINUE rather than stop.
+    That was wrong, and measurably so: at Gamma it let LOBPCG wander into a
+    spurious eigenvalue of -47.72 where the CPU reference returns
+    [0, 0, 0.595634]. A crash is recoverable; a converged wrong answer is
+    not. scipy stops for a reason.
+    """
+    global _PATCHED
+    if _PATCHED:
+        return
+    import cupyx.scipy.sparse.linalg._lobpcg as _lb
+
+    original = _lb._b_orthonormalize
+
+    def _b_orthonormalize(B, blockVectorV, blockVectorBV=None,
+                          retInvR=False):
+        out = original(B, blockVectorV, blockVectorBV, retInvR)
+        if out[0] is None:
+            raise DeviceSolveStalled(
+                "cupy LOBPCG: Cholesky of the residual block failed "
+                "(rank-deficient block, expected at high-degeneracy "
+                "k-points because the real embedding doubles the spectrum)")
+        return out
+
+    _lb._b_orthonormalize = _b_orthonormalize
+    _PATCHED = True
+
+
 def _embed(op, parity, shift, n, cp):
     """``E`` as a cupy LinearOperator on the real 2n space, plus its M.
 
@@ -134,6 +196,7 @@ def solve_bands_cupy(op, num_bands: int, parity=None, tol: float = 1e-7,
     up to a global phase, which no observable here depends on.
     """
     import cupy as cp
+    _patch_cupy_orthonormalize()
 
     n = op.n
     shift = 0.0

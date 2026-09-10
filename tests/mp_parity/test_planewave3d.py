@@ -14,6 +14,7 @@ where the oracle gates are 1%.
 import json
 import math
 import os
+import warnings
 
 import numpy as np
 import pytest
@@ -625,3 +626,41 @@ def test_device_solve_failure_falls_back_to_the_cpu_reference(monkeypatch):
     with pytest.warns(RuntimeWarning, match="falling back to numpy"):
         got = planewave_bands_3d(eta, *FCC, kc, 5, device="cuda")
     assert np.abs(got - ref).max() < 1e-12
+
+
+@needs_cuda
+def test_gamma_stalls_on_device_and_still_gives_the_right_bands():
+    """Gamma is where the embedding's doubled degeneracy bites.
+
+    The real embedding doubles every eigenvalue, so a 3-fold level at
+    Gamma is 6-fold in the embedded problem and cupy's residual block
+    loses rank as those directions converge together (measured: 22-column
+    blocks at numerical rank 17 and 15). cupy's LOBPCG then hands the
+    operator None. This asserts the OUTCOME, not the mechanism: whichever
+    path it takes, the bands must match the CPU reference.
+
+    Not asserting that it falls back, deliberately -- if a future cupy
+    fixes the guard, or the embedding is replaced, this should keep
+    passing rather than start failing for a good reason.
+    """
+    ms_cpu = _diamond_primitive(resolution=16, k=(0, 0, 0), num_bands=5)
+    cpu = np.array(ms_cpu.all_freqs[0])
+    from meep_torch import mpb as _mpb
+    s = math.sqrt(0.5)
+    lattice = mp.Lattice(basis_size=mp.Vector3(s, s, s),
+                         basis1=mp.Vector3(0, 1, 1),
+                         basis2=mp.Vector3(1, 0, 1),
+                         basis3=mp.Vector3(1, 1, 0))
+    geometry = [mp.Sphere(0.25, center=mp.Vector3(c, c, c),
+                          material=mp.Medium(epsilon=11.56))
+                for c in (0.125, -0.125)]
+    ms = _mpb.ModeSolver(geometry_lattice=lattice, geometry=geometry,
+                         k_points=[mp.Vector3(0, 0, 0)], resolution=16,
+                         num_bands=5, mesh_size=5)
+    ms.device = "cuda"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ms.run()
+    got = np.array(ms.all_freqs[0])
+    assert np.abs(got - cpu).max() < 1e-9, f"gpu {got} vs cpu {cpu}"
+    assert list(got[:2]) == [0.0, 0.0]        # the two omega = 0 modes survive

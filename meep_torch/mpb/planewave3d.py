@@ -562,6 +562,7 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
 
         try:
             vals, vecs, block_scale, worst = _device_solve()
+            device_freqs = _freqs_3d(vals[:num_bands], scale=block_scale)
         except Exception as exc:                       # noqa: BLE001
             warnings.warn(
                 f"the cupy 3D eigensolve failed ({type(exc).__name__}: "
@@ -577,10 +578,9 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
             planewave_bands_3d.last_stats = {
                 "iterations": -1, "eig_change": float("nan"),
                 "residual": worst, "converged": worst <= residual_warn}
-            freqs = _freqs_3d(vals[:num_bands], scale=block_scale)
             if not return_vectors:
-                return freqs
-            return freqs, vecs[:, :num_bands]
+                return device_freqs
+            return device_freqs, vecs[:, :num_bands]
 
     apply_a, apply_m = op.matmat, op.precond
     if parity is not None:
