@@ -245,6 +245,43 @@ wheels = [
 cublas = [
     { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
+cudart = [
+    { name = "nvidia-cuda-runtime-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+cufft = [
+    { name = "nvidia-cufft-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+curand = [
+    { name = "nvidia-curand-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+cusolver = [
+    { name = "nvidia-cusolver-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+cusparse = [
+    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+nvrtc = [
+    { name = "nvidia-cuda-nvrtc-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[package]]
+name = "cupy-cuda12x"
+version = "14.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuda-pathfinder" },
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/8c/5fe3f6719c2d4560c79c62ef6d9b7d6c34d145879ddc0c1a41f8153ad0a6/cupy_cuda12x-14.2.0-cp312-cp312-manylinux2014_aarch64.whl", hash = "sha256:b74340aa7271f0f081f77e2e5107bac75af19b86df29213db7ada90e14428efe", size = 147490427, upload-time = "2026-08-20T02:40:00.196Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/5b/65124de2dbaf2e85109f611a41947e39acd6dd938751c04b4c4d7bf6fc82/cupy_cuda12x-14.2.0-cp312-cp312-manylinux2014_x86_64.whl", hash = "sha256:f82141761f2c81905d49387464ae29438887956d99063381c93a1d5d1b7d32e8", size = 136111459, upload-time = "2026-08-20T02:40:04.909Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/18/ddea819204701024bef7fa748730702245d803847c841b737723b94fd091/cupy_cuda12x-14.2.0-cp312-cp312-win_amd64.whl", hash = "sha256:c9571d3b5f2e65758137e210f7fb3c3b34767f0af6b6ca04035a244b6141ee12", size = 98780018, upload-time = "2026-08-20T02:40:09.465Z" },
+]
+
+[package.optional-dependencies]
+ctk = [
+    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "curand", "cusolver", "cusparse", "nvrtc"] },
+]
 
 [[package]]
 name = "cutensor-cu12"
@@ -891,6 +928,9 @@ dependencies = [
 gds = [
     { name = "gdstk" },
 ]
+gpu = [
+    { name = "cupy-cuda12x", extra = ["ctk"] },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -903,6 +943,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cupy-cuda12x", extras = ["ctk"], marker = "extra == 'gpu'", specifier = ">=14.2.0" },
     { name = "gdsfactory", specifier = ">=6.111.0" },
     { name = "gdstk", marker = "extra == 'gds'", specifier = ">=1.0.1" },
     { name = "numpy", specifier = ">=1.24" },
@@ -914,7 +955,7 @@ requires-dist = [
     { name = "torch-sla", extras = ["cudss"], specifier = ">=0.3.2" },
     { name = "torch-strumpack", url = "https://github.com/sparsexlab/torch-strumpack/releases/download/v0.0.1.dev7/torch_strumpack-0.0.1.dev0-0_cuda12x-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
 ]
-provides-extras = ["gds"]
+provides-extras = ["gds", "gpu"]
 
 [package.metadata.requires-dev]
 dev = [

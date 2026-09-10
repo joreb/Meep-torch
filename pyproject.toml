@@ -25,6 +25,11 @@ dependencies = [
 gds = [
     "gdstk>=1.0.1",
 ]
+# 3D band solves on the GPU (mpb planewave3d); every cupy import is lazy,
+# CPU-only installs stay ~1 GB smaller: `uv sync --extra gpu`.
+gpu = [
+    "cupy-cuda12x[ctk]>=14.2.0",
+]
 
 [dependency-groups]
 dev = [
