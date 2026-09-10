@@ -101,6 +101,13 @@ class MirrorParity:
         back non-transverse to their own ``K``, by O(100) against a field
         of O(1). They are dropped: see :func:`_non_nyquist_mask`.
         """
+        if getattr(self.op, "_t", None) is not None:
+            X = np.asarray(X, dtype=complex)
+            sq = X.ndim == 1
+            if sq:
+                X = X[:, None]
+            out = self.op._t.mirror(X, self.axis, self.signs, self._keep)
+            return out[:, 0] if sq else out
         g = self.op.grid
         X = np.asarray(X, dtype=complex) * self._keep[:, None]
         v = self.op.to_cartesian(X)                     # (N_G, 3, m)

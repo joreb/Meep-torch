@@ -93,6 +93,22 @@ def _newton_bisect(fn, lo: float, hi: float, x0: float, tol: float,
     return x
 
 
+def _band_func_at(band, band_funcs):
+    """A 2-argument band function that fires only on ``band``.
+
+    Built by a factory rather than closing over the loop variable with a
+    DEFAULT argument: run_parity counts the parameters to decide whether a
+    band function is a thunk, and a third parameter -- even one with a
+    default -- fails that check with "Band function should take 1 or 2
+    arguments".
+    """
+    def bfunc(ms, which_band):
+        if which_band == band:
+            for fn in band_funcs:
+                apply_band_func_thunk(ms, fn, band, True)
+    return bfunc
+
+
 class FindKMixin:
     """``find_k`` on ModeSolver."""
 
@@ -139,13 +155,7 @@ class FindKMixin:
             for b, k in zip(range(band_min, band_max + 1), reversed(ks)):
                 self.num_bands = b
                 self.k_points = [korig + kdir1.scale(k)]
-
-                def bfunc(ms, b_prime, _b=b):
-                    if b_prime == _b:
-                        for fn in band_funcs:
-                            apply_band_func_thunk(ms, fn, _b, True)
-
-                self.run_parity(p, False, bfunc)
+                self.run_parity(p, False, _band_func_at(b, band_funcs))
 
         self.num_bands = num_bands_save
         self.k_points = kpoints_save

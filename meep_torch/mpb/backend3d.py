@@ -20,6 +20,7 @@ and assigning it puts an entry in the instance dict.
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 
@@ -67,6 +68,12 @@ def _symmetrize_eta(eta: np.ndarray, axis: int) -> np.ndarray:
 
 class Backend3DMixin:
     """The 3D planewave path, hung off ModeSolver."""
+
+    #: Torch device for the 3D apply. "cpu" keeps the numpy reference path,
+    #: which is what every committed gate was measured against; set to
+    #: "cuda" (or read from MEEP_TORCH_DEVICE, as the examples do) to move
+    #: the six FFTs and the tensor contraction onto the GPU.
+    device = os.environ.get("MEEP_TORCH_DEVICE", "cpu")
 
     def _uses_planewave_3d(self) -> bool:
         """True unless the caller explicitly asked for another backend."""
@@ -198,11 +205,16 @@ class Backend3DMixin:
         flag = self._parity & (EVEN_Z | ODD_Z | EVEN_Y | ODD_Y)
         if flag in _PARITY_AXIS:
             eta = _symmetrize_eta(eta, _PARITY_AXIS[flag][0])
-        op = ThetaOperator(eta, kvectors_3d(*grid, B, kc), grid)
+        # The projector is bound to THIS operator, and it is applied twice
+        # per operator apply, so it has to be on the same device. Built on
+        # the CPU while the solve ran on the GPU it cancelled the entire
+        # speedup: 153 s against 156 s, with the apply itself 4.2x faster.
+        op = ThetaOperator(eta, kvectors_3d(*grid, B, kc), grid,
+                           device=self.device)
         proj = self._parity_projector_3d(op)
         freqs, vecs = planewave_bands_3d(
             eta, a1, a2, a3, kc, self.num_bands, grid_shape=grid,
-            parity=proj, return_vectors=True,
+            parity=proj, return_vectors=True, device=self.device,
             tol=float(self.tolerance) if getattr(self, "tolerance", None) else 1e-7)
         self._op3d = op
         self._proj3d = proj

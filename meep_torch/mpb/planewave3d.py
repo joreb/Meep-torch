@@ -186,7 +186,8 @@ class ThetaOperator:
     into ``scipy.sparse.linalg.LinearOperator``.
     """
 
-    def __init__(self, eps_inv, K: np.ndarray, grid_shape):
+    def __init__(self, eps_inv, K: np.ndarray, grid_shape, device="cpu"):
+        self.device = str(device)
         self.grid = tuple(int(s) for s in grid_shape)
         self.n_g = int(np.prod(self.grid))
         self.n = 2 * self.n_g
@@ -200,6 +201,9 @@ class ThetaOperator:
         eta_mean = float(np.mean(np.trace(self.eta, axis1=-2, axis2=-1)) / 3.0)
         kk = np.sum(self.K ** 2, axis=1) * max(eta_mean, 1e-300)
         self._precond_diag = np.where(kk > 0, 1.0 / np.where(kk > 0, kk, 1.0), 0.0)
+        self._t = None
+        if self.device != "cpu":
+            self._t = _TorchArrays(self)
 
     # -- pieces, exposed because the tests check them individually --------
 
@@ -237,13 +241,24 @@ class ThetaOperator:
     # -- the apply --------------------------------------------------------
 
     def matmat(self, X):
+        """``Theta X``. numpy in, numpy out, whichever device runs it.
+
+        The CPU path stays numpy on purpose: every gate in the suite was
+        measured against it, and torch-on-CPU would differ in the last bits
+        of the FFT. The GPU path is a separate implementation of the same
+        five steps, held to the numpy one at 1e-12 by
+        ``test_cuda_matches_cpu_bands``.
+        """
         X = np.asarray(X, dtype=complex)
         squeeze = X.ndim == 1
         if squeeze:
             X = X[:, None]
-        d = self._cross_k(self.to_cartesian(X))
-        e = self._eta_apply(d)
-        out = self.to_frame(-self._cross_k(e))
+        if self._t is not None:
+            out = self._t.matmat(X)
+        else:
+            d = self._cross_k(self.to_cartesian(X))
+            e = self._eta_apply(d)
+            out = self.to_frame(-self._cross_k(e))
         return out[:, 0] if squeeze else out
 
     matvec = matmat
@@ -253,6 +268,83 @@ class ThetaOperator:
         X = np.asarray(X, dtype=complex)
         d = np.repeat(self._precond_diag, 2)
         return d[:, None] * X if X.ndim == 2 else d * X
+
+
+class _TorchArrays:
+    """The same operator on a torch device, for the 3D apply only.
+
+    Why the apply and not the whole eigensolve: scipy's LOBPCG is the
+    driver and it is cheap -- the cost is the matvec, which is six 3D FFTs
+    per column plus a tensor contraction. Moving just that costs two host
+    transfers of the block per apply and keeps the convergence behaviour,
+    the retry and every gate exactly as measured.
+
+    ``torch.lobpcg`` would avoid the transfers but does not accept complex
+    Hermitian input, so the whole-in-torch version would need its own
+    block iteration; that is a bigger change than the transfers are worth
+    until they show up in a profile.
+    """
+
+    def __init__(self, op):
+        import torch
+        self.torch = torch
+        self.dev = torch.device(op.device)
+        self.grid = op.grid
+        self.n_g, self.n = op.n_g, op.n
+        cd = torch.complex128
+        self.K = torch.as_tensor(op.K, device=self.dev, dtype=torch.float64)
+        self.t1 = torch.as_tensor(op.t1, device=self.dev, dtype=cd)
+        self.t2 = torch.as_tensor(op.t2, device=self.dev, dtype=cd)
+        self.eta = torch.as_tensor(op.eta, device=self.dev, dtype=cd)
+        self.Kc = self.K.to(cd)
+
+    def matmat(self, X):
+        torch = self.torch
+        x = torch.as_tensor(np.ascontiguousarray(X), device=self.dev,
+                            dtype=torch.complex128)
+        m = x.shape[1]
+        h = x.reshape(self.n_g, 2, m)
+        v = (self.t1[:, :, None] * h[:, 0][:, None, :]
+             + self.t2[:, :, None] * h[:, 1][:, None, :])
+        v = torch.linalg.cross(self.Kc[:, :, None].expand_as(v), v, dim=1)
+        f = torch.fft.ifftn(v.reshape(self.grid + (3, m)), dim=(0, 1, 2))
+        f = torch.einsum("xyzij,xyzjm->xyzim", self.eta, f)
+        f = torch.fft.fftn(f, dim=(0, 1, 2)).reshape(self.n_g, 3, m)
+        f = -torch.linalg.cross(self.Kc[:, :, None].expand_as(f), f, dim=1)
+        c1 = torch.einsum("gi,gim->gm", self.t1, f)
+        c2 = torch.einsum("gi,gim->gm", self.t2, f)
+        out = torch.stack([c1, c2], dim=1).reshape(self.n, m)
+        return out.cpu().numpy()
+
+    def mirror(self, X, axis: int, signs, keep):
+        """The parity mirror, on device.
+
+        Left on the host it would dominate a GPU parity run: the projector
+        is applied twice per operator apply, and each application is two
+        more 3D FFTs of the same block.
+        """
+        torch = self.torch
+        x = torch.as_tensor(np.ascontiguousarray(X), device=self.dev,
+                            dtype=torch.complex128)
+        keep_t = torch.as_tensor(keep, device=self.dev,
+                                 dtype=torch.complex128)[:, None]
+        x = x * keep_t
+        m = x.shape[1]
+        h = x.reshape(self.n_g, 2, m)
+        v = (self.t1[:, :, None] * h[:, 0][:, None, :]
+             + self.t2[:, :, None] * h[:, 1][:, None, :])
+        f = torch.fft.ifftn(v.reshape(self.grid + (3, m)), dim=(0, 1, 2))
+        n_ax = self.grid[axis]
+        idx = torch.as_tensor((-np.arange(n_ax)) % n_ax, device=self.dev)
+        f = torch.index_select(f, axis, idx)
+        sg = torch.as_tensor(signs, device=self.dev,
+                             dtype=torch.complex128)
+        f = f * sg[None, None, None, :, None]
+        f = torch.fft.fftn(f, dim=(0, 1, 2)).reshape(self.n_g, 3, m)
+        c1 = torch.einsum("gi,gim->gm", self.t1, f)
+        c2 = torch.einsum("gi,gim->gm", self.t2, f)
+        out = torch.stack([c1, c2], dim=1).reshape(self.n, m) * keep_t
+        return out.cpu().numpy()
 
 
 def assemble_dense_3d(eps_inv, K: np.ndarray, grid_shape) -> np.ndarray:
@@ -391,7 +483,8 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
                        grid_shape=None, tol: float = 1e-7,
                        maxiter: int = 500, extra: int = 6,
                        seed: int = 0, return_vectors: bool = False,
-                       parity=None, residual_warn: float = 1e-3):
+                       parity=None, residual_warn: float = 1e-3,
+                       device: str = "cpu"):
     """Lowest ``num_bands`` frequencies at cartesian Bloch vector ``kc``.
 
     ``eps_inv``: ``(n1, n2, n3)`` scalar or ``(n1, n2, n3, 3, 3)`` tensor
@@ -429,7 +522,7 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
         grid_shape = a.shape[:3] if a.ndim >= 3 else a.shape
     B, _ = reciprocal_duals_3d(a1, a2, a3)
     K = kvectors_3d(*grid_shape, B, kc)
-    op = ThetaOperator(eps_inv, K, grid_shape)
+    op = ThetaOperator(eps_inv, K, grid_shape, device=device)
     if not 1 <= num_bands <= op.n:
         raise ValueError(f"num_bands must be in 1..{op.n}, got {num_bands}")
 
@@ -487,6 +580,39 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
     res = _eig_residuals(op, vals[:num_bands], vecs[:, :num_bands],
                          scale=block_scale)
     worst = float(np.max(res, initial=0.0))
+
+    if worst > residual_warn:
+        # scipy's LOBPCG stops on its OWN residual estimate and then
+        # postprocesses, so it can declare success early and be badly
+        # wrong. Measured on the hole slab at 9 bands, resolution 16: it
+        # returned after 117 iterations of a 500 budget with the true
+        # residual at 7.1e-01 -- not a marginal miss, a wrong answer that
+        # looks converged, and the eigenvalue-change criterion agreed with
+        # it (1.7e-02). Retry once, seeded with the vectors it returned and
+        # at a tighter tolerance, before saying anything: that took the
+        # same case to 3.0e-09. A warning the caller cannot act on is
+        # worse than a second attempt, and returning the 0.71 silently
+        # would be worse than either.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            v2, w2, hist2 = lobpcg(A, vecs, M=M, tol=tol * 1e-3,
+                                   maxiter=maxiter, largest=False,
+                                   retLambdaHistory=True)
+        o2 = np.argsort(np.real(v2))
+        v2, w2 = np.real(v2)[o2], w2[:, o2]
+        s2 = float(np.max(np.abs(v2))) if v2.size else 0.0
+        r2 = _eig_residuals(op, v2[:num_bands], w2[:, :num_bands], scale=s2)
+        if float(np.max(r2, initial=0.0)) < worst:
+            vals, vecs, res = v2, w2, r2
+            block_scale, worst = s2, float(np.max(r2, initial=0.0))
+            n_iter += max(len(hist2) - 1, 0)
+            if len(hist2) >= 2:
+                a_, b_ = (np.real(np.asarray(hist2[-1])).ravel(),
+                          np.real(np.asarray(hist2[-2])).ravel())
+                m_ = min(a_.size, b_.size, num_bands)
+                sc_ = max(float(np.max(np.abs(a_[:m_]))), 1e-300)
+                eig_change = float(np.max(np.abs(a_[:m_] - b_[:m_])) / sc_)
+
     if worst > residual_warn:
         warnings.warn(
             f"planewave 3D eigensolve is weakly converged: worst band "

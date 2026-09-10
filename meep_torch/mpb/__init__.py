@@ -8,7 +8,9 @@ what is backed vs raised.
 """
 from .band_functions import (apply_band_func, apply_band_func_thunk,
                              display_group_velocities, display_yparities,
-                             display_zparities,
+                             display_zparities, output_poynting,
+                             output_poynting_x, output_poynting_y,
+                             output_poynting_z,
                              combine_band_functions, fix_bfield_phase,
                              fix_dfield_phase, fix_efield_phase,
                              fix_hfield_phase, output_at_kpoint,

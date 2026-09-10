@@ -24,6 +24,8 @@ __all__ = [
     "fix_efield_phase", "combine_band_functions", "output_at_kpoint",
     "apply_band_func", "apply_band_func_thunk", "output_epsilon",
     "display_yparities", "display_zparities", "display_group_velocities",
+    "output_poynting", "output_poynting_x", "output_poynting_y",
+    "output_poynting_z",
 ]
 
 
@@ -110,6 +112,24 @@ fix_hfield_phase = _fix("h")
 fix_bfield_phase = _fix("b")
 fix_dfield_phase = _fix("d")
 fix_efield_phase = _fix("e")
+
+
+def _poynting(suffix):
+    def _fn(ms, which_band):
+        ms.get_poynting(which_band)
+        ms.output_field_to_file({"": -1, "_x": 0, "_y": 1, "_z": 2}[suffix],
+                                f"{ms.get_filename_prefix()}flux.")
+    _fn.__name__ = f"output_poynting{suffix}"
+    _fn.__doc__ = ("Band function: write the time-averaged Poynting vector"
+                   f"{' component ' + suffix[1:] if suffix else ''} to "
+                   "``<prefix>flux.*.h5``.")
+    return _fn
+
+
+output_poynting = _poynting("")
+output_poynting_x = _poynting("_x")
+output_poynting_y = _poynting("_y")
+output_poynting_z = _poynting("_z")
 
 
 def display_yparities(ms):
