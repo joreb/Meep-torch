@@ -13,7 +13,8 @@ which has no eigenvectors and infers the band index from a sorted
 detection list -- it mis-numbers wherever a mode is missed or duplicated,
 and in 3D the bands are dense enough that this is the normal case rather
 than the exception. It also cannot do parity sectors or fields at all. So
-3D uses planewave unless the caller has explicitly set ``ms.backend``,
+3D uses planewave unless the caller has explicitly set
+``ms.request_backend``,
 which is detectable because ``backend`` is a CLASS attribute on ModeSolver
 and assigning it puts an entry in the instance dict.
 """
@@ -79,10 +80,36 @@ class Backend3DMixin:
     #: k-point sweep says it once rather than per k-point.
     _warned_device = False
 
+    @property
+    def active_backend(self) -> str:
+        """What will ACTUALLY solve, as opposed to what ``backend`` says.
+
+        ``request_backend`` is what the caller ASKED for; this is what
+        will run. They differ wherever the request cannot be honoured: 3D
+        and a ``size=(0, y, z)`` cross-section default to the planewave
+        operator regardless, so a script printing the request reports
+        "fdfd" for a run that never touched the FDFD path.
+
+        The two are separate names rather than one honest ``backend``
+        because the request has to stay a settable attribute that reads
+        back what was assigned -- the 3D dispatch distinguishes "the user
+        set it" from "it is the default" by looking for it in the instance
+        dict, and a property returning something else would break both the
+        round trip and that check.
+
+        This is the third label in this package found claiming something
+        the run did not do -- after a DEVICE line that auto-detected CUDA
+        and printed it for a CPU run, and ``ms.device`` silently ignored
+        in 2D. Examples should print this one.
+        """
+        if self._use_3d_path():
+            return "planewave-3d"
+        return self.request_backend
+
     def _uses_planewave_3d(self) -> bool:
         """True unless the caller explicitly asked for another backend."""
-        if "backend" in vars(self):
-            return self.backend == "planewave"
+        if "request_backend" in vars(self):
+            return self.request_backend == "planewave"
         return True
 
     def _is_cross_section(self) -> bool:

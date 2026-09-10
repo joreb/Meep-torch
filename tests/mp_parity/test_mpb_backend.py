@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""ModeSolver.backend: the fdfd and planewave band solvers side by side.
+"""ModeSolver.request_backend: the fdfd and planewave band solvers side by side.
 
 Two backends solve the same 2D eigenproblem: ``"fdfd"`` (2nd-order finite
 differences, the default, what every committed golden was measured with)
@@ -51,7 +51,7 @@ def _ms(backend, lattice=SQUARE, k=Vector3(0.3), nb=3, res=RES,
     ms = ModeSolver(num_bands=num_bands or nb, resolution=res, k_points=[k],
                     geometry_lattice=lattice,
                     geometry=geometry if geometry is not None else ROD, **kw)
-    ms.backend = backend
+    ms.request_backend = backend
     return ms
 
 
@@ -149,7 +149,7 @@ def test_anisotropic_complete_gap_vs_mpb(backend, tol):
         geometry=[Cylinder(ref["r"], material=Medium(
             epsilon_diag=Vector3(*ref["rod_eps_diag"])))],
         default_material=Medium(epsilon_diag=Vector3(*ref["bg_eps_diag"])))
-    ms.backend = backend
+    ms.request_backend = backend
     ms.run()
     want = np.array(ref["all_freqs"])
     got = np.array(ms.all_freqs)
@@ -170,7 +170,7 @@ def test_planewave_targeted_above_dense_max_says_how_to_proceed():
     ms = ModeSolver(num_bands=1, resolution=80, k_points=[Vector3(0.5, 0.5)],
                     geometry_lattice=SQUARE, geometry=ROD,
                     target_freq=0.35, tolerance=1e-8)
-    ms.backend = "planewave"
+    ms.request_backend = "planewave"
     with pytest.raises(NotImplementedError, match='backend = "fdfd"'):
         ms.run_tm()
 
@@ -203,7 +203,7 @@ def test_planewave_defect_field_beats_fdfd_against_meep(tmp_path, monkeypatch):
     for backend in ("fdfd", "planewave"):
         ms = ModeSolver(num_bands=50, resolution=16, geometry_lattice=lat,
                         geometry=geom, k_points=[Vector3(0.5, 0.5)])
-        ms.backend = backend
+        ms.request_backend = backend
         ms.filename_prefix = backend
         monkeypatch.chdir(tmp_path)
         ms.run_tm()

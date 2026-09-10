@@ -89,8 +89,12 @@ class ModeSolver(FindKMixin, Backend3DMixin, FieldsMixin, BackendMixin, RasterMi
     # differences, the default and what every committed golden was measured
     # with) or "planewave" (mpb.planewave, spectral). Not a meep attribute
     # -- meep has one backend -- so it is set after construction:
-    # ``ms.backend = "planewave"``. 1D/3D ignore it and stay on harminv.
-    backend = "fdfd"
+    # ``ms.request_backend = "planewave"``. Read the OUTCOME back from
+    # ``ms.active_backend``, which is not always what was requested: 3D and
+    # a size=(0, y, z) cross-section run the planewave operator whatever
+    # this says. Two names because they are two different facts -- what was
+    # asked for, and what solved.
+    request_backend = "fdfd"
     min_Q = 100.0        # harminv mode acceptance
     min_amp = 1e-9
 

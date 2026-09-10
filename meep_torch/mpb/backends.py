@@ -206,13 +206,13 @@ class BackendMixin:
             k1 = float(k[0])
             k2 = float(k[1]) if len(self._active_axes()) == 2 else 0.0
 
-            if self.backend not in ("fdfd", "planewave"):
+            if self.request_backend not in ("fdfd", "planewave"):
                 raise ValueError(
                     f"backend must be 'fdfd' or 'planewave', got "
-                    f"{self.backend!r}")
+                    f"{self.request_backend!r}")
 
             def solve(pol):
-                if self.backend == "fdfd":
+                if self.request_backend == "fdfd":
                     return bloch_bands_2d(
                         eps, dx, dx, 0.0, 0.0, self.num_bands, pol,
                         differentiable=self.differentiable,
@@ -236,7 +236,7 @@ class BackendMixin:
                         raise
                     raise NotImplementedError(
                         f"the planewave backend cannot take this case: "
-                        f"{exc}\n\nSet ms.backend = \"fdfd\" to solve it "
+                        f"{exc}\n\nSet ms.request_backend = \"fdfd\" to solve it "
                         f"with the finite-difference backend, which is "
                         f"matrix-free and has no such limit.") from exc
 
