@@ -7,7 +7,7 @@ from meep_torch import mpb
 from _mpb_plots import band_figure
 import pathlib
 
-OUT = pathlib.Path(__file__).parent / "output"
+OUT = pathlib.Path(__file__).parent / "output/mpb_diamond/"
 OUT.mkdir(exist_ok=True)
 
 
@@ -63,6 +63,7 @@ ms = mpb.ModeSolver(
     mesh_size=mesh_size,
 )
 ms.device = "cuda"
+ms.filename_prefix = str(OUT /"mpb_diamond")
 
 
 def main():

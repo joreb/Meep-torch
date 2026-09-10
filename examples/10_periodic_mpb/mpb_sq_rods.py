@@ -11,9 +11,10 @@ import numpy as np
 import meep_torch.mp as mp
 from meep_torch import mpb
 
+
 from _mpb_plots import band_figure, epsilon_figure
 
-OUT = pathlib.Path(__file__).parent / "output"
+OUT = pathlib.Path(__file__).parent / "output/mpb_sq_rods"
 OUT.mkdir(exist_ok=True)
 
 # Define various parameters with define_param so that they are
@@ -73,7 +74,7 @@ def main():
     ms.display_eigensolver_stats()
 
     best = max(gaps["tm"], default=0.0)
-    print(f"mpb_sq_rods.png  [{ms.backend}]  largest TM gap = {best:.4f}%")
+    print(f"mpb_sq_rods.png  [{ms.active_backend}]  largest TM gap = {best:.4f}%")
 
 
 if __name__ == "__main__":
