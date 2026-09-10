@@ -101,12 +101,14 @@ class MirrorParity:
         back non-transverse to their own ``K``, by O(100) against a field
         of O(1). They are dropped: see :func:`_non_nyquist_mask`.
         """
-        if getattr(self.op, "_t", None) is not None:
+        if getattr(self.op, "_d", None) is not None:
+            cp = self.op._d.cp
             X = np.asarray(X, dtype=complex)
             sq = X.ndim == 1
             if sq:
                 X = X[:, None]
-            out = self.op._t.mirror(X, self.axis, self.signs, self._keep)
+            out = cp.asnumpy(self.op._d.mirror(cp.asarray(X), self.axis,
+                                               self.signs, self._keep))
             return out[:, 0] if sq else out
         g = self.op.grid
         X = np.asarray(X, dtype=complex) * self._keep[:, None]
@@ -119,6 +121,19 @@ class MirrorParity:
         f = np.fft.fftn(f, axes=(0, 1, 2))
         out = self.op.to_frame(f.reshape(self.op.n_g, 3, m))
         return out * self._keep[:, None]
+
+    def apply_device(self, Z):
+        """The projector on a DEVICE block, staying on the device.
+
+        Half the solve's runtime is projector applications (2009 of them
+        against 504 operator applies on the hole slab), so this is the one
+        that most needs to avoid a host round trip.
+        """
+        m = self.op._d.mirror(Z, self.axis, self.signs, self._keep)
+        cp = self.op._d.cp
+        keep = cp.asarray(self._keep.astype(complex))[:, None]
+        Zk = Z * keep
+        return 0.5 * (Zk + m) if self.even else 0.5 * (Zk - m)
 
     def __call__(self, X):
         """Project onto the chosen sector: ``(I +- M)/2`` on the kept space.

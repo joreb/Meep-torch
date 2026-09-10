@@ -201,9 +201,10 @@ class ThetaOperator:
         eta_mean = float(np.mean(np.trace(self.eta, axis1=-2, axis2=-1)) / 3.0)
         kk = np.sum(self.K ** 2, axis=1) * max(eta_mean, 1e-300)
         self._precond_diag = np.where(kk > 0, 1.0 / np.where(kk > 0, kk, 1.0), 0.0)
-        self._t = None
+        self.eta_host, self.K_host = self.eta, self.K
+        self._d = None
         if self.device != "cpu":
-            self._t = _TorchArrays(self)
+            self._d = _DeviceArrays(self)
 
     # -- pieces, exposed because the tests check them individually --------
 
@@ -253,8 +254,9 @@ class ThetaOperator:
         squeeze = X.ndim == 1
         if squeeze:
             X = X[:, None]
-        if self._t is not None:
-            out = self._t.matmat(X)
+        if self._d is not None:
+            cp = self._d.cp
+            out = cp.asnumpy(self._d.apply(cp.asarray(X)))
         else:
             d = self._cross_k(self.to_cartesian(X))
             e = self._eta_apply(d)
@@ -263,6 +265,13 @@ class ThetaOperator:
 
     matvec = matmat
 
+    def apply_device(self, Z):
+        """``Theta Z`` for a DEVICE block; no host round trip."""
+        return self._d.apply(Z)
+
+    def precond_device(self, Z):
+        return self._d.precond(Z)
+
     def precond(self, X):
         """``M^-1 X`` with M diagonal in the planewave basis."""
         X = np.asarray(X, dtype=complex)
@@ -270,81 +279,70 @@ class ThetaOperator:
         return d[:, None] * X if X.ndim == 2 else d * X
 
 
-class _TorchArrays:
-    """The same operator on a torch device, for the 3D apply only.
+class _DeviceArrays:
+    """The operator's arrays on a cupy device, and a device-native apply.
 
-    Why the apply and not the whole eigensolve: scipy's LOBPCG is the
-    driver and it is cheap -- the cost is the matvec, which is six 3D FFTs
-    per column plus a tensor contraction. Moving just that costs two host
-    transfers of the block per apply and keeps the convergence behaviour,
-    the retry and every gate exactly as measured.
+    cupy rather than torch, and the reason is not preference: cupy mirrors
+    numpy's API, so this is the SAME five steps written once more with a
+    different array module, and -- more importantly -- cupy carries its own
+    LOBPCG, so the block algebra can stay on the device instead of coming
+    back to the host every iteration. A torch apply cannot do that; it was
+    measured at 143 s against 154 s, a 7% gain, because the apply is only
+    7.8% of the runtime. See :mod:`meep_torch.mpb.gpu3d`.
 
-    ``torch.lobpcg`` would avoid the transfers but does not accept complex
-    Hermitian input, so the whole-in-torch version would need its own
-    block iteration; that is a bigger change than the transfers are worth
-    until they show up in a profile.
+    Everything here takes and returns DEVICE arrays. Host conversion
+    happens at the public boundary, so the eigensolve never pays for it.
     """
 
     def __init__(self, op):
-        import torch
-        self.torch = torch
-        self.dev = torch.device(op.device)
+        import cupy as cp
+        self.cp = cp
         self.grid = op.grid
         self.n_g, self.n = op.n_g, op.n
-        cd = torch.complex128
-        self.K = torch.as_tensor(op.K, device=self.dev, dtype=torch.float64)
-        self.t1 = torch.as_tensor(op.t1, device=self.dev, dtype=cd)
-        self.t2 = torch.as_tensor(op.t2, device=self.dev, dtype=cd)
-        self.eta = torch.as_tensor(op.eta, device=self.dev, dtype=cd)
-        self.Kc = self.K.to(cd)
+        self.K = cp.asarray(op.K)
+        self.t1 = cp.asarray(op.t1.astype(complex))
+        self.t2 = cp.asarray(op.t2.astype(complex))
+        self.eta = cp.asarray(op.eta.astype(complex))
+        self.Kc = cp.asarray(op.K.astype(complex))
+        self.precond_diag = cp.asarray(op._precond_diag)
 
-    def matmat(self, X):
-        torch = self.torch
-        x = torch.as_tensor(np.ascontiguousarray(X), device=self.dev,
-                            dtype=torch.complex128)
-        m = x.shape[1]
-        h = x.reshape(self.n_g, 2, m)
+    def apply(self, Z):
+        """``Theta Z`` for a device block (2 N_G, m)."""
+        cp = self.cp
+        m = Z.shape[1]
+        h = Z.reshape(self.n_g, 2, m)
         v = (self.t1[:, :, None] * h[:, 0][:, None, :]
              + self.t2[:, :, None] * h[:, 1][:, None, :])
-        v = torch.linalg.cross(self.Kc[:, :, None].expand_as(v), v, dim=1)
-        f = torch.fft.ifftn(v.reshape(self.grid + (3, m)), dim=(0, 1, 2))
-        f = torch.einsum("xyzij,xyzjm->xyzim", self.eta, f)
-        f = torch.fft.fftn(f, dim=(0, 1, 2)).reshape(self.n_g, 3, m)
-        f = -torch.linalg.cross(self.Kc[:, :, None].expand_as(f), f, dim=1)
-        c1 = torch.einsum("gi,gim->gm", self.t1, f)
-        c2 = torch.einsum("gi,gim->gm", self.t2, f)
-        out = torch.stack([c1, c2], dim=1).reshape(self.n, m)
-        return out.cpu().numpy()
+        v = cp.cross(self.Kc[:, :, None], v, axisa=1, axisb=1, axisc=1)
+        f = cp.fft.ifftn(v.reshape(self.grid + (3, m)), axes=(0, 1, 2))
+        f = cp.einsum("xyzij,xyzjm->xyzim", self.eta, f)
+        f = cp.fft.fftn(f, axes=(0, 1, 2)).reshape(self.n_g, 3, m)
+        f = -cp.cross(self.Kc[:, :, None], f, axisa=1, axisb=1, axisc=1)
+        c1 = cp.einsum("gi,gim->gm", self.t1, f)
+        c2 = cp.einsum("gi,gim->gm", self.t2, f)
+        return cp.stack([c1, c2], axis=1).reshape(self.n, m)
 
-    def mirror(self, X, axis: int, signs, keep):
-        """The parity mirror, on device.
+    def precond(self, Z):
+        d = self.cp.repeat(self.precond_diag, 2)
+        return d[:, None] * Z
 
-        Left on the host it would dominate a GPU parity run: the projector
-        is applied twice per operator apply, and each application is two
-        more 3D FFTs of the same block.
-        """
-        torch = self.torch
-        x = torch.as_tensor(np.ascontiguousarray(X), device=self.dev,
-                            dtype=torch.complex128)
-        keep_t = torch.as_tensor(keep, device=self.dev,
-                                 dtype=torch.complex128)[:, None]
-        x = x * keep_t
-        m = x.shape[1]
-        h = x.reshape(self.n_g, 2, m)
+    def mirror(self, Z, axis, signs, keep):
+        """The parity mirror, device-native. Half the runtime goes here."""
+        cp = self.cp
+        keep_t = cp.asarray(keep.astype(complex))[:, None]
+        Z = Z * keep_t
+        m = Z.shape[1]
+        h = Z.reshape(self.n_g, 2, m)
         v = (self.t1[:, :, None] * h[:, 0][:, None, :]
              + self.t2[:, :, None] * h[:, 1][:, None, :])
-        f = torch.fft.ifftn(v.reshape(self.grid + (3, m)), dim=(0, 1, 2))
+        f = cp.fft.ifftn(v.reshape(self.grid + (3, m)), axes=(0, 1, 2))
         n_ax = self.grid[axis]
-        idx = torch.as_tensor((-np.arange(n_ax)) % n_ax, device=self.dev)
-        f = torch.index_select(f, axis, idx)
-        sg = torch.as_tensor(signs, device=self.dev,
-                             dtype=torch.complex128)
-        f = f * sg[None, None, None, :, None]
-        f = torch.fft.fftn(f, dim=(0, 1, 2)).reshape(self.n_g, 3, m)
-        c1 = torch.einsum("gi,gim->gm", self.t1, f)
-        c2 = torch.einsum("gi,gim->gm", self.t2, f)
-        out = torch.stack([c1, c2], dim=1).reshape(self.n, m) * keep_t
-        return out.cpu().numpy()
+        f = cp.take(f, cp.asarray((-np.arange(n_ax)) % n_ax), axis=axis)
+        f = f * cp.asarray(signs.astype(complex))[None, None, None, :, None]
+        f = cp.fft.fftn(f, axes=(0, 1, 2)).reshape(self.n_g, 3, m)
+        c1 = cp.einsum("gi,gim->gm", self.t1, f)
+        c2 = cp.einsum("gi,gim->gm", self.t2, f)
+        return cp.stack([c1, c2], axis=1).reshape(self.n, m) * keep_t
 
 
 def assemble_dense_3d(eps_inv, K: np.ndarray, grid_shape) -> np.ndarray:
@@ -526,6 +524,39 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
     if not 1 <= num_bands <= op.n:
         raise ValueError(f"num_bands must be in 1..{op.n}, got {num_bands}")
 
+    if op._d is not None:
+        # Whole block iteration on the device: cupy's own LOBPCG over the
+        # real embedding. See meep_torch.mpb.gpu3d for why the embedding
+        # is not optional (cupy's LOBPCG is silently wrong for complex).
+        from .gpu3d import solve_bands_cupy
+        vals, vecs = solve_bands_cupy(op, num_bands, parity=parity, tol=tol,
+                                      maxiter=maxiter, extra=extra, seed=seed)
+        block_scale = float(np.max(np.abs(vals))) if vals.size else 0.0
+        res = _eig_residuals(op, vals[:num_bands], vecs[:, :num_bands],
+                             scale=block_scale)
+        worst = float(np.max(res, initial=0.0))
+        if worst > residual_warn:
+            vals2, vecs2 = solve_bands_cupy(op, num_bands, parity=parity,
+                                            tol=tol * 1e-3, maxiter=maxiter,
+                                            extra=extra + 4, seed=seed + 1)
+            s2 = float(np.max(np.abs(vals2))) if vals2.size else 0.0
+            r2 = _eig_residuals(op, vals2[:num_bands], vecs2[:, :num_bands],
+                                scale=s2)
+            if float(np.max(r2, initial=0.0)) < worst:
+                vals, vecs, worst = vals2, vecs2, float(np.max(r2, initial=0.0))
+        if worst > residual_warn:
+            warnings.warn(
+                f"planewave 3D eigensolve (cupy) is weakly converged: worst "
+                f"band residual {worst:.3e} > {residual_warn:g}",
+                RuntimeWarning, stacklevel=2)
+        planewave_bands_3d.last_stats = {
+            "iterations": -1, "eig_change": float("nan"),
+            "residual": worst, "converged": worst <= residual_warn}
+        freqs = _freqs_3d(vals[:num_bands], scale=block_scale)
+        if not return_vectors:
+            return freqs
+        return freqs, vecs[:, :num_bands]
+
     apply_a, apply_m = op.matmat, op.precond
     if parity is not None:
         # P Theta P alone is WRONG for a smallest-eigenvalue solver: it
@@ -539,13 +570,18 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
         eta_hi = float(np.max(np.linalg.eigvalsh(op.eta.reshape(-1, 3, 3))))
         shift = 2.0 * float(np.max(np.sum(op.K ** 2, axis=1))) * max(eta_hi, 1e-300)
 
+        # One projector application per side, not two: the odd grid and
+        # the symmetrised eta make M commute with Theta exactly, so
+        # Theta(P X) is already in the sector and the outer P is a no-op.
+        # Half the solve's runtime was projector applications, so this is
+        # the single largest saving available here.
         def apply_a(X, _p=parity, _op=op, _s=shift):
             PX = _p(X)
-            return _p(_op.matmat(PX)) + _s * (X - PX)
+            return _op.matmat(PX) + _s * (X - PX)
 
         def apply_m(X, _p=parity, _op=op, _s=shift):
             PX = _p(X)
-            return _p(_op.precond(PX)) + (1.0 / _s) * (X - PX)
+            return _op.precond(PX) + (1.0 / _s) * (X - PX)
 
     block = min(num_bands + max(extra, 0), op.n)
     rng = np.random.default_rng(seed)
