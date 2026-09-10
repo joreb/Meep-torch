@@ -75,6 +75,10 @@ class Backend3DMixin:
     #: the six FFTs and the tensor contraction onto the GPU.
     device = os.environ.get("MEEP_TORCH_DEVICE", "cpu")
 
+    #: Set once the "device ignored in 2D" warning has been issued, so a
+    #: k-point sweep says it once rather than per k-point.
+    _warned_device = False
+
     def _uses_planewave_3d(self) -> bool:
         """True unless the caller explicitly asked for another backend."""
         if "backend" in vars(self):

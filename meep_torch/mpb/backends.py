@@ -170,6 +170,22 @@ class BackendMixin:
         # which _rasterize_epsilon does not produce.
         if self._use_3d_path():
             return self._solve_k_3d(k)
+        if str(getattr(self, "device", "cpu")) != "cpu" and not self._warned_device:
+            # ModeSolver.device is read ONLY by the 3D planewave path. It is
+            # a class attribute, so it exists on every solver and defaults
+            # from MEEP_TORCH_DEVICE -- which the examples set globally.
+            # Ignoring it silently means a 2D run looks GPU-accelerated and
+            # is not, with nothing in the output to say so. Warn rather than
+            # raise: a global MEEP_TORCH_DEVICE=cuda is a reasonable thing
+            # to have set, and refusing would break every 2D example for a
+            # setting the user did not aim at this solver.
+            import warnings
+            type(self)._warned_device = True
+            warnings.warn(
+                f"ModeSolver.device={self.device!r} is ignored for a "
+                f"{len(self._active_axes())}D lattice: only the 3D planewave "
+                f"backend has a device path. This run is on the CPU.",
+                RuntimeWarning, stacklevel=2)
         eps, dx = self._eps
         kc = reciprocal_to_cartesian(Vector3(*k), self.geometry_lattice)
         if len(self._active_axes()) in (1, 2):
