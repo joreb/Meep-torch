@@ -175,7 +175,7 @@ class FieldsMixin(OutputMixin):
             return np.einsum("xyzij,xyzj->xyzi", eta, F)
         eps, _ = self._grid()
         out = np.zeros_like(F)
-        if getattr(self, "backend", "fdfd") == "planewave":
+        if self.active_backend == "planewave":
             # spectral fields live at cell centres; the staggered edge
             # weights below belong to the finite-difference operator
             exx, eyy, ezz = (self._eps_diag
@@ -278,7 +278,7 @@ class FieldsMixin(OutputMixin):
         return E, D, H
 
     def _fields(self, which_band):
-        if getattr(self, "backend", "fdfd") == "planewave":
+        if self.active_backend == "planewave":
             return self._planewave_band_fields(which_band)
         # Under 2D no-parity a band is TM or TE individually, so the
         # polarization is per BAND, not per run. MPB's no-parity fields are
