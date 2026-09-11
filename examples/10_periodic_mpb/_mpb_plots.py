@@ -21,7 +21,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 __all__ = ["band_figure", "epsilon_figure", "eps_profile",
-           "field_figure", "field_grid_figure", "save"]
+           "epsilon_3d_figure", "field_figure", "field_grid_figure",
+           "save"]
 
 
 def band_figure(ms, title, corner_labels=None, gap_floor=1.0,
@@ -76,6 +77,68 @@ def save(fig, table, header, out, name):
     plt.close(fig)
     np.savetxt(out / f"{name}.csv", np.atleast_2d(table), delimiter=",",
                header=header, comments="" if "," in header else "# ")
+
+
+def epsilon_3d_figure(ms, title, level=None, max_dim=48, elev=22, azim=-58):
+    """The high-index region of a 3D cell as an isosurface.
+
+    A 3D structure has no faithful 2D picture: a slice through a hole slab
+    shows a slab with a gap in it, and a slice through the diamond lattice
+    catches whichever spheres the plane happens to cross. The surface
+    between high and low index is the thing that is actually periodic, so
+    that is what gets drawn.
+
+    ``marching_cubes`` from scikit-image, which is already a dependency.
+    Matplotlib's ``voxels`` would need no dependency but renders every cell
+    face -- a 32x32x65 cell is 66k voxels and minutes of drawing, against a
+    triangle mesh that takes a second.
+
+    The array is in LATTICE coordinates, so the vertices are mapped through
+    the lattice vectors before plotting: on an oblique cell (the hole slab
+    is triangular) the raw index space would draw the rhombic cell as a
+    box and the round holes as ellipses -- the same shear ``rectify``
+    exists to undo in 2D.
+
+    ``level`` defaults to the midpoint of the epsilon range, which is the
+    material boundary. ``max_dim`` downsamples so a fine grid stays
+    plottable; the surface is a picture, not a measurement.
+    """
+    from skimage import measure
+
+    eps = np.squeeze(np.asarray(ms.get_epsilon(), dtype=float))
+    if eps.ndim != 3:
+        raise ValueError(
+            f"epsilon_3d_figure needs a 3D cell; got shape {eps.shape}. "
+            f"Use epsilon_figure() for 1D and 2D.")
+    step = [max(1, n // max_dim) for n in eps.shape]
+    small = eps[::step[0], ::step[1], ::step[2]]
+    lo, hi = float(small.min()), float(small.max())
+    if hi - lo < 1e-12:
+        raise ValueError("epsilon is uniform; there is no surface to draw")
+    lvl = 0.5 * (lo + hi) if level is None else level
+
+    verts, faces, _, _ = measure.marching_cubes(small, level=lvl)
+    # index space -> fractional -> cartesian, through the lattice vectors
+    frac = verts / np.array(small.shape, dtype=float)
+    A = np.asarray(ms.get_lattice(), dtype=float)          # rows are a_i
+    xyz = frac @ A
+
+    fig = plt.figure(figsize=(5.5, 5), dpi=150)
+    ax = fig.add_subplot(projection="3d")
+    ax.plot_trisurf(xyz[:, 0], xyz[:, 1], faces, xyz[:, 2],
+                    color="tab:blue", alpha=0.85, linewidth=0, shade=True)
+    ax.set_xlabel("x"); ax.set_ylabel("y"); ax.set_zlabel("z")
+    ax.set_title(f"{title}\n$\\varepsilon$ = {lvl:.2f} isosurface",
+                 fontsize=10)
+    ax.view_init(elev=elev, azim=azim)
+    try:
+        ax.set_box_aspect(np.ptp(xyz, axis=0))
+    except Exception:                                # older matplotlib
+        pass
+    fig.tight_layout()
+    table = np.column_stack((xyz, np.zeros(len(xyz))))
+    return (fig, table[:, :3],
+            "x,y,z")
 
 
 def eps_profile(ax, ms, title, reference=None, mode="step"):
@@ -142,7 +205,8 @@ def field_figure(ms, band, title, component=2):
     return fig, field, f"Re(E_{'xyz'[component]}) of band {band} on the lattice grid"
 
 
-def epsilon_figure(ms, title, rectify=False, periods=1):
+def epsilon_figure(ms, title, rectify=False, periods=1,
+                   slice_axis=None, slice_index=None):
     """The dielectric the solver runs on, one panel per distinct component.
 
     ``get_epsilon()`` is the AXIAL component, which is what TM sees; TE
@@ -163,6 +227,14 @@ def epsilon_figure(ms, title, rectify=False, periods=1):
     # axes leaves every other case untouched.
     comps = [np.squeeze(np.asarray(ms.get_epsilon_tensor(c, c)))
              for c in range(3)]
+    if slice_axis is not None:
+        # A 3D cell has no single picture. Which plane is not a detail the
+        # helper can guess: for a slab supercell the informative cut is
+        # VERTICAL (through the slab and a hole), while for a bulk crystal
+        # it is usually a mid-plane of the third axis. The caller says.
+        idx = (comps[0].shape[slice_axis] // 2 if slice_index is None
+               else slice_index)
+        comps = [np.take(c, idx, axis=slice_axis) for c in comps]
     xx, yy, zz = comps
     eq = lambda p, q: np.allclose(p, q, rtol=0, atol=1e-12)
     shown = [(r"$\varepsilon_{zz}$  (TM)", zz)]
@@ -193,6 +265,8 @@ def epsilon_figure(ms, title, rectify=False, periods=1):
     # what TE sees; ezz alone would misreport an anisotropic cell
     lab, arr = shown[-1]
     where = "rectified grid" if rectify else "lattice grid"
+    if slice_axis is not None:
+        where += f", slice {slice_axis}={idx}"
     return fig, np.atleast_2d(arr), f"{lab.strip()} on the {where}"
 
 
