@@ -21,7 +21,7 @@ import numpy as np
 
 import meep_torch.mp as mp
 
-OUT = pathlib.Path(__file__).parent / "output"
+OUT = pathlib.Path(__file__).parent / "output/dipole_in_vacuum_cyl_on_axis_mp"
 OUT.mkdir(exist_ok=True)
 
 import torch

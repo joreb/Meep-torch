@@ -49,6 +49,35 @@ sources = [
     )
 ]
 
+# --- the source itself, before anything is solved -------------------------
+# The chirp is the subject of this example and nothing here showed it. The
+# instantaneous frequency is the derivative of the phase:
+#     phi(t)   = 2 pi v0 (t - t0) + b (t - t0)^2
+#     f_inst   = v0 + b (t - t0) / pi
+# so b < 0 puts the HIGH frequencies early -- the down-chirp in the title.
+_t = np.linspace(t0 - 4.5 / np.sqrt(a), t0 + 4.5 / np.sqrt(a), 2000)
+_s = np.array([chirp(t) for t in _t])
+_f_inst = v0 + b * (_t - t0) / np.pi
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(_t, _s.real, lw=0.8, color="tab:blue", label="Re $s(t)$")
+ax.plot(_t, np.abs(_s), lw=1.2, color="0.4", ls="--", label="envelope")
+ax.set_xlabel("t")
+ax.set_ylabel("source amplitude")
+ax.grid(alpha=0.3)
+ax2 = ax.twinx()
+ax2.plot(_t, _f_inst, lw=1.4, color="tab:red", label="$f_{inst}$")
+ax2.set_ylabel("instantaneous frequency", color="tab:red")
+ax2.tick_params(axis="y", labelcolor="tab:red")
+ax.set_title(f"Chirped source: $v_0$={v0}, a={a}, b={b} (down-chirp)")
+ax.legend(loc="upper left", fontsize=8)
+fig.tight_layout()
+fig.savefig(OUT / "chirped_pulse_source.png", dpi=150)
+plt.close(fig)
+np.savetxt(OUT / "chirped_pulse_source.csv",
+           np.column_stack((_t, _s.real, _s.imag, np.abs(_s), _f_inst)),
+           delimiter=",", header="t,Re_s,Im_s,envelope,f_inst", comments="")
+
 sim = mp.Simulation(
     cell_size=cell_size,
     boundary_layers=pml_layers,
