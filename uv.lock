@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'win32'",
@@ -919,9 +919,7 @@ dependencies = [
     { name = "pypardiso" },
     { name = "scipy" },
     { name = "torch" },
-    { name = "torch-amgx" },
     { name = "torch-sla", extra = ["cudss"] },
-    { name = "torch-strumpack" },
 ]
 
 [package.optional-dependencies]
@@ -951,9 +949,7 @@ requires-dist = [
     { name = "pypardiso", specifier = ">=0.4.7" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "torch", specifier = "==2.9.*", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "torch-amgx", url = "https://github.com/sparsexlab/torch-amgx/releases/download/v0.1.0a12/torch_amgx-0.1.0a2-0_cu128-cp312-cp312-manylinux_2_34_x86_64.manylinux_2_35_x86_64.whl" },
     { name = "torch-sla", extras = ["cudss"], specifier = ">=0.3.2" },
-    { name = "torch-strumpack", url = "https://github.com/sparsexlab/torch-strumpack/releases/download/v0.0.1.dev7/torch_strumpack-0.0.1.dev0-0_cuda12x-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
 ]
 provides-extras = ["gds", "gpu"]
 
@@ -1115,7 +1111,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.10.2.21"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fa/41/e79269ce215c857c935fd86bcfe91a451a584dfc27f1e068f568b9ad1ab7/nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:c9132cc3f8958447b4910a1720036d9eff5928cc3179b0a51fb6d167c6cc87d8", size = 705026878, upload-time = "2025-06-06T21:52:51.348Z" },
@@ -1356,7 +1352,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess" },
+    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
@@ -1999,26 +1995,6 @@ wheels = [
 ]
 
 [[package]]
-name = "torch-amgx"
-version = "0.1.0a2"
-source = { url = "https://github.com/sparsexlab/torch-amgx/releases/download/v0.1.0a12/torch_amgx-0.1.0a2-0_cu128-cp312-cp312-manylinux_2_34_x86_64.manylinux_2_35_x86_64.whl" }
-dependencies = [
-    { name = "torch" },
-]
-wheels = [
-    { url = "https://github.com/sparsexlab/torch-amgx/releases/download/v0.1.0a12/torch_amgx-0.1.0a2-0_cu128-cp312-cp312-manylinux_2_34_x86_64.manylinux_2_35_x86_64.whl", hash = "sha256:9c9d8e76496d8964e46a699a822249473be7c9928b4ebc72aa4da832a954b89a" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "scipy", marker = "extra == 'dev'" },
-    { name = "torch", specifier = ">=2.4.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "torch-sla"
 version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2037,27 +2013,6 @@ wheels = [
 cudss = [
     { name = "nvmath-python", extra = ["cu12"] },
 ]
-
-[[package]]
-name = "torch-strumpack"
-version = "0.0.1.dev0"
-source = { url = "https://github.com/sparsexlab/torch-strumpack/releases/download/v0.0.1.dev7/torch_strumpack-0.0.1.dev0-0_cuda12x-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
-dependencies = [
-    { name = "numpy" },
-    { name = "torch" },
-]
-wheels = [
-    { url = "https://github.com/sparsexlab/torch-strumpack/releases/download/v0.0.1.dev7/torch_strumpack-0.0.1.dev0-0_cuda12x-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:36ff6483b279d3ef8fd740ff6c3b1e9492ea4f431b96b33c825693114c6306b1" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "scipy", marker = "extra == 'dev'" },
-    { name = "torch", specifier = ">=2.1" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "tornado"

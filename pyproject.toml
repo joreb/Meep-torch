@@ -4,19 +4,21 @@ version = "0.1.0"
 description = "Differentiable FDTD/FDFD engine in PyTorch (meep-inspired)"
 license = "MIT"
 requires-python = ">=3.12,<3.13"
-# torch pinned to a cu128 build: the accelerated sparse backends
-# (torch-strumpack cuda12x, torch-amgx cu128, cuDSS via nvmath[cu12])
+# torch pinned to a cu128 build: cuDSS via nvmath[cu12] and cupy-cuda12x
 # are ABI/runtime-tied to CUDA 12.x -- cu130 torch has no matching
 # wheels (see wiki/TODO.md). Python pinned 3.12 (.python-version):
 # nvmath-python ships cp310-cp312 only.
+# torch-strumpack / torch-amgx dropped: Linux-only wheels blocked Windows
+# sync and neither was imported by the engine; the GPU sparse solve moves
+# to cupy (cupyx.scipy.sparse.linalg), see wiki fdfd_gpu-sparse-direct-backends.
 dependencies = [
     "torch==2.9.*",
     "numpy>=1.24",
     "scipy>=1.11",
     "gdsfactory>=6.111.0",
     "torch-sla[cudss]>=0.3.2",
-    "torch-strumpack",
-    "torch-amgx",
+    # "torch-strumpack",
+    # "torch-amgx",
     "pymkl>=0.0.3",
     "pypardiso>=0.4.7",
 ]
@@ -30,6 +32,14 @@ gds = [
 gpu = [
     "cupy-cuda12x[ctk]>=14.2.0",
 ]
+# symbolic FDTD stencil experiments (symbolic branch, symbolic_test/):
+# devito (symbolic PDE -> C codegen) and pylops (linear-operator FDTD).
+# Both are heavy and Linux-friendly; lazy imports in symbolic_test/ keep
+# the default install clean: `uv sync --extra symbolic`.
+symbolic = [
+    "devito>=4.8",
+    "pylops>=2.2",
+]
 
 [dependency-groups]
 dev = [
@@ -42,8 +52,6 @@ dev = [
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
-torch-strumpack = { url = "https://github.com/sparsexlab/torch-strumpack/releases/download/v0.0.1.dev7/torch_strumpack-0.0.1.dev0-0_cuda12x-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
-torch-amgx = { url = "https://github.com/sparsexlab/torch-amgx/releases/download/v0.1.0a12/torch_amgx-0.1.0a2-0_cu128-cp312-cp312-manylinux_2_34_x86_64.manylinux_2_35_x86_64.whl" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -60,4 +68,4 @@ packages = ["meep_torch"]
 [tool.pytest.ini_options]
 markers = ["slow: long-running tests, excluded by default"]
 addopts = "-m 'not slow'"
-testpaths = ["tests"]
+testpaths = ["tests", "symbolic_test"]
