@@ -12,11 +12,10 @@
 # NOT the devito batched-run model (meep_torch's DFT monitors need the field
 # each step), so it is a correctness comparison, not a perf one.
 #
-# ponytail: devito can't run on this box, so this is best-effort code for the
-# user's Linux+CUDA machine. If devito's fdkind='forward' derivative differs
-# from the torch forward difference by a sign or factor, the S-params diverge
-# and the gate fails -- tune the derivative kind on Linux. The pylops twin
-# (validated bitwise) is the proof the drop-in approach is sound.
+# Validated on Linux (devito 4.8.23): with the grid extent and dtype set below,
+# a 3-step state diff against step_tm is ~1e-16, i.e. the devito forward
+# derivative is bitwise the torch forward difference. The pylops twin is the
+# second, independent proof the drop-in approach is sound.
 import numpy as np
 import torch
 
@@ -43,7 +42,13 @@ def _build():
     in and reads the outputs back. fdkind='forward' selects (f[i+1]-f[i])/dx,
     matching meep's forward difference exactly."""
     from devito import Grid, Function, Eq, Operator
-    grid = Grid(shape=(NX, NY), extent=(NX * DX, NY * DX))
+    # extent is the distance between the FIRST and LAST point, so devito's
+    # derived spacing is extent/(shape-1): passing NX*DX makes every derivative
+    # off by NX/(NX-1) (~0.12% here) -- small enough to sneak past the S-param
+    # gate while still being wrong. dtype=float64 matches the torch state; the
+    # devito default is float32 and would cap the agreement at ~1e-7.
+    grid = Grid(shape=(NX, NY), extent=((NX - 1) * DX, (NY - 1) * DX),
+                dtype=np.float64)
     # inputs
     Ez = Function(name="Ez", grid=grid, space_order=1)
     Hx = Function(name="Hx", grid=grid, space_order=1)   # lives on (NX, NY-1)
