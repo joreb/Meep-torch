@@ -13,6 +13,7 @@
 # stencils are still exercised against the meep_torch reference on the SAME eps.
 import pathlib
 
+import numpy as np
 import torch
 
 from meep_torch.adjoint.filters import conic_filter, tanh_projection
@@ -65,9 +66,21 @@ p_in, p_up, p_dn = _HEAD["p_in"], _HEAD["p_up"], _HEAD["p_dn"]
 # geometry matches what c_y_splitter.py would simulate given its own seed.
 region = _HEAD["region"]
 seed = _HEAD["seed"]
+# Prefer the optimized rho if optimize_splitter (or c_y_splitter.py) has run;
+# fall back to the rasterized seed projected at BETA=64. After running
+#   uv run python -m symbolic_test.optimize_splitter --device cuda
+# the drop-in tests below compare against the OPTIMIZED device, not the seed.
+_RHO_NPY = SPLITTER / "output" / "c_y_splitter_rho.npy"
+if _RHO_NPY.exists():
+    _rho = torch.from_numpy(np.load(_RHO_NPY)).to(eps_base.dtype)
+    _rho_src = f"optimized rho ({_RHO_NPY.name})"
+else:
+    _rho = seed
+    _rho_src = "seed (no c_y_splitter_rho.npy -- run optimize_splitter)"
 _eps_fin = region.paint(
-    eps_base, tanh_projection(conic_filter(seed, 0.12, dx), 64.0)
+    eps_base, tanh_projection(conic_filter(_rho, 0.12, dx), 64.0)
 ).detach()
+print(f"splitter_setup  device geometry: {_rho_src}")
 coeffs = build_tm_coeffs(grid, eps_inf=_eps_fin, npml=NPML)
 src = ModeSourceTM(grid, coeffs, p_in, GaussianPulse(FCEN, 0.2), FCEN)
 mons = [
