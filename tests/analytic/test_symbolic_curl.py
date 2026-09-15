@@ -34,23 +34,47 @@ def _realise(expr, syms, fns, coord):
     return sp.simplify(out)
 
 
-def test_operator_curl_matches_sympy_vector():
-    """All nine signs, against sympy.vector.curl on the same field."""
+def test_operator_curl_matches_the_typed_curl():
+    """All nine signs, against a curl TYPED OUT here from the definition.
+
+    The independent side has to be typed. When this test was written,
+    symbolic.py entered the nine signs by hand and ``sympy.vector.curl`` was
+    the independent check. symbolic.py now *is* ``sympy.vector.curl``, so
+    comparing against it again would compare sympy.vector with sympy.vector
+    and pass no matter what the nine signs were -- the test would still be
+    green while checking only the operatorise/realise round trip.
+
+    So the reference below is written out longhand. It is the thing being
+    trusted, and it is deliberately the most boring code in this file.
+    """
     C = CoordSys3D("C")
     fns = [sp.Function(n)(C.x, C.y, C.z) for n in _NAMES]
     syms = {n: sp.Symbol(n) for n in _NAMES}
     coord = {"x": C.x, "y": C.y, "z": C.z}
+    d = lambda f, u: sp.Derivative(f, coord[u])
+    Ex, Ey, Ez = fns
 
-    field = fns[0] * C.i + fns[1] * C.j + fns[2] * C.k
-    reference = vector_curl(field)
+    # curl F = (dFz/dy - dFy/dz,  dFx/dz - dFz/dx,  dFy/dx - dFx/dy)
+    typed = (
+        d(Ez, "y") - d(Ey, "z"),
+        d(Ex, "z") - d(Ez, "x"),
+        d(Ey, "x") - d(Ex, "y"),
+    )
 
     mine = operator_curl((syms["Ex"], syms["Ey"], syms["Ez"]))
-    for component, basis, axis in zip(mine, (C.i, C.j, C.k), AXES):
+    for component, want, axis in zip(mine, typed, AXES):
         got = _realise(component, syms, fns, coord)
-        want = sp.simplify(reference.dot(basis))
         assert sp.simplify(got - want) == 0, (
-            f"curl {axis}-component disagrees with sympy.vector:\n"
-            f"  symbolic.py: {got}\n  sympy.vector: {want}")
+            f"curl {axis}-component disagrees with the typed curl:\n"
+            f"  symbolic.py: {got}\n  typed: {want}")
+
+    # and the typed reference itself agrees with sympy.vector, so a mistake in
+    # the longhand above cannot quietly become the accepted answer
+    field = fns[0] * C.i + fns[1] * C.j + fns[2] * C.k
+    reference = vector_curl(field)
+    for want, basis, axis in zip(typed, (C.i, C.j, C.k), AXES):
+        assert sp.simplify(want - reference.dot(basis)) == 0, (
+            f"the typed reference is itself wrong on {axis}")
 
 
 def test_two_dimensional_reduction_decouples():

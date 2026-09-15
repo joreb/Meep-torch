@@ -59,17 +59,39 @@ H_COMPONENTS = ("Hx", "Hy", "Hz")
 COMPONENTS = E_COMPONENTS + H_COMPONENTS
 AXES = ("x", "y", "z")
 
+class _OnDemand(dict):
+    """Operator symbols created on first use, so cylindrical r/theta appear
+    without a second table."""
+
+    def __missing__(self, axis):
+        self[axis] = sp.Symbol(f"D{axis}")
+        return self[axis]
+
+
 # symbolic partial-derivative operators, one per axis
-D = {a: sp.Symbol(f"D{a}", commutative=True) for a in AXES}
+D = _OnDemand({a: sp.Symbol(f"D{a}", commutative=True) for a in AXES})
 EPS = sp.Symbol("eps", positive=True)
+R = sp.Symbol("r", positive=True)      # the cylindrical radius, a plain symbol
 
 
-def curl(vec):
-    """curl of (vx, vy, vz) with the symbolic D operators."""
-    vx, vy, vz = vec
-    return (D["y"] * vz - D["z"] * vy,
-            D["z"] * vx - D["x"] * vz,
-            D["x"] * vy - D["y"] * vx)
+def curl(vec, system="cartesian"):
+    """curl of (v1, v2, v3) with the symbolic D operators, TYPED from the
+    textbook. This is the independent side: meep_torch.core.symbolic derives
+    the same thing from sympy.vector, so the two are separate routes to one
+    object and disagreement between them is a finding.
+
+    cylindrical: components (r, theta, z), 1/r metric factors written out.
+    """
+    v1, v2, v3 = vec
+    if system == "cartesian":
+        return (D["y"] * v3 - D["z"] * v2,
+                D["z"] * v1 - D["x"] * v3,
+                D["x"] * v2 - D["y"] * v1)
+    if system == "cylindrical":
+        return (D["theta"] * v3 / R - D["z"] * v2,
+                D["z"] * v1 - D["r"] * v3,
+                D["r"] * v2 + v2 / R - D["theta"] * v1 / R)
+    raise ValueError(f"unknown coordinate system {system!r}")
 
 
 def maxwell_rhs():
@@ -148,30 +170,50 @@ def polarisation_blocks(reduce_axes=("z",)):
     return out
 
 
-def difference(field, axis, target, h, sym):
-    """The finite difference of `field` along `axis`, evaluated at `target`'s
-    Yee location, built by sympy's own as_finite_difference.
+def sample_offsets(x0_over_h, order=2):
+    """The `order` integer sample positions nearest the evaluation point.
 
-    `sym` maps a relative sample index (0, +1, -1) to the symbol standing for
-    that neighbour. The offset between the two components decides which
-    samples are used -- forward or backward is derived, never chosen:
+    Independent of core's stencil_offsets: this ranks every candidate by its
+    distance to x0 and keeps the closest ones, with ties resolved outward on
+    both sides, so the stencil is whatever is nearest rather than a typed
+    pattern. Yee (x0 = +-h/2): order 2 -> (0, 1) or (-1, 0); order 4 ->
+    (-1, 0, 1, 2) or (-2, -1, 0, 1)."""
+    if order < 2 or order % 2:
+        raise ValueError(f"accuracy order must be even and >= 2, got {order}")
+    ks = sorted(range(-order, order + 1), key=lambda k: abs(k - x0_over_h))
+    return tuple(sorted(ks[:order]))
+
+
+def difference(field, axis, target, h, sym, order=2):
+    """The finite difference of `field` along `axis`, evaluated at `target`'s
+    Yee location, by LAGRANGE INTERPOLATION: fit the polynomial through the
+    samples, differentiate it, evaluate at the target node.
+
+    That is a different route from meep_torch.core.symbolic, which takes
+    Fornberg weights (sympy.calculus.finite_diff); sympy's own
+    as_finite_difference is Fornberg underneath too, which is why it is NOT
+    used here any more -- an oracle sharing the algorithm under test checks
+    nothing.
+
+    `sym` maps a relative sample index (an integer, 0 = the field's own node)
+    to the symbol standing for that neighbour. The offset between the two
+    components decides which samples are used -- forward or backward is
+    derived, never chosen:
 
         target is half a cell AHEAD of field  -> samples (0, +1), forward
         target is half a cell BEHIND field    -> samples (-1, 0), backward
     """
     ai = AXES.index(axis)
     delta = YEE[field][ai] - YEE[target][ai]
-    v = sp.Symbol("v")
-    f = sp.Function("f")
-    if delta == -HALF:
-        points, bind = [v, v + h], {f(v): sym(0), f(v + h): sym(+1)}
-    elif delta == +HALF:
-        points, bind = [v - h, v], {f(v): sym(0), f(v - h): sym(-1)}
-    else:
+    if abs(delta) != HALF:
         raise ValueError(
             f"d({field})/d{axis} at {target}: offset {delta} is not +/-1/2, so "
             "these two components are not Yee-staggered along this axis")
-    return sp.Derivative(f(v), v).as_finite_difference(points).subs(bind)
+    x0 = -delta * h                      # the target, measured from the field
+    ks = sample_offsets(-delta, order)
+    x = sp.Symbol("x")
+    poly = sp.interpolate([(k * h, sym(k)) for k in ks], x)
+    return sp.together(sp.diff(poly, x).subs(x, x0))
 
 
 def pml_split(diff_expr, psi, b, a, k):
@@ -190,6 +232,59 @@ def pml_split(diff_expr, psi, b, a, k):
     so the result matches meep's recursion exactly instead of approximately."""
     psi_new = b * psi + a * diff_expr
     return psi_new, diff_expr / k + psi_new
+
+
+def stretched_curl(vec, target, h, sym, psi, coef, order=2):
+    """The CPML-stretched discrete curl component driving `target`, as ONE
+    expression: typed curl -> a difference per derivative -> pml_split on
+    each -> summed. Cartesian, since the Yee offsets are cartesian.
+
+    This is the oracle for core's whole-curl D phase (compiled_stretched_curl),
+    which is the default path since 94a929c and was otherwise unchecked.
+
+        sym(name, k)      symbol for component `name` sampled k cells away
+        psi(name, axis)   the OLD psi memory symbol for that difference
+        coef(axis)        (b, a, k) for that axis
+    """
+    F = {str(v): v for v in vec}
+    comp = sp.expand(curl(vec)[AXES.index(target[-1])])
+    out = 0
+    for axis in AXES:
+        for name, f in F.items():
+            c = sp.diff(comp, D[axis], f)          # linear in both, so exact
+            if c == 0:
+                continue
+            d = difference(name, axis, target, h,
+                           lambda k, n=name: sym(n, k), order)
+            out += c * pml_split(d, psi(name, axis), *coef(axis))[1]
+    return out
+
+
+# How each field component transforms under a symmetry, TYPED from the
+# definition: E is a polar vector, E' = R E; H is axial, H' = det(R) R H, so
+# a reflection flips the H components that E keeps and vice versa. The
+# active quarter turn sends +x onto +y. Same statement in meep's words,
+# reference/meep/doc/docs/Exploiting_Symmetry.md: "the magnetic fields and
+# currents transform as pseudovectors ... multiplied by an additional factor
+# of -1 under mirror flips". core.symbolic derives this from Householder and
+# rot_axis3 matrices; this table is the other route.
+SYMMETRY_MATRICES = {
+    "mirror_x": sp.diag(-1, 1, 1),
+    "mirror_y": sp.diag(1, -1, 1),
+    "rot2_z": sp.diag(-1, -1, 1),
+    "rot4_z": sp.Matrix([[0, -1, 0], [1, 0, 0], [0, 0, 1]]),
+}
+#: {kind: {component: {source component: coefficient}}}
+PARITY = {
+    "mirror_x": {"Ex": {"Ex": -1}, "Ey": {"Ey": 1}, "Ez": {"Ez": 1},
+                 "Hx": {"Hx": 1}, "Hy": {"Hy": -1}, "Hz": {"Hz": -1}},
+    "mirror_y": {"Ex": {"Ex": 1}, "Ey": {"Ey": -1}, "Ez": {"Ez": 1},
+                 "Hx": {"Hx": -1}, "Hy": {"Hy": 1}, "Hz": {"Hz": -1}},
+    "rot2_z": {"Ex": {"Ex": -1}, "Ey": {"Ey": -1}, "Ez": {"Ez": 1},
+               "Hx": {"Hx": -1}, "Hy": {"Hy": -1}, "Hz": {"Hz": 1}},
+    "rot4_z": {"Ex": {"Ey": -1}, "Ey": {"Ex": 1}, "Ez": {"Ez": 1},
+               "Hx": {"Hy": -1}, "Hy": {"Hx": 1}, "Hz": {"Hz": 1}},
+}
 
 
 def describe():

@@ -49,6 +49,16 @@ details carry it, and both are load-bearing:
   between matching meep and not. ``x0`` fixes which samples the difference
   uses; it does not change how sympy prints the result, so ``together`` is
   still what puts it over one denominator.
+
+  That holds symbolically at every order, but the GENERATED CODE only inherits
+  it at order 2, which is the order every caller uses. ``together`` gives the
+  order-4 forward difference as ``(-27*c + nb_m1 + 27*nb_p1 - nb_p2)/(24*h)``
+  — one denominator — and then lambdify's printer factors the rational out and
+  emits ``(1/24)*(-27*c + nb_m1 + 27*nb_p1 - nb_p2)/h``, which is a multiply
+  and a divide. Order 2 emits ``(-c + nb_p1)/h``, one division, and is what the
+  bitwise gates run on. Anyone enabling order 4 should re-measure parity rather
+  than assume this property carries over; the algebra does and the codegen does
+  not.
 * Callers must combine the compiled pieces in meep's own association. A curl
   written ``d1/k1 + psi1 - d2/k2 - psi2`` and one written
   ``(d1/k1 + psi1) - (d2/k2 + psi2)`` are the same algebra and different
