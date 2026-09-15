@@ -41,6 +41,45 @@ def test_devito_matches_reference():
     assert 0.5 < peak < 2.0, f"devito peak ratio {peak:.4f} out of [0.5, 2.0]"
 
 
+def test_sympy_matches_reference():
+    """The sympy stencil is the oracle the other two are debugged against, so
+    it gets the same gate they do. It found two real devito bugs on its first
+    run: the leapfrog read the old H, and the source was not divided by the
+    eps of the cell it sits in."""
+    from .fdtd_sympy import run_sympy
+    ref = S.reference_ez()
+    sy = run_sympy()
+    assert ref.shape == sy.shape, f"shape {sy.shape} != ref {ref.shape}"
+    corr = _interior_corr(ref, sy, S.NPML)
+    peak = _interior_peak_ratio(ref, sy, S.NPML)
+    assert corr > 0.90, f"sympy interior corr {corr:.4f} < 0.90"
+    assert 0.5 < peak < 2.0, f"sympy peak ratio {peak:.4f} out of [0.5, 2.0]"
+
+
+def test_sympy_is_differentiable():
+    """The payoff of the torch backend: grad flows through the sympy-compiled
+    stencil with no autograd.Function and no hand-written adjoint anywhere --
+    unlike fdtd_pylops_2d (sparse transpose) and fdtd_devito_2d (hand-written
+    adjoint Operator), both of which exist only because their round-trip
+    severs the tape. Short run; this gates the graph, not the physics."""
+    import torch
+    from .fdtd_sympy import fields, step_sympy, _stencils
+    import math
+
+    eps = S.eps_field("cpu").clone().requires_grad_(True)
+    g = fields("cpu", eps=eps)
+    fns = _stencils()[:3]
+    ez, hx, hy = g["ez"], g["hx"], g["hy"]
+    for t in range(20):
+        amp = math.cos(2.0 * math.pi * S.FREQ * (t * g["dt"]))
+        ez, hx, hy = step_sympy(ez, hx, hy, eps, g["damp"],
+                                amp * g["mask"], g["dt"], g["dx"], fns)
+    (ez ** 2).sum().backward()
+    assert eps.grad is not None, "no gradient reached eps"
+    assert torch.isfinite(eps.grad).all(), "non-finite entries in d(sum Ez^2)/d(eps)"
+    assert float(eps.grad.abs().max()) > 0.0, "gradient is identically zero"
+
+
 def test_pylops_matches_reference():
     pytest.importorskip("pylops")
     from .fdtd_pylops import run_pylops
