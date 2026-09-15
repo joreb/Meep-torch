@@ -18,7 +18,18 @@ import math
 import numpy as np
 import scipy.sparse as sp
 
-from . import scenario as S
+def _scenario():
+    """scenario imported lazily, inside the functions that need it.
+
+    At module scope it would drag meep_torch in transitively (scenario builds
+    the reference with meep_torch.core), and fdtd_pylops_2d imports _fwd_x /
+    _fwd_y from here -- those are plain scipy matrix builders and must not
+    cost a meep_torch import."""
+    try:                   # package import (pytest, -m) ...
+        from . import scenario as S
+    except ImportError:    # ... or plain script run (path invocation)
+        import scenario as S
+    return S
 
 
 def _fwd_y(ny: int, dx: float) -> sp.csr_matrix:
@@ -79,6 +90,7 @@ def run_pylops(gpu: bool = False) -> np.ndarray:
     """Run the straight-waveguide with pylops -> Ez array (NX, NY) on CPU."""
     import pylops
 
+    S = _scenario()
     nx, ny, dx = S.NX, S.NY, S.DX
     dt = dx * 0.5
     n = S.n_steps(dt)
@@ -125,7 +137,12 @@ def run_pylops(gpu: bool = False) -> np.ndarray:
     b[src_ez] = -dt * inv_eps[src_ez]
 
     xp = _backend(gpu)
-    M_xp = xp.csr_matrix(M) if gpu else M
+    if gpu:
+        # sparse lives in cupyx, not cupy: `cupy.csr_matrix` does not exist.
+        import cupyx.scipy.sparse as xsp
+        M_xp = xsp.csr_matrix(M)
+    else:
+        M_xp = M
     u = xp.zeros(ne + nhx + nhy)
     b_xp = xp.asarray(b)
     Aop = pylops.MatrixMult(M_xp, dtype="float64")
@@ -141,10 +158,11 @@ def run_pylops(gpu: bool = False) -> np.ndarray:
 
 
 def _backend(gpu: bool):
+    """numpy, or cupy when gpu=True.
+
+    Raises rather than falling back: a silent CPU fallback reports a CPU
+    number under a GPU label, which is worse than no number at all."""
     if not gpu:
         return np
-    try:
-        import cupy as xp
-        return xp
-    except ImportError:
-        return np   # ponytail: silent CPU fallback; gate logs the device
+    import cupy as xp   # ImportError here is the honest answer
+    return xp
