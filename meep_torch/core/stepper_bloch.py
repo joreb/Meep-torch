@@ -26,6 +26,14 @@ import torch
 import torch.nn.functional as F
 
 from .coeffs import TMCoeffs
+from .symbolic import compiled_uniform_difference
+
+# Differences derived in core.symbolic rather than written here. A Bloch run
+# carries two real quadratures (c/s) of a complex envelope and takes its
+# periodic neighbour by `torch.roll`, so there is no target component to infer
+# the direction from -- these are the direction-given form.
+_FWD = compiled_uniform_difference("forward")
+_BWD = compiled_uniform_difference("backward")
 from .grid import Grid
 
 
@@ -55,7 +63,7 @@ def init_bloch_tm_state(grid: Grid, n_poles: int = 0) -> BlochTMState:
 
 def _dy_periodic(F: torch.Tensor, dx: float) -> torch.Tensor:
     """Periodic y-derivative (no phase): (F[:, j+1] - F[:, j]) / dx with wrap."""
-    return (torch.roll(F, -1, dims=1) - F) / dx
+    return _FWD(F, torch.roll(F, -1, dims=1), dx)
 
 
 def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
@@ -92,10 +100,10 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
     Hx_s = state.Hx_s - dt * Ds_y
 
     # x-derivative for Hy (x-CPML)
-    dEz_dx = (state.Ez_c[1:, :] - state.Ez_c[:-1, :]) / dx
+    dEz_dx = _FWD(state.Ez_c[:-1, :], state.Ez_c[1:, :], dx)
     psi_Ezx_c = m.b_hx * state.psi_Ezx_c + m.a_hx * dEz_dx
     Hy_c = state.Hy_c + dt * (dEz_dx / m.k_hx + psi_Ezx_c)
-    dEz_dx_s = (state.Ez_s[1:, :] - state.Ez_s[:-1, :]) / dx
+    dEz_dx_s = _FWD(state.Ez_s[:-1, :], state.Ez_s[1:, :], dx)
     psi_Ezx_s = m.b_hx * state.psi_Ezx_s + m.a_hx * dEz_dx_s
     Hy_s = state.Hy_s + dt * (dEz_dx_s / m.k_hx + psi_Ezx_s)
 
@@ -105,13 +113,13 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
     # BACKWARD difference (Hx[j]-Hx[j-1]) -- a forward diff here shifts the curl
     # by one cell, making the update operator non-symmetric (complex eigenvalues
     # -> growth at any dt at structured-eps interfaces).
-    dhxc_dy = (Hx_c - torch.roll(Hx_c, 1, dims=1)) / dx    # backward, cell node
-    dhxs_dy = (Hx_s - torch.roll(Hx_s, 1, dims=1)) / dx
+    dhxc_dy = _BWD(Hx_c, torch.roll(Hx_c, 1, dims=1), dx)    # backward, cell node
+    dhxs_dy = _BWD(Hx_s, torch.roll(Hx_s, 1, dims=1), dx)
     # i k_y coupling at Dz's position (j): midpoint average of Hx back from j+1/2
     Hxm_c = 0.5 * (Hx_c + torch.roll(Hx_c, 1, dims=1))
     Hxm_s = 0.5 * (Hx_s + torch.roll(Hx_s, 1, dims=1))
-    dHy_dx_c = (Hy_c[1:, :] - Hy_c[:-1, :]) / dx
-    dHy_dx_s = (Hy_s[1:, :] - Hy_s[:-1, :]) / dx
+    dHy_dx_c = _FWD(Hy_c[:-1, :], Hy_c[1:, :], dx)
+    dHy_dx_s = _FWD(Hy_s[:-1, :], Hy_s[1:, :], dx)
     psi_Hyx_c = m.b_ex * state.psi_Hyx_c + m.a_ex * dHy_dx_c
     psi_Hyx_s = m.b_ex * state.psi_Hyx_s + m.a_ex * dHy_dx_s
     # x-CPML on the x-curl (interior x); y is full-periodic -> take the y-curl
@@ -249,8 +257,8 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     Dx_s = state.Dx_s + dt * (dhs + ky * Hzm_c)
     Ex_c, Ex_s = Dx_c / eps_x, Dx_s / eps_x
 
-    dHz_dx_c = (state.Hz_c[1:, :] - state.Hz_c[:-1, :]) / dx
-    dHz_dx_s = (state.Hz_s[1:, :] - state.Hz_s[:-1, :]) / dx
+    dHz_dx_c = _FWD(state.Hz_c[:-1, :], state.Hz_c[1:, :], dx)
+    dHz_dx_s = _FWD(state.Hz_s[:-1, :], state.Hz_s[1:, :], dx)
     psi_Hzx_c = m.b_hx * state.psi_Hzx_c + m.a_hx * dHz_dx_c
     psi_Hzx_s = m.b_hx * state.psi_Hzx_s + m.a_hx * dHz_dx_s
     Dy_c = state.Dy_c - dt * (dHz_dx_c / m.k_hx + psi_Hzx_c)
@@ -258,14 +266,14 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     Ey_c, Ey_s = Dy_c / eps_y, Dy_s / eps_y
 
     # --- Hz update (from E at n+1/2) ---
-    dexc_dy = (Ex_c - torch.roll(Ex_c, 1, dims=1)) / dx   # backward, periodic
-    dexs_dy = (Ex_s - torch.roll(Ex_s, 1, dims=1)) / dx
+    dexc_dy = _BWD(Ex_c, torch.roll(Ex_c, 1, dims=1), dx)   # backward, periodic
+    dexs_dy = _BWD(Ex_s, torch.roll(Ex_s, 1, dims=1), dx)
     Exm_c = 0.5 * (Ex_c + torch.roll(Ex_c, 1, dims=1))    # at Hz's position (j)
     Exm_s = 0.5 * (Ex_s + torch.roll(Ex_s, 1, dims=1))
     curlY_c = dexc_dy - ky * Exm_s
     curlY_s = dexs_dy + ky * Exm_c
-    dEy_dx_c = (Ey_c[1:, :] - Ey_c[:-1, :]) / dx          # (nx-2, ny)
-    dEy_dx_s = (Ey_s[1:, :] - Ey_s[:-1, :]) / dx
+    dEy_dx_c = _FWD(Ey_c[:-1, :], Ey_c[1:, :], dx)          # (nx-2, ny)
+    dEy_dx_s = _FWD(Ey_s[:-1, :], Ey_s[1:, :], dx)
     psi_Eyx_c = m.b_ex * state.psi_Eyx_c + m.a_ex * dEy_dx_c
     psi_Eyx_s = m.b_ex * state.psi_Eyx_s + m.a_ex * dEy_dx_s
     curl_c = dEy_dx_c / m.k_ex + psi_Eyx_c - curlY_c[1:-1, :]

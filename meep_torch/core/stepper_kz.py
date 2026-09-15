@@ -29,6 +29,15 @@ from typing import NamedTuple
 import torch
 
 from .pml import absorber_sigma, cpml_profiles
+from .symbolic import compiled_uniform_difference
+
+# Differences derived in core.symbolic rather than written here. The Bloch
+# steppers take their neighbour by periodic `torch.roll` rather than by
+# slicing, so there is no target component to infer the direction from -- these
+# are the direction-given form. The compiled stencil is pure arithmetic, so it
+# works unchanged on the complex fields a Bloch run carries.
+_FWD = compiled_uniform_difference("forward")
+_BWD = compiled_uniform_difference("backward")
 
 
 class KzCoeffs(NamedTuple):
@@ -126,11 +135,11 @@ def step_kz(state: KzState, c: KzCoeffs, src_amp: float = 0.0,
 
     if cpml is None:
         # --- wave-1 matched-sigma absorber path ---
-        dEz = (state.Ez[1:] - state.Ez[:-1]) / dx
+        dEz = _FWD(state.Ez[:-1], state.Ez[1:], dx)
         Hy = c.h1 * state.Hy + c.h2 * (-ikz * state.Ex + dEz)
         Ex = (c.dx1 * state.Ex * c.eps_x + c.dx2 * (-ikz * Hy)) / c.eps_x
         curl = torch.zeros_like(state.Ez)
-        curl[1:-1] = (Hy[1:] - Hy[:-1]) / dx
+        curl[1:-1] = _BWD(Hy[1:], Hy[:-1], dx)
         Ez = (c.de1 * state.Ez * c.eps_z + c.de2 * curl) / c.eps_z
         if src_ix is not None:
             Ez[src_ix] = Ez[src_ix] - dt * src_amp / c.eps_z[src_ix]

@@ -389,6 +389,39 @@ def compiled_difference(field: str, axis: str, target: str):
     return _DIFF_CACHE[key]
 
 
+def compiled_uniform_difference(direction: str, order: int = 2):
+    """``f(centre, neighbour, h)`` for a plain forward or backward difference.
+
+    The Yee-aware :func:`compiled_difference` derives WHICH direction from the
+    two components' offsets. Some steppers already know the direction and have
+    no field pair to derive it from -- the Bloch steppers take their neighbour
+    by periodic `torch.roll` rather than by slicing, so there is no "target
+    component" whose node the difference lands on. This is the same derivation
+    with the direction given rather than inferred, so those callers do not have
+    to borrow an unrelated component pair to get the right form.
+    """
+    if direction not in ("forward", "backward"):
+        raise ValueError(f"direction must be forward or backward, got {direction!r}")
+    h = sp.Symbol("h")
+    delta = -HALF if direction == "forward" else HALF
+    ks = stencil_offsets(delta, order)
+    # names must be valid Python identifiers: sympy silently swaps a Dummy in
+    # for anything lambdify cannot use as a parameter name, and "nb-1" is not
+    # one, so the generated source came out referencing Dummy_NN.
+    syms = {k: sp.Symbol("c" if k == 0 else
+                         f"nb_{'p' if k > 0 else 'm'}{abs(k)}") for k in ks}
+    expr = difference_at([k * h for k in ks], -delta * h, [syms[k] for k in ks])
+    # Signature is pinned to (centre, neighbours..., h) EXPLICITLY. Building it
+    # from `ks` instead puts the centre second for a backward difference --
+    # stencil_offsets returns (0, 1) forward but (-1, 0) backward -- so every
+    # caller passing (c, neighbour, h) silently bound them swapped and got the
+    # negated derivative. Measured as divergence to 1e+04 / 1e+09 rather than a
+    # float-level miss. The generated BODY looked right either way; only the
+    # parameter order was wrong, which is not visible from the body.
+    args = [syms[0]] + [syms[k] for k in ks if k != 0] + [h]
+    return sp.lambdify(args, expr, "torch")
+
+
 def _compile_pml():
     """``(psi_new_fn, stretched_fn)`` in torch.
 

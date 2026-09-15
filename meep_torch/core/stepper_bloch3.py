@@ -22,6 +22,15 @@ from typing import NamedTuple
 import torch
 
 from .pml import absorber_sigma
+from .symbolic import compiled_uniform_difference
+
+# Differences derived in core.symbolic rather than written here. The Bloch
+# steppers take their neighbour by periodic `torch.roll` rather than by
+# slicing, so there is no target component to infer the direction from -- these
+# are the direction-given form. The compiled stencil is pure arithmetic, so it
+# works unchanged on the complex fields a Bloch run carries.
+_FWD = compiled_uniform_difference("forward")
+_BWD = compiled_uniform_difference("backward")
 
 
 class Bloch3State(NamedTuple):
@@ -66,25 +75,25 @@ def init_bloch3_state(nx, ny, nz, device="cpu") -> Bloch3State:
 
 def _dp(F, axis, dx, k):
     """(d/du + i k) forward-periodic, midpoint-averaged coupling."""
-    return (torch.roll(F, -1, dims=axis) - F) / dx \
+    return _FWD(F, torch.roll(F, -1, dims=axis), dx) \
         + 1j * k * 0.5 * (F + torch.roll(F, -1, dims=axis))
 
 
 def _dm(F, axis, dx, k):
     """(d/du + i k) backward-periodic, midpoint-averaged coupling."""
-    return (F - torch.roll(F, 1, dims=axis)) / dx \
+    return _BWD(F, torch.roll(F, 1, dims=axis), dx) \
         + 1j * k * 0.5 * (F + torch.roll(F, 1, dims=axis))
 
 
 def _dz_f(F, dx):
     out = torch.zeros_like(F)
-    out[:, :, :-1] = (F[:, :, 1:] - F[:, :, :-1]) / dx
+    out[:, :, :-1] = _FWD(F[:, :, :-1], F[:, :, 1:], dx)
     return out
 
 
 def _dz_b(F, dx):
     out = torch.zeros_like(F)
-    out[:, :, 1:] = (F[:, :, 1:] - F[:, :, :-1]) / dx
+    out[:, :, 1:] = _BWD(F[:, :, 1:], F[:, :, :-1], dx)
     return out
 
 

@@ -27,6 +27,16 @@ from typing import NamedTuple
 
 import torch
 
+from .symbolic import compiled_uniform_difference
+
+# Differences derived in core.symbolic rather than written here. The Bloch
+# steppers take their neighbour by periodic `torch.roll` rather than by
+# slicing, so there is no target component to infer the direction from -- these
+# are the direction-given form. The compiled stencil is pure arithmetic, so it
+# works unchanged on the complex fields a Bloch run carries.
+_FWD = compiled_uniform_difference("forward")
+_BWD = compiled_uniform_difference("backward")
+
 
 class Bloch2State(NamedTuple):
     Ez_c: torch.Tensor;  Ez_s: torch.Tensor     # (nx, ny)
@@ -41,11 +51,11 @@ def init_bloch2_state(grid) -> Bloch2State:
 
 
 def _fwd(F, axis, dx):
-    return (torch.roll(F, -1, dims=axis) - F) / dx
+    return _FWD(F, torch.roll(F, -1, dims=axis), dx)
 
 
 def _bwd(F, axis, dx):
-    return (F - torch.roll(F, 1, dims=axis)) / dx
+    return _BWD(F, torch.roll(F, 1, dims=axis), dx)
 
 
 def _mid_fwd(F, axis):
