@@ -26,6 +26,7 @@ from ..core.materials import Material
 from ..core.monitors import DFTFieldsMonitor, FluxMonitorTE, FluxMonitorTM, PointProbe
 from ..core.monitors_3d import DFTFieldsMonitor3D, FluxMonitor3D, PlaneSource, PointSource3D, run_3d
 from ..core.stepper_3d import build_3d_coeffs, init_3d_state
+from ..core.symbolic import component_sign
 from ..geometry.scene import rasterize_scene
 from .cyl_shim import CYLINDRICAL
 from .coords import (GridSpec, box3d, cell_index, cell_index_y, cell_index_z, grid_spec,
@@ -947,25 +948,37 @@ class Simulation:
         return a
 
     def _comp_parity(self, comp):
-        """(px, py) mirror parity of a TM component (E vector / H pseudo-
-        vector transform times the user phase)."""
+        """(px, py) mirror parity of a TM component, times the user phase.
+
+        The signs are DERIVED, not tabulated: ``core.symbolic.component_sign``
+        applies the symmetry's orthogonal matrix to the component index, with
+        E as a polar vector and H as an axial one. The ``det(R) = -1`` of a
+        reflection is the whole reason ``Hy`` flips about the x cut where
+        ``Ez`` does not, and it was previously a typed minus sign.
+
+        Components that are not part of the TM field set -- ``Dielectric``,
+        ``Permittivity``, ``None`` -- are even scalars and pass through.
+        """
+        from .cpp.core import _TM_COMPONENTS
+        if comp not in _TM_COMPONENTS:
+            return (1.0, 1.0)
         px, py = float(self._sym_px), float(self._sym_py)
         if self._sym_rot4:
-            # C4 rotates Hx into Hy, so no per-component parity exists for
-            # the staggered pair; Ez/Dz are scalars and de-rotate cleanly.
-            if comp not in ("Ez", "Dz", "Dielectric", "Permittivity", None):
+            # A quarter turn MIXES Hx and Hy, so for those two no scalar
+            # parity exists at all and component_sign says so rather than
+            # inventing one. Ez/Dz are invariant about the axis and fold.
+            try:
+                component_sign("rot4_z", comp)
+            except ValueError as exc:
                 raise NotImplementedError(
-                    f"get {comp} under Rotate4(Z): a quarter turn maps Hx "
-                    f"onto Hy, so the component has no scalar parity to "
-                    f"de-rotate with ({_SYM_TODO})")
+                    f"get {comp} under Rotate4(Z): {exc} ({_SYM_TODO})"
+                ) from exc
             return (1.0, 1.0)
         if self._sym_rot2:
-            # C2 about z: Ez is a scalar (unchanged), the in-plane H vector
-            # reverses -- both components pick up -1 on top of the user phase
-            return {"Ez": (1.0, py), "Dz": (1.0, py),
-                    "Hx": (1.0, -py), "Hy": (1.0, -py)}.get(comp, (1.0, 1.0))
-        return {"Ez": (px, py), "Dz": (px, py),
-                "Hx": (px, -py), "Hy": (-px, py)}.get(comp, (1.0, 1.0))
+            # the C2 fold is carried entirely in the y slot; x stays 1
+            return (1.0, py * component_sign("rot2_z", comp))
+        return (px * component_sign("mirror_x", comp),
+                py * component_sign("mirror_y", comp))
 
     def _source_cutoff(self):
         """Latest source turn-off time (GaussianPulse.t_end; CW never ends -> 0)."""

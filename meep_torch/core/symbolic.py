@@ -56,6 +56,8 @@ details carry it, and both are load-bearing:
 """
 from __future__ import annotations
 
+import os
+
 import sympy as sp
 from sympy.calculus.finite_diff import finite_diff_weights
 from sympy.vector import CoordSys3D, curl as _vector_curl
@@ -442,6 +444,41 @@ def _compile_pml():
 PSI_NEW, STRETCHED = _compile_pml()
 
 
+def whole_curl_enabled() -> bool:
+    """Whether steppers assemble the D-phase curl as ONE derived expression.
+
+    Two forms of the same algebra are available. The default is
+    :func:`compiled_stretched_curl`, which hands the whole curl to sympy and
+    lets it assemble its own canonical ``Add`` -- derived in one piece. The
+    alternative composes the derived per-difference pieces in meep's
+    left-to-right association, ``d1/k1 + psi1 - d2/k2 - psi2``, and is
+    bitwise-identical to meep.
+
+    The two are physically indistinguishable. Against the analytic 2D Green's
+    function ``(i/4) H_0^(1)(kr)`` both land at rel-L2 ``4.796918e-02`` -- the
+    resolution-20 grid error, identical to seven digits -- and they differ from
+    each other by ``1.520e-11``, nine orders below that (see
+    ``symbolic_test/plot_cw_comparison.py``). That gap is negligible against
+    every error the discretisation already carries, so the derived form is the
+    default: the curl is derived, not hand-composed, everywhere.
+
+    The one real cost is Krylov conditioning. ``solve_cw``'s BiCGSTAB(2) has a
+    residual floor set by rounding in the operator application, and sympy's
+    canonical ``Add`` sits just the wrong side of ``tol=1e-10``; it converges
+    from ``1e-9`` down, to the same answer. Set
+    ``MEEP_TORCH_WHOLE_CURL=0`` to get meep's bitwise left-to-right
+    association back -- needed for bit-for-bit meep comparison and for a
+    ``solve_cw`` at ``1e-10``.
+
+    Read at CALL time, not captured at import, so a test can flip it.
+
+    Only the TM D phase has a whole-curl alternative today; stepper_te and
+    stepper_1d compose the pieces unconditionally.
+    """
+    return os.environ.get("MEEP_TORCH_WHOLE_CURL", "1").lower() not in (
+        "0", "false", "no")
+
+
 def compiled_stretched_curl(vec, target: str, system: str = "cartesian",
                             order: int = 2):
     """Compile the CPML-stretched discrete curl at ``target`` into torch.
@@ -455,9 +492,10 @@ def compiled_stretched_curl(vec, target: str, system: str = "cartesian",
     the evaluation order is sympy's canonical Add, not meep's left-to-right
     ``d1/k1 + psi1 - d2/k2 - psi2``. Measured against meep's composition the
     two agree to ~9e-18 relative (7.3e-12 absolute on unit-scale inputs) --
-    mathematically identical, one ulp apart, NOT bitwise. Composing the
-    per-difference pieces in the stepper (see :func:`compiled_difference`) is
-    what reproduces meep exactly; this is the derived-in-one-piece alternative.
+    mathematically identical, one ulp apart, NOT bitwise. This is the default
+    form; composing the per-difference pieces in the stepper (see
+    :func:`compiled_difference`) is what reproduces meep exactly, and
+    :func:`whole_curl_enabled` is the switch between them.
     """
     h = sp.Symbol("h")
     used: list = []
@@ -496,6 +534,107 @@ def compiled_stretched_curl(vec, target: str, system: str = "cartesian",
     args = ([a for a in used if a in free] + [a for a in psis if a in free]
             + [a for a in coeffs if a in free] + [h])
     return sp.lambdify(args, expr, "torch"), [str(a) for a in args]
+
+
+# ------------------------------------------------------------- symmetries --
+# A symmetry operation acts on TWO things, and only one of them is algebra.
+#
+#   the ADDRESS -- which grid sample is the partner of this one. That is a
+#   permutation of grid points; `flip`, `transpose` and the slice arithmetic in
+#   the steppers ARE that permutation matrix, applied in O(N) instead of
+#   materialised as N x N. It stays index algebra.
+#
+#   the VALUE -- what each field component becomes. That is an orthogonal
+#   matrix acting on the component index, and it is derived here. E is a polar
+#   vector and transforms as ``R E``; H, B and every curl of a polar vector is
+#   an AXIAL vector and transforms as ``det(R) R H``. That ``det(R)`` is the
+#   entire reason a mirror flips the H signs the other way round from E, and it
+#   is the sign most often typed wrong by hand.
+
+
+def mirror_matrix(normal) -> sp.Matrix:
+    """Reflection in the plane through the origin with unit ``normal``.
+
+    Householder: ``R = I - 2 n n^T``. Built from the normal rather than
+    entered, so no sign is typed.
+    """
+    n = sp.Matrix(normal)
+    n = n / sp.sqrt((n.T * n)[0, 0])
+    return sp.eye(3) - 2 * n * n.T
+
+
+def rotation_matrix(turns) -> sp.Matrix:
+    """Active rotation about +z by ``turns`` quarter-turns (1 = 90 degrees).
+
+    Active: it maps a POINT to its image, so ``rotation_matrix(1)`` sends the
+    +x axis onto +y. sympy's ``rot_axis3`` rotates the frame, which is the
+    inverse, hence the transpose.
+    """
+    return sp.rot_axis3(sp.Rational(turns, 1) * sp.pi / 2).T
+
+
+#: The symmetries the engine supports, as the orthogonal matrix of each.
+SYMMETRIES = {
+    "mirror_x": mirror_matrix((1, 0, 0)),
+    "mirror_y": mirror_matrix((0, 1, 0)),
+    "rot2_z": rotation_matrix(2),
+    "rot4_z": rotation_matrix(1),
+}
+
+
+def field_transform(R: sp.Matrix, family: str) -> sp.Matrix:
+    """How a field's three components mix under ``R``.
+
+    ``family`` is ``"E"`` for a polar vector (E, D, and the current J) or
+    ``"H"`` for an axial one (H, B, M). The axial case carries ``det(R)``:
+    under a reflection ``det(R) = -1``, which is why E and H pick up opposite
+    signs about the same mirror plane, and under a rotation ``det(R) = +1``,
+    which is why they pick up the same ones about a rotation axis.
+    """
+    if family not in ("E", "H"):
+        raise ValueError(f"family must be E or H, got {family!r}")
+    return R if family == "E" else R.det() * R
+
+
+#: Which family each component belongs to, from its own name. D and B follow
+#: E and H because the constitutive relations are scalar (or, for an
+#: anisotropic medium, a tensor that the symmetry must itself preserve).
+_FAMILY = {"E": "E", "D": "E", "J": "E", "H": "H", "B": "H", "M": "H"}
+_AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+
+
+def component_transform(kind: str, component: str) -> dict:
+    """``{source component: coefficient}`` for ``component`` under ``kind``.
+
+    The image of a component is in general a COMBINATION -- a quarter turn
+    about z sends ``Hx`` to ``-Hy`` -- so the return is a map, not a sign. A
+    caller that can only carry one scalar per component should use
+    :func:`component_sign`, which refuses exactly the mixing cases.
+    """
+    if kind not in SYMMETRIES:
+        raise ValueError(f"unknown symmetry {kind!r}, have {sorted(SYMMETRIES)}")
+    field, axis = component[0], component[-1]
+    if field not in _FAMILY or axis not in _AXIS_INDEX:
+        raise ValueError(f"not a field component: {component!r}")
+    row = field_transform(SYMMETRIES[kind], _FAMILY[field])[_AXIS_INDEX[axis], :]
+    return {f"{field}{a}": sp.nsimplify(row[i])
+            for a, i in _AXIS_INDEX.items() if row[i] != 0}
+
+
+def component_sign(kind: str, component: str) -> int:
+    """``+1``/``-1`` for ``component`` under ``kind``, when one exists.
+
+    Raises when the symmetry MIXES components, because then no per-component
+    sign exists and silently returning one would be wrong rather than
+    unsupported. A quarter turn about z is the case that mixes: ``Hx -> -Hy``.
+    """
+    t = component_transform(kind, component)
+    if list(t) != [component]:
+        image = " + ".join(f"{c}*{s}" for c, s in t.items()) or "0"
+        raise ValueError(
+            f"{component} has no sign under {kind}: it maps to {image}. "
+            f"Use component_transform and carry the mixing.")
+    return int(t[component])
 
 
 def describe() -> None:

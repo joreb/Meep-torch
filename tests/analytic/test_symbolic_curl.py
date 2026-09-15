@@ -63,3 +63,114 @@ def test_two_dimensional_reduction_decouples():
     # the two blocks together account for all six components, exactly once
     members = blocks["tm"]["components"] + blocks["te"]["components"]
     assert sorted(members) == sorted(COMPONENTS)
+
+
+def _run_tm(steps, npml):
+    """A short TM run with PML live, so the CPML stretch and psi memory are
+    actually exercised -- without a PML both curl forms reduce to the same
+    unstretched difference and the comparison is vacuous."""
+    import torch
+
+    from meep_torch.core.coeffs import build_tm_coeffs
+    from meep_torch.core.grid import Grid
+    from meep_torch.core.stepper_tm import init_tm_state, step_tm
+
+    g = Grid(nx=60, ny=60, dx=0.05)
+    m = build_tm_coeffs(g, npml=npml)
+    s = init_tm_state(g)
+    torch.manual_seed(0)
+    ez = torch.zeros(g.nx, g.ny, dtype=g.dtype, device=g.device)
+    ez[g.nx // 2, g.ny // 2] = 1.0
+    s = s._replace(Ez=ez, Dz=ez.clone())
+    for _ in range(steps):
+        s = step_tm(s, m)
+    return s.Ez
+
+
+def test_whole_curl_and_meep_association_agree(monkeypatch):
+    """Both sides of the gate, exercised.
+
+    The whole-curl form is the default; MEEP_TORCH_WHOLE_CURL=0 restores meep's
+    bitwise left-to-right association. Whichever is the non-default, it is an
+    unreached branch -- and an unreached branch is where the
+    compiled_uniform_difference argument-order bug hid in stepper_kz while
+    reporting 0.000e+00. So run both. Deliberately time-domain: solve_cw's
+    BiCGSTAB(2) has a residual floor just above 1e-10 on the whole-curl form,
+    which is a conditioning property and would read here as a field error.
+    """
+    import torch
+
+    from meep_torch.core import symbolic
+
+    monkeypatch.delenv("MEEP_TORCH_WHOLE_CURL", raising=False)
+    assert symbolic.whole_curl_enabled(), "whole curl is the default"
+    whole = _run_tm(steps=40, npml=8)
+
+    monkeypatch.setenv("MEEP_TORCH_WHOLE_CURL", "0")
+    assert not symbolic.whole_curl_enabled()
+    meep_order = _run_tm(steps=40, npml=8)
+
+    # Not bitwise: sympy assembles its own canonical Add rather than meep's
+    # left-to-right association. One ulp apart, accumulated over 40 steps.
+    assert meep_order.abs().max() > 0
+    rel = (torch.linalg.vector_norm(whole - meep_order)
+           / torch.linalg.vector_norm(meep_order))
+    assert rel < 1e-13, f"the two associations disagree by {rel:.3e}"
+    assert not torch.equal(whole, meep_order), (
+        "the two forms came out bitwise-equal -- the gate is not switching the "
+        "code path, or the PML is not live")
+
+
+def test_symmetry_signs_come_from_the_transform_not_a_table():
+    """The mirror/rotation signs each field component picks up.
+
+    These were a typed table in mp.simulation._comp_parity. They are a
+    consequence of two facts: E is a polar vector and transforms as ``R E``,
+    H is axial and transforms as ``det(R) R H``. Everything below follows
+    from that, and the det factor is the sign most easily typed wrong -- it
+    is why Hy flips about the x cut where Ez does not.
+    """
+    from meep_torch.core.symbolic import component_sign, component_transform
+
+    # the table _comp_parity used to carry, reproduced exactly
+    assert component_sign("mirror_x", "Ez") == +1
+    assert component_sign("mirror_x", "Hx") == +1
+    assert component_sign("mirror_x", "Hy") == -1
+    assert component_sign("mirror_y", "Ez") == +1
+    assert component_sign("mirror_y", "Hx") == -1
+    assert component_sign("mirror_y", "Hy") == +1
+    assert component_sign("rot2_z", "Ez") == +1
+    assert component_sign("rot2_z", "Hx") == -1
+    assert component_sign("rot2_z", "Hy") == -1
+
+    # E and H differ by det(R) under a REFLECTION and agree under a ROTATION
+    for axis in ("x", "y", "z"):
+        for kind in ("mirror_x", "mirror_y"):
+            assert (component_sign(kind, f"E{axis}")
+                    == -component_sign(kind, f"H{axis}"))
+        assert (component_sign("rot2_z", f"E{axis}")
+                == component_sign("rot2_z", f"H{axis}"))
+
+    # a quarter turn MIXES the in-plane pair, so no scalar sign exists --
+    # component_sign must refuse rather than invent one
+    assert component_transform("rot4_z", "Hx") == {"Hy": -1}
+    assert component_transform("rot4_z", "Hy") == {"Hx": 1}
+    assert component_transform("rot4_z", "Ez") == {"Ez": 1}
+    assert component_sign("rot4_z", "Ez") == +1
+    for comp in ("Hx", "Hy", "Ex", "Ey"):
+        try:
+            component_sign("rot4_z", comp)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"component_sign('rot4_z', {comp!r}) "
+                                 f"should refuse: a quarter turn mixes it")
+
+    # the symmetries are orthogonal and are their own group elements:
+    # a mirror and a half turn are involutions, a quarter turn has order 4
+    from meep_torch.core.symbolic import SYMMETRIES
+    import sympy as sp
+    for kind, R in SYMMETRIES.items():
+        assert sp.simplify(R.T * R - sp.eye(3)) == sp.zeros(3, 3), kind
+    assert SYMMETRIES["rot4_z"] ** 2 == SYMMETRIES["rot2_z"]
+    assert SYMMETRIES["rot4_z"] ** 4 == sp.eye(3)
