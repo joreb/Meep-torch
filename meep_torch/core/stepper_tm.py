@@ -7,6 +7,31 @@ import torch.nn.functional as F
 
 from .coeffs import TMCoeffs
 from .grid import Grid
+import sympy as sp
+from .symbolic import (PSI_NEW, STRETCHED, compiled_difference,
+                       compiled_stretched_curl)
+
+# Yee differences derived in symbolic.py rather than written here. Which of
+# these is a forward and which a backward difference is a consequence of the
+# two components' half-cell offsets, not a choice -- see that module. The
+# compiled form is over a common denominator, so it is the same float
+# operation meep performs: one division of a difference, not two divisions.
+_dEz_dy = compiled_difference("Ez", "y", "Hx")   # forward
+_dEz_dx = compiled_difference("Ez", "x", "Hy")   # forward
+_dHx_dy = compiled_difference("Hx", "y", "Ez")   # backward
+_dHy_dx = compiled_difference("Hy", "x", "Ez")   # backward
+
+# The D-phase curl derived in ONE piece: sympy.vector's curl H, discretised at
+# the Ez node, with the CPML stretch entering per-difference. Argument order is
+# (Hy_m1, Hy, Hx_m1, Hx, psi_Hxy, psi_Hyx, b_y, a_y, k_y, b_x, a_x, k_x, h).
+#
+# This is NOT bitwise-equal to composing the pieces in meep's left-to-right
+# order: sympy assembles its own canonical Add, and the two agree to ~9e-18
+# relative (7.3e-12 absolute on unit-scale inputs) rather than exactly. The
+# per-difference path above is what reproduces meep to the last bit; this one
+# keeps the whole curl derived instead of hand-composed.
+_curl_ez, _CURL_EZ_ARGS = compiled_stretched_curl(
+    (sp.Symbol("Hx"), sp.Symbol("Hy"), sp.Symbol("Hz")), "Ez")
 
 
 class TMState(NamedTuple):
@@ -84,12 +109,12 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
     dt, dx = m.dt, m.dx
     if ft == "B":
         # --- B/H update (from Ez at time n) ---
-        dEz_dy = (state.Ez[:, 1:] - state.Ez[:, :-1]) / dx        # (nx, ny-1)
-        psi_Ezy = m.b_hy * state.psi_Ezy + m.a_hy * dEz_dy
-        curl_hx = dEz_dy / m.k_hy + psi_Ezy
-        dEz_dx = (state.Ez[1:, :] - state.Ez[:-1, :]) / dx        # (nx-1, ny)
-        psi_Ezx = m.b_hx * state.psi_Ezx + m.a_hx * dEz_dx
-        curl_hy = dEz_dx / m.k_hx + psi_Ezx
+        dEz_dy = _dEz_dy(state.Ez[:, :-1], state.Ez[:, 1:], dx)   # (nx, ny-1)
+        psi_Ezy = PSI_NEW(dEz_dy, state.psi_Ezy, m.b_hy, m.a_hy)
+        curl_hx = STRETCHED(dEz_dy, psi_Ezy, m.k_hy)
+        dEz_dx = _dEz_dx(state.Ez[:-1, :], state.Ez[1:, :], dx)   # (nx-1, ny)
+        psi_Ezx = PSI_NEW(dEz_dx, state.psi_Ezx, m.b_hx, m.a_hx)
+        curl_hy = STRETCHED(dEz_dx, psi_Ezx, m.k_hx)
         # odd-mirror on-plane H nodes: odd ghost Ez[-1] = -Ez[0] across the
         # cut -> dEz/dn = 2 Ez[0]/dx there (no PML at the cut, no psi)
         mir = {}
@@ -151,13 +176,18 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         pad_x, xs = (0, 1), slice(None, -1)
     else:
         pad_x, xs = (1, 1), slice(1, -1)
-    dHx_dy = (Hx[xs, 1:] - Hx[xs, :-1]) / dx
-    dHy_dx = (Hy[1:, ys] - Hy[:-1, ys]) / dx
+    dHx_dy = _dHx_dy(Hx[xs, 1:], Hx[xs, :-1], dx)
+    dHy_dx = _dHy_dx(Hy[1:, ys], Hy[:-1, ys], dx)
     pad_spec = pad_y + pad_x
 
-    psi_Hyx = m.b_ex * state.psi_Hyx + m.a_ex * dHy_dx
-    psi_Hxy = m.b_ey * state.psi_Hxy + m.a_ey * dHx_dy
-    curl = dHy_dx / m.k_ex + psi_Hyx - dHx_dy / m.k_ey - psi_Hxy
+    psi_Hyx = PSI_NEW(dHy_dx, state.psi_Hyx, m.b_ex, m.a_ex)
+    psi_Hxy = PSI_NEW(dHx_dy, state.psi_Hxy, m.b_ey, m.a_ey)
+    # Whole curl from the derivation. The psi recursions above are still
+    # computed separately because they are STATE -- the derived expression
+    # consumes the old psi and reconstructs the update internally.
+    curl = _curl_ez(Hy[:-1, ys], Hy[1:, ys], Hx[xs, :-1], Hx[xs, 1:],
+                    state.psi_Hxy, state.psi_Hyx,
+                    m.b_ey, m.a_ey, m.k_ey, m.b_ex, m.a_ex, m.k_ex, dx)
     if m.d1 is not None:
         # W5: dD/dt = curl H - sigma_d D
         Dz = m.d1 * state.Dz + m.d2 * F.pad(curl, pad_spec)
