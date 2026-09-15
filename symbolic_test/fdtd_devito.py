@@ -11,10 +11,14 @@
 # PML: simple conductive absorber (quadratic sigma profile over NPML cells),
 # NOT meep's CPML recursion -- field-correlation gate, not bitwise.
 import math
+import sys
 
 import numpy as np
 
-from . import scenario as S
+try:                       # package import (pytest, -m) ...
+    from . import scenario as S
+except ImportError:        # ... or plain script run (path invocation)
+    import scenario as S
 
 
 def _pml_sigma(axis_len: int, npml: int) -> np.ndarray:
@@ -33,13 +37,46 @@ def run_devito(gpu: bool = False) -> np.ndarray:
     from devito import (Grid, TimeFunction, Function, Eq, Operator,
                         SparseTimeFunction, configuration)
 
-    if gpu:
-        # devito GPU needs platform=nvidiaX (Linux + CUDA toolchain).
-        configuration["platform"] = "nvidiaX"
+    if gpu and "torch" in sys.modules:
+        # MEASURED on this box (RTX A4000, nvhpc 26.5, torch 2.9.1+cu128):
+        # devito GPU offload works in a bare process, and dies the moment
+        # torch is imported -- `libgomp: no device found`, process aborted.
+        # Two OpenMP runtimes are live: torch loads its own
+        # torch/lib/libgomp.so.1 via RPATH, and the nvc++-built kernel wants
+        # NVIDIA's. LD_PRELOADing nvhpc's libgomp does not displace an RPATH
+        # load, and NVCOMPILER_OMP_DISABLE_WARNINGS only hides the warning,
+        # not the conflict. So: fall back to CPU rather than abort, and say
+        # so. A torch-free subprocess is the only way to get devito on the GPU.
+        print("      devito: GPU offload unavailable in a torch process "
+              "(two OpenMP runtimes); running CPU/OpenMP")
+        gpu = False
 
-    grid = Grid(shape=(S.NX, S.NY), extent=(S.CELL_X, S.CELL_Y))
+    if gpu:
+        # devito GPU offload: all three must be set together. platform alone
+        # leaves the default gcc compiler emitting OpenMP *target* pragmas,
+        # which aborts at run time with "libgomp: no device found" -- the
+        # NVIDIA compiler and OpenACC are what actually reach the device.
+        configuration["platform"] = "nvidiaX"
+        configuration["compiler"] = "nvc"
+        configuration["language"] = "openacc"
+
+    # extent is FIRST-to-LAST point, so devito's spacing is extent/(shape-1):
+    # passing the full cell size makes every derivative off by NX/(NX-1). And
+    # the devito default dtype is float32, which caps agreement at ~1e-7 and
+    # here diverges to NaN over 4000 steps. Same two fixes fdtd_devito_2d.py
+    # documents at its _build().
+    grid = Grid(shape=(S.NX, S.NY),
+                extent=((S.NX - 1) * S.DX, (S.NY - 1) * S.DX),
+                dtype=np.float64)
     dt = S.DX * 0.5   # match scenario courant=0.5
 
+    # BROKEN on devito 4.8.x+ (this box): the run diverges to NaN by step ~50
+    # regardless of stagger formulation -- measured |Ez| 2.5e-1 at step 20,
+    # 2.7e8 at step 50. Not a regression from the extent/dtype fixes above:
+    # those are independently correct (see fdtd_devito_2d.py:60). Rewriting
+    # the stagger explicitly with fdkind="forward" plus index-shifted backward
+    # differences did NOT fix it either, so the cause is still open. Until it
+    # is found, the devito straight-waveguide number is not trustworthy.
     Ez = TimeFunction(name="Ez", grid=grid, space_order=1, time_order=1)
     Hx = TimeFunction(name="Hx", grid=grid, space_order=1, time_order=1,
                       staggered=(0, 0, 0.5))   # y-staggered
@@ -48,7 +85,8 @@ def run_devito(gpu: bool = False) -> np.ndarray:
 
     eps = Function(name="eps", grid=grid, space_order=0)
     # scenario eps is (NX=x, NY=y); devito indexes [x, y] with the same shape.
-    eps.data[:] = S.eps_field("cpu").numpy()
+    eps_np = S.eps_field("cpu").numpy()
+    eps.data[:] = eps_np
 
     damp_h = Function(name="damp_h", grid=grid, space_order=0)
     damp_e = Function(name="damp_e", grid=grid, space_order=0)
@@ -60,21 +98,45 @@ def run_devito(gpu: bool = False) -> np.ndarray:
     damp_e.data[:] = np.exp(-sigma * dt)
 
     # soft Ez source at (-7, 0) in meep coords. devito Grid origin sits at the
-    # extent corner (0,0), so meep x=-7 -> local 1.0, y=0 -> local 4.0. The
-    # source sits in the eps=1 vacuum (|y|>0.5), so the J scale is just dt.
+    # extent corner (0,0), so meep x=-7 -> local 1.0, y=0 -> local 4.0.
+    # The source cell is INSIDE the core, not in vacuum: scenario puts it at
+    # iy = NY//2 = 40, i.e. y = +0.05, and the waveguide is |y| < 0.5 with
+    # eps = 12. Injecting -dt*J instead of -(dt/eps)*J therefore overdrove the
+    # field by exactly that eps -- measured peak ratio 12.89x vs the
+    # meep_torch reference, with interior correlation already fine.
     n = S.n_steps(dt)
+    # coordinates is (npoint, ndim) -- one row per point. A tuple of two
+    # 1-element arrays reads as (2, 1) and modern devito rejects it.
     src = SparseTimeFunction(name="src", grid=grid, npoint=1, nt=n,
-                             coordinates=(np.array([S.SRC_X + S.CELL_X / 2]),
-                                          np.array([S.CELL_Y / 2])))
+                             coordinates=np.array([[S.SRC_X + S.CELL_X / 2,
+                                                    S.CELL_Y / 2]]))
     ts = np.arange(n) * dt
-    src.data[:, 0] = np.cos(2.0 * math.pi * S.FREQ * ts)
+    # 1/eps folded into the source SAMPLES rather than the inject expression:
+    # `expr=-dt*src/eps` makes devito interpolate eps at the sparse point, and
+    # a space_order=0 Function cannot be interpolated ("Space order 0 too small
+    # for interpolation r 1"). The source is one cell, so its eps is a scalar.
+    ix_src = int(round((S.SRC_X - S.X_LO) / S.DX))
+    iy_src = S.NY // 2
+    src.data[:, 0] = np.cos(2.0 * math.pi * S.FREQ * ts) / float(
+        eps_np[ix_src, iy_src])
 
+    # Leapfrog: E must read the H this same step just wrote, i.e. Hx.forward /
+    # Hy.forward, not Hx / Hy. Reading the OLD H makes the update non-symplectic
+    # and it diverges -- measured on this scenario, max|Ez| after 400 steps:
+    #   Hy.dx  (old H) -> 2.1e+82        Hy.forward.dx (new H) -> 3.6e-02
+    # That difference, not the stagger, was the NaN: declaring the H functions
+    # with staggered=(0,0,0.5)/(0,0.5,0) vs not gives bit-identical results
+    # here (both numbers above are unchanged by it), so this devito derives the
+    # half-cell offset from neither -- the leapfrog order is what carries it.
     eq_hx = Eq(Hx.forward, damp_h * Hx - dt * Ez.dy)
     eq_hy = Eq(Hy.forward, damp_h * Hy + dt * Ez.dx)
     eq_ez = Eq(Ez.forward,
-               damp_e * Ez + (dt / eps) * (Hy.dx - Hx.dy))
+               damp_e * Ez + (dt / eps) * (Hy.forward.dx - Hx.forward.dy))
 
     # J enters as -dt*J (meep step_source sign, see scenario.source_amp).
+    # meep injects the current into D and then solves E = D/eps, so the
+    # amplitude that reaches Ez carries the 1/eps -- see stepper_tm.step_source
+    # (scale = dt) followed by update_eh(E). Same factor here.
     op = Operator([eq_hx, eq_hy, eq_ez] +
                   [src.inject(field=Ez.forward, expr=-dt * src)],
                   subs=grid.spacing_map)
