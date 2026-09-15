@@ -754,6 +754,25 @@ def field_transform(R: sp.Matrix, family: str) -> sp.Matrix:
 #: Which family each component belongs to, from its own name. D and B follow
 #: E and H because the constitutive relations are scalar (or, for an
 #: anisotropic medium, a tensor that the symmetry must itself preserve).
+#:
+#: THE CASE THAT HEDGE DOES NOT COVER IS NONLINEARITY, not anisotropy. A fold
+#: confines the solution to an eigenspace of R, which is only consistent if the
+#: constitutive map is R-equivariant. For D(E) = eps E + chi2 E^2 + chi3 E^3,
+#:
+#:     D(pE) - p D(E) = p (p - 1) E^2 (chi2 + chi3 E (p + 1))
+#:
+#: which vanishes for p = +1 always, and for p = -1 only when chi2 = 0. chi3
+#: survives because E^3 is odd. So an ODD fold (any symmetry at phase -1) with
+#: chi2 != 0 is inconsistent: the second harmonic of an odd fundamental is
+#: EVEN, and the fold deletes exactly the component a chi2 run is usually for.
+#:
+#: Nothing enforces this, deliberately. mp.Medium rejects chi2 outright today
+#: ("engine nonlinearity is Kerr chi3 only", mp/material.py), so a guard in
+#: mp.Simulation would fire only for inputs that are refused a moment later,
+#: and would have to advise "use phase=+1" -- which does not help, because
+#: chi2 is unsupported at either phase. The constraint is recorded HERE, beside
+#: the transform it follows from, so that whoever implements chi2 in the mp
+#: layer meets it rather than rediscovering it from wrong answers.
 _FAMILY = {"E": "E", "D": "E", "J": "E", "H": "H", "B": "H", "M": "H"}
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 
