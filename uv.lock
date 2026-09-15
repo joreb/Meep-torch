@@ -972,6 +972,7 @@ dependencies = [
     { name = "pymkl" },
     { name = "pypardiso" },
     { name = "scipy" },
+    { name = "sympy" },
     { name = "torch" },
     { name = "torch-sla", extra = ["cudss"] },
 ]
@@ -1009,6 +1010,7 @@ requires-dist = [
     { name = "pymkl", specifier = ">=0.0.3" },
     { name = "pypardiso", specifier = ">=0.4.7" },
     { name = "scipy", specifier = ">=1.11" },
+    { name = "sympy", specifier = ">=1.14.0" },
     { name = "torch", specifier = "==2.9.*", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch-sla", extras = ["cudss"], specifier = ">=0.3.2" },
 ]
