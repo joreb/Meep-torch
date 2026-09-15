@@ -157,6 +157,14 @@ def _operatorise(expr, fns, syms, scalars, axes):
     # the symbol.
     for name in fns:
         out = out.subs(fns[name], syms[name])
+    # The pass-through above is a feature for metric terms (a bare E_theta/r)
+    # and a hazard for anything else: a second or mixed derivative comes back
+    # as an unevaluated Derivative(Dy*Ez, y) and would land in a Jacobian
+    # looking like a coefficient. Unreachable from a first-order curl, which is
+    # why this is an assert and not a branch -- but a bare Function surviving
+    # here is exactly the bug that once hid the cylindrical E_theta/r term.
+    assert not out.has(sp.Derivative), (
+        f"operator form still contains an unevaluated derivative: {out}")
     return out
 
 
@@ -208,9 +216,9 @@ def system_matrix(reduce_axes: tuple = ()):
         for r in COMPONENTS])
 
 
-# The permutation that exposes the 2D block structure. Deliberately not named
-# "TM" and "TE" here — these are two groups of three components, and which is
-# which polarisation is read off afterwards by polarisation_blocks().
+#: The 2D block structure, for reference and for tests that want to name it.
+#: NOT used to decide membership -- :func:`decoupled_blocks` derives that from
+#: the reduced matrix. Kept because "Ez, Hx, Hy" is how people refer to it.
 BLOCK_A = ("Ez", "Hx", "Hy")
 BLOCK_B = ("Hz", "Ex", "Ey")
 
@@ -221,36 +229,87 @@ def _submatrix(M, rows, cols):
     return sp.Matrix([[M[r, c] for c in ci] for r in ri])
 
 
-def assert_decoupled(reduce_axes: tuple = ("z",)):
-    """Prove the reduced system is block-diagonal; return the reduced matrix.
+def decoupled_blocks(reduce_axes: tuple = ("z",)) -> tuple:
+    """The blocks the reduced system falls into, DERIVED from its matrix.
 
-    This is the claim the polarisation split rests on: that TM and TE are a
-    consequence of the reduction, not an assumption. Raises if either
-    off-diagonal 3x3 block is non-zero.
+    Two components belong to the same block when either drives the other, so
+    the blocks are the connected components of the coupling graph of
+    :func:`system_matrix`. Nothing about the partition is entered here.
+
+    This replaces checking a typed partition, which is a weaker statement and
+    was wrong away from ``z``. Under ``d/dx = 0`` the system decouples just as
+    cleanly into ``(Ex, Hy, Hz)`` and ``(Ey, Ez, Hx)``, which a check against a
+    z-shaped partition reports as a failure to decouple. Under ``("y", "z")``
+    the truth is four blocks, not two.
+
+    Returns a tuple of tuples, each in COMPONENTS order, ordered by their
+    first member.
     """
     M = system_matrix(reduce_axes)
-    for rows, cols, tag in ((BLOCK_A, BLOCK_B, "A<-B"), (BLOCK_B, BLOCK_A, "B<-A")):
-        off = _submatrix(M, rows, cols)
-        if not all(sp.simplify(e) == 0 for e in off):
-            raise AssertionError(
-                f"{tag} block is not zero under d/d{reduce_axes}; the system "
-                f"does not decouple:\n{off}")
+    n = len(COMPONENTS)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        for j in range(n):
+            if i != j and (sp.simplify(M[i, j]) != 0 or sp.simplify(M[j, i]) != 0):
+                parent[find(i)] = find(j)
+
+    groups: dict = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(COMPONENTS[i])
+    return tuple(tuple(g) for g in
+                 sorted(groups.values(), key=lambda g: COMPONENTS.index(g[0])))
+
+
+def assert_decoupled(reduce_axes: tuple = ("z",)):
+    """Prove the reduction decouples the system; return the reduced matrix.
+
+    This is the claim the polarisation split rests on: that the blocks are a
+    consequence of the reduction, not an assumption. Raises if the reduced
+    system is still fully coupled.
+    """
+    M = system_matrix(reduce_axes)
+    blocks = decoupled_blocks(reduce_axes)
+    if len(blocks) < 2:
+        raise AssertionError(
+            f"the system does not decouple under d/d{reduce_axes}: every "
+            f"component is still connected to every other")
     return M
 
 
 def polarisation_blocks(reduce_axes: tuple = ("z",)) -> dict:
-    """Read the polarisations off the decoupled system.
+    """Read the polarisations off a reduction that gives exactly two blocks.
 
     With propagation in the plane, the block carrying E along the invariant
-    axis is TM and the one carrying H along it is TE. The MEMBERSHIP of each
-    block is derived; only the label is conventional.
+    axis is TM and the one carrying H along it is TE. The membership comes
+    from :func:`decoupled_blocks`; only the label is conventional.
+
+    Raises when the reduction does not give two blocks, rather than forcing a
+    two-way answer onto it. ``("y", "z")`` -- the 1D case -- gives FOUR blocks,
+    ``(Ex) | (Ey, Hz) | (Ez, Hy) | (Hx)``, and labelling two of them "TM" and
+    "TE" would be a fiction; ask :func:`decoupled_blocks` for that case.
     """
-    M = assert_decoupled(reduce_axes)
+    M = system_matrix(reduce_axes)
+    blocks = decoupled_blocks(reduce_axes)
+    if len(blocks) != 2:
+        raise ValueError(
+            f"d/d{reduce_axes} gives {len(blocks)} blocks, not 2, so there is "
+            f"no TM/TE pair to name: {blocks}. Use decoupled_blocks().")
     invariant = reduce_axes[0] if reduce_axes else "z"
     out = {}
-    for group in (BLOCK_A, BLOCK_B):
+    for group in blocks:
         key = "tm" if f"E{invariant}" in group else "te"
         out[key] = {"components": group, "matrix": _submatrix(M, group, group)}
+    if set(out) != {"tm", "te"}:
+        raise ValueError(
+            f"neither block carries E along {invariant}; the TM/TE labels do "
+            f"not apply to this reduction: {blocks}")
     return out
 
 
@@ -259,10 +318,13 @@ def polarisation_blocks(reduce_axes: tuple = ("z",)) -> dict:
 def difference(field: str, axis: str, target: str, h, sym, order: int = 2):
     """The finite difference of ``field`` along ``axis`` at ``target``'s node.
 
-    The half-cell offset between the two components is handed to sympy as the
-    evaluation point ``x0``, so the Yee stagger is an INPUT to the finite
-    difference rather than a branch around it. sympy then picks the weights,
-    and forward-vs-backward is simply which side of ``x0`` the samples fall on.
+    The half-cell offset between the two components drives both halves of the
+    stencil: it picks the samples (:func:`stencil_offsets` branches on its
+    sign) and the evaluation point ``x0 = -delta*h``. Given both, Fornberg has
+    no choice left -- which is the sense in which the Yee stagger is an INPUT
+    to the difference rather than a branch around it. It is NOT true that
+    ``x0`` alone decides forward-vs-backward: on a symmetric sample set ``x0``
+    would give a centred stencil. The sample set is what makes it one-sided.
 
     Accuracy order becomes a parameter rather than a rewrite: ``order=4`` gives
     the standard fourth-order staggered stencil
@@ -276,11 +338,10 @@ def difference(field: str, axis: str, target: str, h, sym, order: int = 2):
     field's own node) to the symbol standing for that neighbour.
     """
     delta = YEE[field][AXES.index(axis)] - YEE[target][AXES.index(axis)]
-    if abs(delta) != HALF:
-        raise ValueError(
-            f"d({field})/d{axis} at {target}: offset {delta} is not +/-1/2, so "
-            "these components are not Yee-staggered along this axis")
-    ks = stencil_offsets(delta, order)
+    try:
+        ks = stencil_offsets(delta, order)
+    except ValueError as exc:                     # name the components
+        raise ValueError(f"d({field})/d{axis} at {target}: {exc}") from None
     # coordinates measured from the field's own node; the target sits at -delta
     return difference_at([k * h for k in ks], -delta * h,
                          [sym(k) for k in ks])
@@ -289,12 +350,27 @@ def difference(field: str, axis: str, target: str, h, sym, order: int = 2):
 def stencil_offsets(delta, order: int = 2):
     """Which integer sample offsets straddle a node ``delta`` cells away.
 
-    ``order`` samples, symmetric about the target. For the Yee case
-    (``delta = -/+ 1/2``) order 2 gives ``(0, 1)`` or ``(-1, 0)``, order 4
-    gives ``(-1, 0, 1, 2)`` or ``(-2, -1, 0, 1)``.
+    ``order`` samples straddling the target, which is only what this returns
+    when the target sits half a cell away -- hence the guard. ``delta = -/+1/2``
+    at order 2 gives ``(0, 1)`` or ``(-1, 0)``, at order 4 ``(-1, 0, 1, 2)`` or
+    ``(-2, -1, 0, 1)``.
+
+    The guard lives HERE, in the shared function, rather than in
+    :func:`difference` alone. It was in the wrapper only, and
+    :func:`discrete_curl` reached the same chain by another route and so
+    skipped it: asked for a curl component whose target is not staggered from
+    the field it differentiates, it silently produced a one-sided difference
+    (``delta = 0`` returns ``(-1, 0)``, a backward difference on a collocated
+    pair) and ``compiled_stretched_curl`` would then lambdify it. A guard on
+    one of two copies of a derivation is not a guard.
     """
     if order < 2 or order % 2:
         raise ValueError(f"accuracy order must be even and >= 2, got {order}")
+    if abs(delta) != HALF:
+        raise ValueError(
+            f"offset {delta} is not +/-1/2: the two components are not "
+            f"Yee-staggered along this axis, so there is no straddling "
+            f"stencil and the result would be one-sided or extrapolating")
     m = order // 2
     return tuple(range(-(m - 1), m + 1) if delta < 0 else range(-m, m))
 
@@ -304,9 +380,11 @@ def difference_at(coords, x0, values, order: int = 1):
 
     The weights come from :func:`sympy.calculus.finite_diff.finite_diff_weights`
     -- the Fornberg algorithm -- so ``coords`` need NOT be uniformly spaced and
-    ``x0`` need not be one of them. That is what lets the same routine serve a
-    uniform Yee grid, a graded mesh, and a finite-volume cell: the node
-    positions enter the weights symbolically rather than being assumed equal.
+    ``x0`` need not be one of them: the node positions enter the weights
+    symbolically rather than being assumed equal. In principle that lets the
+    same routine serve a graded mesh or a finite-volume cell. In practice every
+    caller is a uniform Yee grid, so treat the non-uniform path as untested
+    capability rather than a supported feature -- nothing here gates it.
 
     The result is put over a common denominator. The weighted sum
     ``sum(w_i * y_i)`` expands to one division per sample, where meep divides a
@@ -333,6 +411,22 @@ def pml_split(diff_expr, psi, b, a, k):
     return psi_new, diff_expr / k + psi_new
 
 
+def _reject_noncartesian(system: str, who: str):
+    """Cartesian-only guard for the discretising helpers.
+
+    :func:`curl` and :func:`system_matrix` are frame-agnostic, but everything
+    downstream of them indexes ``YEE``, which has offsets for x/y/z and nothing
+    else. Reaching these with ``system="cylindrical"`` used to die inside
+    ``AXES.index("r")`` with ``ValueError: tuple.index(x): x not in tuple``,
+    which names neither the caller nor the reason.
+    """
+    if system != "cartesian":
+        raise NotImplementedError(
+            f"{who}(system={system!r}): only the continuous curl supports a "
+            f"non-cartesian frame. YEE carries no r/theta offsets, so there is "
+            f"no staggered stencil to derive here yet")
+
+
 def discrete_curl(vec, target: str, h, sym, system: str = "cartesian",
                   order: int = 2, stretch=None):
     """The curl of ``vec``, discretised at ``target``'s node, in one step.
@@ -353,6 +447,7 @@ def discrete_curl(vec, target: str, h, sym, system: str = "cartesian",
     then combines, so the stretch has to enter per-derivative, here, rather
     than around the result.
     """
+    _reject_noncartesian(system, "discrete_curl")
     C, axes, scalars = frame(system)
     names = [str(v) for v in vec]
     fns = {n: sp.Function(n)(*scalars) for n in names}
@@ -374,10 +469,21 @@ def discrete_curl(vec, target: str, h, sym, system: str = "cartesian",
                           [sym(name, k) for k in ks])
         return d if stretch is None else stretch(name, axis, d)
 
+    # All three components are built, but only the one whose axis matches the
+    # target is Yee-representable at that target -- the other two differentiate
+    # components that are collocated with it, and stencil_offsets rejects those.
+    # That rejection is the point (it is what stops a one-sided difference being
+    # produced for a collocated pair), so it must not fire for a component the
+    # caller never asked for. Unrepresentable components come back as None,
+    # which cannot be arithmetic'd or lambdified: a consumer that reaches for
+    # one fails immediately instead of getting a quietly wrong stencil.
     out = []
     for basis in C.base_vectors():
         comp = _vector_curl(field).dot(basis)
-        out.append(comp.replace(sp.Derivative, discretise))
+        try:
+            out.append(comp.replace(sp.Derivative, discretise))
+        except ValueError:
+            out.append(None)
     return tuple(out)
 
 
@@ -472,10 +578,15 @@ def whole_curl_enabled() -> bool:
     every error the discretisation already carries, so the derived form is the
     default: the curl is derived, not hand-composed, everywhere.
 
-    The one real cost is Krylov conditioning. ``solve_cw``'s BiCGSTAB(2) has a
-    residual floor set by rounding in the operator application, and sympy's
-    canonical ``Add`` sits just the wrong side of ``tol=1e-10``; it converges
-    from ``1e-9`` down, to the same answer. Set
+    The one real cost is a ``solve_cw`` residual floor. Both step operators
+    were later extracted and compared: bitwise identical without a PML, and
+    with one differing by a few dozen 1-ulp entries confined to the D-phase
+    rows in the PML band, with IDENTICAL adjoint defect, commutator norm,
+    Henrici departure and spectrum. So this is not worse conditioning -- the
+    two operators are equally non-normal -- it is the rounding path of an
+    already ill-conditioned solve, where two operators one ulp apart can floor
+    either side of ``tol=1e-10``. It converges from ``1e-9`` down, to the same
+    answer. Set
     ``MEEP_TORCH_WHOLE_CURL=0`` to get meep's bitwise left-to-right
     association back -- needed for bit-for-bit meep comparison and for a
     ``solve_cw`` at ``1e-10``.
@@ -536,13 +647,47 @@ def compiled_stretched_curl(vec, target: str, system: str = "cartesian",
     # matches the target's own vector direction
     axis_of = {"x": 0, "y": 1, "z": 2}[target[-1]]
     expr = comps[axis_of]
+    if expr is None:
+        raise ValueError(
+            f"the {target[-1]}-component of this curl is not Yee-representable "
+            f"at {target}: it differentiates components collocated with it "
+            f"along the needed axis, so no straddling stencil exists")
     # Take the arguments from the SELECTED component only. discrete_curl builds
     # all three, so collecting as they are created would drag in the other
     # components and axes -- for a 2D TM curl that is Hz and every z-coefficient,
     # none of which appear in the expression actually returned.
+    # The signature is CANONICAL, derived from what the expression contains,
+    # not from the order sympy happened to visit it. Insertion order is a
+    # traversal artifact: it produced samples in Hy-then-Hx order but psi in
+    # Hxy-then-Hyx order -- two different orders, because neither was
+    # "component order" -- and it silently permuted when an unrelated change
+    # altered which curl component was attempted first. A permuted signature
+    # behind a correct body is precisely the bug that reached stepper_kz, and
+    # it is invisible to inspection of the generated source.
+    #
+    # Canonical order: samples grouped per component in COMPONENTS order and
+    # ascending in offset within a component; then psi memories by name; then
+    # the PML coefficients per axis in AXES order as (b, a, k); then h. Callers
+    # should still bind by keyword -- this makes the order stable and
+    # meaningful, it does not make positional binding safe.
     free = expr.free_symbols
-    args = ([a for a in used if a in free] + [a for a in psis if a in free]
-            + [a for a in coeffs if a in free] + [h])
+
+    def sample_key(t):
+        name = str(t)
+        base, _, tag = name.partition("_")
+        offset = 0 if not tag else (int(tag[1:]) * (1 if tag[0] == "p" else -1))
+        order = COMPONENTS.index(base) if base in COMPONENTS else len(COMPONENTS)
+        return (order, base, offset)
+
+    def coeff_key(t):
+        kind, _, axis = str(t).partition("_")
+        return (AXES.index(axis) if axis in AXES else len(AXES),
+                {"b": 0, "a": 1, "k": 2}.get(kind, 3))
+
+    args = (sorted((t for t in used if t in free), key=sample_key)
+            + sorted((t for t in psis if t in free), key=str)
+            + sorted((t for t in coeffs if t in free), key=coeff_key)
+            + [h])
     return sp.lambdify(args, expr, "torch"), [str(a) for a in args]
 
 

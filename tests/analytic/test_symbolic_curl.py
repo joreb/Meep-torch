@@ -79,14 +79,51 @@ def test_operator_curl_matches_the_typed_curl():
 
 def test_two_dimensional_reduction_decouples():
     """TM and TE exist because the reduced system is block-diagonal, not
-    because anything declared them. assert_decoupled raises if it is not."""
+    because anything declared them.
+
+    The membership is now read off the coupling graph rather than checked
+    against a typed partition, so the blocks come back in COMPONENTS order.
+    Sets, not tuples, are what this test cares about.
+    """
     assert_decoupled(("z",))
     blocks = polarisation_blocks(("z",))
-    assert blocks["tm"]["components"] == ("Ez", "Hx", "Hy")
-    assert blocks["te"]["components"] == ("Hz", "Ex", "Ey")
+    assert set(blocks["tm"]["components"]) == {"Ez", "Hx", "Hy"}
+    assert set(blocks["te"]["components"]) == {"Hz", "Ex", "Ey"}
     # the two blocks together account for all six components, exactly once
     members = blocks["tm"]["components"] + blocks["te"]["components"]
     assert sorted(members) == sorted(COMPONENTS)
+
+
+def test_the_partition_is_derived_not_assumed():
+    """The z case agreeing with the typed partition is not the claim.
+
+    The claim is that membership comes from the matrix, and the way to show
+    that is a reduction the typed partition gets WRONG. Under d/dx = 0 the
+    system decouples just as cleanly, into different blocks; a check against a
+    z-shaped partition called that a failure to decouple. And 1D is four
+    blocks, not a TM/TE pair, which the two-way answer could only misreport.
+    """
+    from meep_torch.core.symbolic import decoupled_blocks
+
+    assert decoupled_blocks(("x",)) == (("Ex", "Hy", "Hz"), ("Ey", "Ez", "Hx"))
+    assert decoupled_blocks(("y",)) == (("Ex", "Ez", "Hy"), ("Ey", "Hx", "Hz"))
+    assert decoupled_blocks(("y", "z")) == (("Ex",), ("Ey", "Hz"),
+                                            ("Ez", "Hy"), ("Hx",))
+    # unreduced Maxwell is fully coupled: one block, and no polarisations
+    assert len(decoupled_blocks(())) == 1
+    for bad in ((), ):
+        try:
+            assert_decoupled(bad)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"assert_decoupled({bad}) should refuse")
+    try:
+        polarisation_blocks(("y", "z"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("1D has four blocks; TM/TE must not be forced")
 
 
 def _run_tm(steps, npml):

@@ -33,6 +33,23 @@ _dHy_dx = compiled_difference("Hy", "x", "Ez")   # backward
 _curl_ez, _CURL_EZ_ARGS = compiled_stretched_curl(
     (sp.Symbol("Hx"), sp.Symbol("Hy"), sp.Symbol("Hz")), "Ez")
 
+# The signature is canonical (see compiled_stretched_curl), not the order
+# sympy happened to traverse the expression in. It used to be the latter, and
+# it permuted under an unrelated change to which curl component was built
+# first -- samples swapping Hx against Hy, which a positional call would have
+# bound silently and negated. That is the compiled_uniform_difference bug
+# again: a correct BODY behind a permuted signature, invisible to inspection
+# of the generated source.
+#
+# So the call below binds by KEYWORD, and this asserts the invariant so a
+# change becomes an ImportError rather than a wrong answer.
+assert _CURL_EZ_ARGS == [
+    "Hx_m1", "Hx", "Hy_m1", "Hy", "psi_Hxy", "psi_Hyx",
+    "b_x", "a_x", "k_x", "b_y", "a_y", "k_y", "h"], (
+    f"compiled_stretched_curl signature changed to {_CURL_EZ_ARGS}; the "
+    f"keyword call below still binds correctly, but re-read the canonical "
+    f"ordering rule before relying on anything positional")
+
 
 class TMState(NamedTuple):
     Ez: torch.Tensor       # (nx, ny)        E_z at time n
@@ -200,9 +217,12 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         # The whole curl straight from the derivation. The psi recursions above
         # are still computed separately because they are STATE -- the derived
         # expression consumes the OLD psi and reconstructs the update inside.
-        curl = _curl_ez(Hy[:-1, ys], Hy[1:, ys], Hx[xs, :-1], Hx[xs, 1:],
-                        state.psi_Hxy, state.psi_Hyx,
-                        m.b_ey, m.a_ey, m.k_ey, m.b_ex, m.a_ex, m.k_ex, dx)
+        # bound by NAME: see the assertion beside the compile above
+        curl = _curl_ez(Hy_m1=Hy[:-1, ys], Hy=Hy[1:, ys],
+                        Hx_m1=Hx[xs, :-1], Hx=Hx[xs, 1:],
+                        psi_Hxy=state.psi_Hxy, psi_Hyx=state.psi_Hyx,
+                        b_y=m.b_ey, a_y=m.a_ey, k_y=m.k_ey,
+                        b_x=m.b_ex, a_x=m.a_ex, k_x=m.k_ex, h=dx)
     else:
         # MEEP_TORCH_WHOLE_CURL=0: meep's association, left to right,
         # (((d1/k1 + psi1) - d2/k2) - psi2), composed from the derived pieces.
