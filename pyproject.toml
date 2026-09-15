@@ -21,6 +21,7 @@ dependencies = [
     # "torch-amgx",
     "pymkl>=0.0.3",
     "pypardiso>=0.4.7",
+    "cupy-cuda12x>=14.2.0",
 ]
 
 [project.optional-dependencies]
