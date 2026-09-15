@@ -6,6 +6,16 @@ import torch
 import torch.nn.functional as F
 
 from .grid import Grid
+from .symbolic import PSI_NEW, STRETCHED, compiled_difference
+
+# Derived in symbolic.py from the SAME 6x6 system that produces stepper_tm's:
+# TE is the (Hz, Ex, Ey) block, TM the (Ez, Hx, Hy) block, and which is which
+# falls out of imposing d/dz = 0 rather than being declared. Forward vs
+# backward here is likewise a consequence of the Yee offsets.
+_dHz_dy = compiled_difference("Hz", "y", "Ex")   # backward
+_dHz_dx = compiled_difference("Hz", "x", "Ey")   # backward
+_dEy_dx = compiled_difference("Ey", "x", "Hz")   # forward
+_dEx_dy = compiled_difference("Ex", "y", "Hz")   # forward
 
 
 class TEState(NamedTuple):
@@ -77,13 +87,13 @@ def step_db(state: TEState, m, ft: str) -> TEState:
     dt, dx = m.dt, m.dx
     if ft == "D":
         # --- D update (from Hz at time n) ---
-        dHz_dy = (state.Hz[:, 1:] - state.Hz[:, :-1]) / dx      # (nx-1, ny-2)
-        psi_Hzy = m.b_ey * state.psi_Hzy + m.a_ey * dHz_dy
-        curl_x = F.pad(dHz_dy / m.k_ey + psi_Hzy, (1, 1))
+        dHz_dy = _dHz_dy(state.Hz[:, 1:], state.Hz[:, :-1], dx)  # (nx-1, ny-2)
+        psi_Hzy = PSI_NEW(dHz_dy, state.psi_Hzy, m.b_ey, m.a_ey)
+        curl_x = F.pad(STRETCHED(dHz_dy, psi_Hzy, m.k_ey), (1, 1))
 
-        dHz_dx = (state.Hz[1:, :] - state.Hz[:-1, :]) / dx      # (nx-2, ny-1)
-        psi_Hzx = m.b_ex * state.psi_Hzx + m.a_ex * dHz_dx
-        curl_y = F.pad(dHz_dx / m.k_ex + psi_Hzx, (0, 0, 1, 1))
+        dHz_dx = _dHz_dx(state.Hz[1:, :], state.Hz[:-1, :], dx)  # (nx-2, ny-1)
+        psi_Hzx = PSI_NEW(dHz_dx, state.psi_Hzx, m.b_ex, m.a_ex)
+        curl_y = F.pad(STRETCHED(dHz_dx, psi_Hzx, m.k_ex), (0, 0, 1, 1))
         if m.y_mirror_lo == +1:
             # even y-mirror: the on-plane Ex row is live (tangential E,
             # even); the odd Hz ghost across the cut gives dHz/dy = 2 Hz[0]/dx
@@ -104,11 +114,12 @@ def step_db(state: TEState, m, ft: str) -> TEState:
         return state._replace(Dx=Dx, Dy=Dy, psi_Hzy=psi_Hzy, psi_Hzx=psi_Hzx)
 
     # --- Hz update (from E at n+1/2) ---
-    dEy_dx = (state.Ey[1:, :] - state.Ey[:-1, :]) / dx          # (nx-1, ny-1)
-    dEx_dy = (state.Ex[:, 1:] - state.Ex[:, :-1]) / dx          # (nx-1, ny-1)
-    psi_Eyx = m.b_hx * state.psi_Eyx + m.a_hx * dEy_dx
-    psi_Exy = m.b_hy * state.psi_Exy + m.a_hy * dEx_dy
-    curl_z = dEy_dx / m.k_hx + psi_Eyx - dEx_dy / m.k_hy - psi_Exy
+    dEy_dx = _dEy_dx(state.Ey[:-1, :], state.Ey[1:, :], dx)     # (nx-1, ny-1)
+    dEx_dy = _dEx_dy(state.Ex[:, :-1], state.Ex[:, 1:], dx)     # (nx-1, ny-1)
+    psi_Eyx = PSI_NEW(dEy_dx, state.psi_Eyx, m.b_hx, m.a_hx)
+    psi_Exy = PSI_NEW(dEx_dy, state.psi_Exy, m.b_hy, m.a_hy)
+    # meep's association, left to right -- see stepper_tm's D phase.
+    curl_z = STRETCHED(dEy_dx, psi_Eyx, m.k_hx) - dEx_dy / m.k_hy - psi_Exy
     if m.hz1 is not None:
         # W5: dB/dt = -curl E - sigma_b B, B = mu H
         Hz = m.hz1 * state.Hz - m.hz2 * curl_z

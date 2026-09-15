@@ -21,6 +21,15 @@ import torch
 
 from .grid import Grid
 from .pml import cpml_profiles
+from .symbolic import PSI_NEW, STRETCHED, compiled_difference
+
+# The 1D reduction of the same system: propagation along x, so both
+# polarisation pairs (Ez/Hy and Ey/Hz) survive. Forward for E->H and backward
+# for H->E falls out of the Yee offsets, as in 2D and 3D.
+_dEz = compiled_difference("Ez", "x", "Hy")   # forward
+_dEy = compiled_difference("Ey", "x", "Hz")   # forward
+_dHy = compiled_difference("Hy", "x", "Ez")   # backward
+_dHz = compiled_difference("Hz", "x", "Ey")   # backward
 
 
 class Coeffs1D(NamedTuple):
@@ -129,24 +138,24 @@ def step_1d(state: State1D, m: Coeffs1D, src_amp: float = 0.0,
     dt, dx = m.dt, m.dx
 
     # --- H update (from E at n) ---
-    dEz = (state.Ez[1:] - state.Ez[:-1]) / dx
-    psi_Ezx = m.b_h * state.psi_Ezx + m.a_h * dEz
-    Hy = state.Hy + dt * (dEz / m.k_h + psi_Ezx)
+    dEz = _dEz(state.Ez[:-1], state.Ez[1:], dx)
+    psi_Ezx = PSI_NEW(dEz, state.psi_Ezx, m.b_h, m.a_h)
+    Hy = state.Hy + dt * STRETCHED(dEz, psi_Ezx, m.k_h)
 
-    dEy = (state.Ey[1:] - state.Ey[:-1]) / dx
-    psi_Eyx = m.b_h * state.psi_Eyx + m.a_h * dEy
-    Hz = state.Hz - dt * (dEy / m.k_h + psi_Eyx)
+    dEy = _dEy(state.Ey[:-1], state.Ey[1:], dx)
+    psi_Eyx = PSI_NEW(dEy, state.psi_Eyx, m.b_h, m.a_h)
+    Hz = state.Hz - dt * STRETCHED(dEy, psi_Eyx, m.k_h)
 
     # --- D update (from H at n+1/2), PEC x-walls ---
-    dHy = (Hy[1:] - Hy[:-1]) / dx
-    psi_Hyx = m.b_e * state.psi_Hyx + m.a_e * dHy
+    dHy = _dHy(Hy[1:], Hy[:-1], dx)
+    psi_Hyx = PSI_NEW(dHy, state.psi_Hyx, m.b_e, m.a_e)
     Dz = state.Dz.clone()
-    Dz[1:-1] = state.Dz[1:-1] + dt * (dHy / m.k_e + psi_Hyx)
+    Dz[1:-1] = state.Dz[1:-1] + dt * STRETCHED(dHy, psi_Hyx, m.k_e)
 
-    dHz = (Hz[1:] - Hz[:-1]) / dx
-    psi_Hzx = m.b_e * state.psi_Hzx + m.a_e * dHz
+    dHz = _dHz(Hz[1:], Hz[:-1], dx)
+    psi_Hzx = PSI_NEW(dHz, state.psi_Hzx, m.b_e, m.a_e)
     Dy = state.Dy.clone()
-    Dy[1:-1] = state.Dy[1:-1] - dt * (dHz / m.k_e + psi_Hzx)
+    Dy[1:-1] = state.Dy[1:-1] - dt * STRETCHED(dHz, psi_Hzx, m.k_e)
     if src_ix is not None:
         Dy[src_ix] = Dy[src_ix] - dt * src_amp
 
