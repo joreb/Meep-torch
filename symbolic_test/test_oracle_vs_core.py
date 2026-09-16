@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import sympy as sp
 import torch
+from sympy.vector import CoordSys3D, curl as _vcurl
 
 from meep_torch.core import symbolic as core
 
@@ -140,3 +141,55 @@ def test_whole_curl_default_is_one_ulp_from_the_oracle(monkeypatch):
     assert rel < 1e-15, f"whole curl vs meep association: rel {rel:.3e}"
     assert not np.array_equal(a_core, a_oracle), (
         "bitwise equal: the switch is not selecting the whole-curl path")
+
+
+# ------------------------------------------ the axial factor, from the curl --
+# Three routes to the 24-entry component table. Route 1, oracle.PARITY, is a
+# table typed from the textbook rule "H picks up det(R)". Route 2, core's
+# field_transform, is that same rule as a formula, R.det() * R. Two routes that
+# share a source are one route (the Fornberg lesson), so route 3 here uses no
+# rule and no table: it transforms a generic POLAR field, E'(x) = R E(R^T x),
+# pushes sympy.vector's curl through the map, and reads off the scalar s in
+#     curl E' = s * R * (curl E)(R^T x).
+# Whatever s is, that is how a curl of a polar field transforms, and H is a
+# curl of E (Faraday). One typed fact remains on every route -- E is polar,
+# because the force on a charge anchors it -- and it cannot be removed:
+# deriving the family from maxwell_rhs is circular (E = curl H / eps gives
+# s*s = 1, consistent with either assignment and anchoring neither).
+
+def _curl_pushforward_factor(R):
+    """``s`` with ``curl(R E(R^T x)) == s * R * (curl E)(R^T x)``, sympy.vector only."""
+    C = CoordSys3D("C")
+    x, y, z = C.base_scalars()
+    B = C.base_vectors()
+    back = dict(zip((x, y, z), R.T * sp.Matrix([x, y, z])))
+    E = [sp.Function(n)(x, y, z) for n in ("Ex", "Ey", "Ez")]
+    E_at_back = sp.Matrix([e.subs(back, simultaneous=True) for e in E])
+    E_prime = R * E_at_back
+    as_vec = lambda comps: sum((c * b for c, b in zip(comps, B)), sp.vector.Vector.zero)
+    curl_E = sp.Matrix([_vcurl(as_vec(E)).dot(b) for b in B]).subs(back, simultaneous=True)
+    curl_Ep = sp.Matrix([_vcurl(as_vec(E_prime)).dot(b) for b in B])
+    s = sp.Symbol("s")
+    residual = curl_Ep - s * R * curl_E
+    (sol,) = sp.solve(next(r for r in residual if r != 0), s)
+    assert all(sp.simplify(r.subs(s, sol)) == 0 for r in residual), (R, sol)
+    return sol
+
+
+def test_axial_factor_is_derived_from_the_curl():
+    factors = {}
+    for kind, R in oracle.SYMMETRY_MATRICES.items():
+        s = factors[kind] = _curl_pushforward_factor(R)
+        for fam, Mat in (("E", R), ("H", s * R)):
+            for i, a in enumerate("xyz"):
+                comp = f"{fam}{a}"
+                derived = {f"{fam}{b}": int(Mat[i, j]) for j, b in enumerate("xyz") if Mat[i, j] != 0}
+                assert derived == oracle.PARITY[kind][comp], (kind, comp, "typed table")
+                assert derived == {k: int(v) for k, v in core.component_transform(kind, comp).items()}, (kind, comp, "core")
+    # The signal lives in the improper elements and nowhere else. Rotations
+    # have s = +1, so for them polar and axial coincide and the test cannot
+    # tell R from det(R) R; a symmetry module that got every mirror wrong
+    # would pass every rotation case. Deleting the mirror cases as "redundant
+    # with the rotations" would make this test vacuous, so say so here.
+    assert {k for k, s in factors.items() if s == -1} == {"mirror_x", "mirror_y"}, factors
+    assert {k for k, s in factors.items() if s == +1} == {"rot2_z", "rot4_z"}, factors
