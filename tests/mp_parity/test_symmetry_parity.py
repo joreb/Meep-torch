@@ -317,3 +317,38 @@ def test_asymmetric_structure_is_refused(symmetries):
     """
     with pytest.raises(ValueError, match="not obeyed by the structure"):
         _sim_with(_OFFSET_X, symmetries)
+
+
+# --- Mirror(Z) in 2D: phase vs polarisation, no fold -----------------------
+
+@pytest.mark.parametrize("pol,component,good,bad", [
+    ("tm", mp.Ez, -1, +1),
+    ("te", mp.Hz, +1, -1),
+])
+def test_mirror_z_is_a_polarisation_consistency_check(pol, component, good, bad):
+    """In 2D the xy plane is already a mirror plane -- that is WHY TM and TE
+    separate -- so Mirror(Z) folds nothing. The phase is its whole content.
+
+    Under a reflection in xy the TM block is uniformly odd and the TE block
+    uniformly even, because E is polar and H axial and every component either
+    lies along z or in the plane. So exactly one phase is consistent per
+    polarisation, and the other asserts a symmetry the fields do not have.
+    """
+    def build(phase):
+        return mp.Simulation(
+            cell_size=mp.Vector3(4, 4), resolution=10,
+            sources=[mp.Source(mp.ContinuousSource(FCEN), component,
+                               center=mp.Vector3())],
+            symmetries=[mp.Mirror(mp.Z, phase=phase)],
+            boundary_layers=[mp.PML(1.0)])
+
+    build(good)                                    # accepted, and folds nothing
+    with pytest.raises(ValueError, match="contradicts the"):
+        build(bad)
+
+
+def test_mirror_z_signs_come_from_the_transform():
+    """The accepted phases are read off det(R) R, not chosen to match a table."""
+    from meep_torch.core.symbolic import component_sign
+    assert [component_sign("mirror_z", c) for c in ("Ez", "Hx", "Hy")] == [-1, -1, -1]
+    assert [component_sign("mirror_z", c) for c in ("Hz", "Ex", "Ey")] == [+1, +1, +1]

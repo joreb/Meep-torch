@@ -732,6 +732,13 @@ def rotation_matrix(turns) -> sp.Matrix:
 SYMMETRIES = {
     "mirror_x": mirror_matrix((1, 0, 0)),
     "mirror_y": mirror_matrix((0, 1, 0)),
+    # The xy plane. In 2D it folds nothing -- z has no extent -- but it is not
+    # vacuous: the whole TM block (Ez, Hx, Hy) is ODD under it and the whole TE
+    # block (Hz, Ex, Ey) is EVEN, uniformly, because every one of those
+    # components either lies along z or lies in the plane, and E is polar while
+    # H is axial. So Mirror(Z, phase) is a consistency statement about the
+    # phase and the polarisation, and nothing else.
+    "mirror_z": mirror_matrix((0, 0, 1)),
     "rot2_z": rotation_matrix(2),
     "rot4_z": rotation_matrix(1),
 }

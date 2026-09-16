@@ -407,6 +407,11 @@ class Simulation:
                     and s.direction in (X, Y) and s.phase in (1 + 0j, -1 + 0j)):
                 mirrors[s.direction] = int(s.phase.real)
                 continue
+            if (isinstance(s, Mirror) and not isinstance(s, (Rotate2, Rotate4))
+                    and s.direction == Z and s.phase in (1 + 0j, -1 + 0j)
+                    and self.dimensions == 2):
+                self._check_mirror_z(int(s.phase.real))
+                continue
             raise NotImplementedError(
                 f"{type(s).__name__}(direction={getattr(s, 'direction', None)}, "
                 f"phase={getattr(s, 'phase', None)}) not supported: "
@@ -930,6 +935,42 @@ class Simulation:
         if self._sym_cx:
             a = np.concatenate([parity[0] * a[::-1, :], a], axis=0)
         return a
+
+    def _check_mirror_z(self, phase):
+        """Mirror(Z) in 2D: a consistency check on phase vs polarisation.
+
+        meep accepts this and it costs nothing to honour, because in 2D the xy
+        plane is ALREADY a mirror plane of the problem -- that is why the
+        fields separate into TM and TE at all. So there is no domain to fold:
+        z has no extent.
+
+        What it is not is vacuous. Under ``mirror_z`` the entire TM block is
+        odd and the entire TE block is even, uniformly:
+
+            E polar,  E' = R E          -> Ex +1, Ey +1, Ez -1
+            H axial,  H' = det(R) R H   -> Hx -1, Hy -1, Hz +1
+            TM (Ez, Hx, Hy) = (-1, -1, -1)      TE (Hz, Ex, Ey) = (+1, +1, +1)
+
+        (read off ``core.symbolic.component_sign``, not typed here). So a
+        declared phase either matches the polarisation being run or contradicts
+        it, and a contradiction means the user believes the fields have a
+        symmetry they do not have. meep would run it and return an undefined
+        answer; this says so instead, in the same spirit as the structure
+        check.
+        """
+        from ..core.symbolic import component_sign
+        primary = "Ez" if self._pol == "tm" else "Hz"
+        want = component_sign("mirror_z", primary)
+        if phase != want:
+            block = ("(Ez, Hx, Hy)" if self._pol == "tm" else "(Hz, Ex, Ey)")
+            raise ValueError(
+                f"Mirror(Z, phase={phase:+d}) contradicts the {self._pol.upper()} "
+                f"polarisation: every component of {block} is "
+                f"{'odd' if want < 0 else 'even'} under a reflection in the xy "
+                f"plane, so the only consistent phase is {want:+d}. In 2D this "
+                f"folds nothing -- the xy plane is already a mirror plane of "
+                f"the problem, which is why TM and TE separate -- so the phase "
+                f"is the whole content of the declaration.")
 
     #: Point map of each symmetry on a cell-centred scalar grid, as a slice.
     #: Verified against an explicit index loop rather than derived by eye.
