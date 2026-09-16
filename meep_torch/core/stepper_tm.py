@@ -8,7 +8,8 @@ import torch.nn.functional as F
 from .coeffs import TMCoeffs
 from .grid import Grid
 import sympy as sp
-from .symbolic import PSI_NEW, STRETCHED, compiled_difference
+from .symbolic import (PSI_NEW, STRETCHED, compiled_curl_composition,
+                       compiled_difference)
 
 # Yee differences derived in symbolic.py rather than written here. Which of
 # these is a forward and which a backward difference is a consequence of the
@@ -19,6 +20,11 @@ _dEz_dy = compiled_difference("Ez", "y", "Hx")   # forward
 _dEz_dx = compiled_difference("Ez", "x", "Hy")   # forward
 _dHx_dy = compiled_difference("Hx", "y", "Ez")   # backward
 _dHy_dx = compiled_difference("Hy", "x", "Ez")   # backward
+
+# The curl composition, in meep's term order. The order lives in
+# core.symbolic now, shared by every stepper that needs it, instead of being a
+# line of arithmetic per stepper that nothing checks.
+_COMPOSE = compiled_curl_composition(n_terms=2)
 
 class TMState(NamedTuple):
     Ez: torch.Tensor       # (nx, ny)        E_z at time n
@@ -237,14 +243,14 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
 
     psi_Hyx = PSI_NEW(dHy_dx, state.psi_Hyx, m.b_ex, m.a_ex)
     psi_Hxy = PSI_NEW(dHx_dy, state.psi_Hxy, m.b_ey, m.a_ey)
-    # meep's association, left to right: (((d1/k1 + psi1) - d2/k2) - psi2).
-    # Grouping it as (d1/k1 + psi1) - (d2/k2 + psi2) is the same algebra and
-    # different floats, so this is not a style choice -- it is what makes the
-    # step bitwise with meep. The whole curl derived in one piece lives in
-    # symbolic.compiled_stretched_curl and is the ORACLE this is proven equal
-    # to (symbolic_test/derive_twice.py); it is not run, because an expression
-    # tree cannot carry an association.
-    curl = STRETCHED(dHy_dx, psi_Hyx, m.k_ex) - dHx_dy / m.k_ey - psi_Hxy
+    # meep's association, (((d1/k1 + psi1) - d2/k2) - psi2), now emitted by
+    # the derivation rather than typed here: compiled_curl_composition is
+    # handed the term order and builds it as nested binary Adds, which is the
+    # one structure that survives sympy's printer. Grouping it as
+    # (d1/k1 + psi1) - (d2/k2 + psi2) is the same algebra and different floats,
+    # so this is not style -- it is what makes the step bitwise with meep.
+    curl = _COMPOSE(STRETCHED(dHy_dx, psi_Hyx, m.k_ex),
+                    dHx_dy, m.k_ey, psi_Hxy)
     if m.d1 is not None:
         # W5: dD/dt = curl H - sigma_d D
         Dz = m.d1 * state.Dz + m.d2 * F.pad(curl, pad_spec)

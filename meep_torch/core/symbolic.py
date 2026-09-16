@@ -558,6 +558,70 @@ def _compile_pml():
 PSI_NEW, STRETCHED = _compile_pml()
 
 
+def ordered_sum(terms):
+    """Left-to-right nested binary ``Add``, so the association survives printing.
+
+    sympy flattens and sorts ``Add`` and ``Mul`` on construction, so an
+    expression tree carries algebra but NOT an association: ``a*(d/h)`` and
+    ``(a*d)/h`` are the same object, ``Mul(a, d, Pow(h, -1))``. Bitwise parity
+    with meep is an association property, which is why the derived whole curl
+    is one ulp off and cannot be what executes.
+
+    Nesting is the one thing that does survive. ``Add(x, y, evaluate=False)``
+    keeps its shape through the printer, so building the sum as nested binary
+    nodes in the caller's order emits meep's grouping. sympy still reorders the
+    two arguments of each node when printing -- it prints ``-c + (b + a)`` for
+    ``((a + b) + c)`` -- and that is harmless, because IEEE addition commutes
+    exactly. Only the nesting matters, and the nesting is what was specified.
+
+    TWO THINGS WILL DESTROY IT, both silently:
+
+    * any arithmetic on the result. ``evaluate=False`` survives exactly one
+      level; add one more term to an ordered sum and the whole thing
+      re-flattens. Build it LAST.
+    * ``subs``, ``simplify``, ``expand`` or anything else that rebuilds the
+      tree. Check an ordered expression against an oracle by comparing the
+      CANONICAL forms of the same pieces, never by simplifying the ordered one.
+    """
+    if not terms:
+        raise ValueError("ordered_sum needs at least one term")
+    total = terms[0]
+    for t in terms[1:]:
+        total = sp.Add(total, t, evaluate=False)
+    return total
+
+
+def compiled_curl_composition(n_terms: int = 2):
+    """meep's D-phase curl composition, compiled from derived pieces.
+
+    This is the executable counterpart of :func:`compiled_stretched_curl`. That
+    one derives the whole curl as a single expression and is the ORACLE -- one
+    ulp from meep, because sympy chooses the association. This one is handed
+    the association and emits meep's:
+
+        (d0/k0 + psi0) - d1/k1 - psi1        for two terms
+
+    The first term keeps its psi as a stretched unit; the rest contribute their
+    difference and their psi separately. That grouping is meep's and is the one
+    irreducibly conventional thing here -- but it is now stated ONCE, as a term
+    list handed to :func:`ordered_sum`, instead of once per stepper as a line
+    of arithmetic that nothing checks.
+
+    Returns ``f(stretched_0, d_1, k_1, psi_1, ...)``: the caller computes the
+    differences and psi recursions (they are state) and passes them in.
+    """
+    if n_terms < 2:
+        raise ValueError(f"a curl component has at least two terms, got {n_terms}")
+    s0 = sp.Symbol("stretched_0")
+    args, terms = [s0], [s0]
+    for i in range(1, n_terms):
+        d, k, psi = (sp.Symbol(f"d_{i}"), sp.Symbol(f"k_{i}"),
+                     sp.Symbol(f"psi_{i}"))
+        args += [d, k, psi]
+        terms += [-d / k, -psi]
+    return sp.lambdify(args, ordered_sum(terms), "torch")
+
+
 def compiled_stretched_curl(vec, target: str, system: str = "cartesian",
                             order: int = 2):
     """Compile the CPML-stretched discrete curl at ``target`` into torch.

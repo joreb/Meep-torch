@@ -257,3 +257,43 @@ def test_symmetry_signs_come_from_the_transform_not_a_table():
         assert sp.simplify(R.T * R - sp.eye(3)) == sp.zeros(3, 3), kind
     assert SYMMETRIES["rot4_z"] ** 2 == SYMMETRIES["rot2_z"]
     assert SYMMETRIES["rot4_z"] ** 4 == sp.eye(3)
+
+
+def test_the_composition_is_ordered_and_that_is_what_makes_it_bitwise():
+    """The association is emitted by the derivation, not typed in the stepper.
+
+    sympy flattens Add and Mul on construction, so a tree carries algebra and
+    not an association -- `a*(d/h)` and `(a*d)/h` are the same object. Nested
+    binary `Add(evaluate=False)` is the one structure that survives printing,
+    and `ordered_sum` builds it, so `compiled_curl_composition` emits meep's
+    grouping instead of sympy's canonical sort.
+
+    The pair below is the point: ORDERED is bitwise with the hand-written
+    composition and CANONICAL is not. If canonical ever became bitwise too,
+    this test would still pass while proving nothing, so both halves are
+    asserted.
+    """
+    import torch
+
+    from meep_torch.core.symbolic import compiled_curl_composition, ordered_sum
+
+    compose = compiled_curl_composition(n_terms=2)
+    torch.manual_seed(0)
+    s0, d1, k1, p1 = (torch.randn(32, 32, dtype=torch.float64) for _ in range(4))
+    hand = s0 - d1 / k1 - p1
+
+    assert torch.equal(compose(s0, d1, k1, p1), hand), (
+        "the ordered composition is not bitwise with meep's association")
+
+    a, b, c, d = sp.symbols("stretched_0 d_1 k_1 psi_1")
+    canonical = sp.lambdify((a, b, c, d), a - b / c - d, "torch")
+    assert not torch.equal(canonical(s0, d1, k1, p1), hand), (
+        "the canonical form is bitwise too -- then sympy has started "
+        "preserving association and this test proves nothing")
+
+    # and the ordered form must not be simplified: evaluate=False survives one
+    # level and dies on contact with arithmetic, which is silent
+    ordered = ordered_sum([a, -b / c, -d])
+    assert sp.srepr(ordered) != sp.srepr(sp.simplify(ordered)), (
+        "simplify left the ordered form intact -- the fragility this warns "
+        "about is gone, or the check is looking at the wrong thing")
