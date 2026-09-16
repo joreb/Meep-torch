@@ -930,6 +930,90 @@ class Simulation:
             a = np.concatenate([parity[0] * a[::-1, :], a], axis=0)
         return a
 
+    def _stored_h(self, comp):
+        """Folded H array WITH its cut-plane row/column, as a (H, H)-style block.
+
+        The fold stores the in-plane H components one short along the folded
+        axis -- Hx is (nx, ny-1) because H lives on the gaps between E nodes --
+        and keeps the node ON the cut separately in ``Hx0``/``Hy0``. Sticking
+        them back together is what makes the unfold expressible as a slice:
+        ``_demirror`` applied to the bare fold array returns an array one row
+        short, which is why staggered components were refused rather than
+        unfolded.
+
+        The cut row is zero rather than stored for an EVEN mirror, and that is
+        forced, not missing: the on-plane node is a fixed point of the mirror,
+        so the sector relation reads ``Hx = -p Hx`` (H is axial, so it carries
+        the extra sign), which for ``p = +1`` has only the zero solution.
+        """
+        a = getattr(self._state, comp).detach().cpu().numpy()
+        # Splice only along the axis this component is OFFSET along, and only
+        # when that axis actually carries a cut. Hx is short in y and gains a
+        # row from a y cut; Hy is short in x and gains a column from an x cut.
+        # A y-mirror leaves x unfolded, so Hy is already full there and
+        # prepending would make it one row too wide.
+        cut = self._sym_cy if comp == "Hx" else self._sym_cx
+        if not cut:
+            return a
+        edge = getattr(self._state, comp + "0", None)
+        z = (edge.detach().cpu().numpy() if edge is not None
+             else np.zeros(a.shape[0] if comp == "Hx" else a.shape[1]))
+        return (np.concatenate([z[:, None], a], axis=1) if comp == "Hx"
+                else np.concatenate([z[None, :], a], axis=0))
+
+    def _demirror_h(self, comp):
+        """Folded Hx/Hy -> the full cell, from the symmetry rather than per case.
+
+        A fold confines the solution to an eigenspace of ``R``, so every full
+        node satisfies ``f = conj(lam)^m (R^m f)`` for any ``m``; the unfold
+        picks, per node, the smallest ``m`` whose walked-back source lies in
+        stored data. The quadrant decides ``m``; the component decides which
+        GRID the source lands on and what sign it carries.
+
+        Under C4 that grid changes: a quarter turn maps the Hx grid
+        ``(n, n-1)`` onto the Hy grid ``(n-1, n)``, so the full-cell Hx is
+        assembled from the folded Hx on two quadrants and the folded HY on the
+        other two. That is why this takes a component name and reads both.
+
+        There are no unreconstructable nodes here, unlike
+        :meth:`_demirror_te_hz`. The C4 centre sits on a cell CORNER, so each
+        staggered grid maps bijectively onto one of the same size, and the
+        doubly-stored cut ray closes the last gap -- drop ``Hx0`` and quadrant
+        3 of Hx loses its cut row. TE has a real hole because its cut plane is
+        a node line, about which a half-offset grid is not symmetric.
+        """
+        if not (self._sym_cx or self._sym_cy):
+            # no fold: the stored array IS the full cell, and there is no cut
+            # row to splice back in
+            return getattr(self._state, comp).detach().cpu().numpy()
+        X, Y = self._stored_h("Hx"), self._stored_h("Hy")
+        if self._sym_rot4:
+            # m = 0, 1, 2, 3 over the four quadrants. The phases are lam on the
+            # m=3 block and conj(lam) on m=1 -- the same conjugate pair as the
+            # cut-plane ghost -- and conj(lam)^2 = 1 for the real phases the
+            # engine admits. The [:, :h-1] / [:h-1, :] trims drop the ray row
+            # that X / Y already carry, which would otherwise be counted twice.
+            p, h = float(self._sym_py), X.shape[0]
+            if comp == "Hx":
+                return np.block([[-X[::-1, ::-1][:, :h - 1], -p * Y[:, ::-1].T],
+                                 [p * (Y[::-1, :].T)[:, :h - 1], X]])
+            return np.block([[-Y[::-1, ::-1][:h - 1, :], p * (X[:, ::-1].T)[:h - 1, :]],
+                             [-p * X[::-1, :].T, Y]])
+        a = X if comp == "Hx" else Y
+        # mirrors and C2: m in {0, 1}. The sign is the component's own parity,
+        # which _comp_parity derives; the trim drops the cut row on the axis
+        # the component is offset along, because that row is already in `a`.
+        px, py = self._comp_parity(comp)
+        if self._sym_cy:
+            lo = a[::-1, ::-1] if self._sym_rot2 else a[:, ::-1]
+            lo = lo[:, :-1] if comp == "Hx" else lo
+            a = np.concatenate([py * lo, a], axis=1)
+        if self._sym_cx:
+            lo = a[::-1, :]
+            lo = lo[:-1, :] if comp == "Hy" else lo
+            a = np.concatenate([px * lo, a], axis=0)
+        return a
+
     def _demirror_te_hz(self, a):
         """Half-grid TE Hz -> full-cell (nx-1, ny-1). TE grids are NOT
         node-symmetric about a cut: the kept half maps to full rows/cols
@@ -2156,7 +2240,11 @@ class Simulation:
                 return self._subvolume(
                     self._demirror_te_hz(self._state.Hz.detach().cpu().numpy()),
                     center, size)
+            if component == "Hy" and hasattr(self._state, "Hy"):
+                return self._subvolume(self._demirror_h("Hy"), center, size)
             return self._state.Hz if hasattr(self._state, "Hz") else None
+        if component == "Hx" and self._pol == "tm":
+            return self._subvolume(self._demirror_h("Hx"), center, size)
         raise ValueError(f"unsupported component {component!r}")
 
     # --- meep Simulation utility methods ---

@@ -201,3 +201,66 @@ def test_rotate4_quadrant_matches_full(phase):
     # plus a flip on the grid
     np.testing.assert_allclose(ez_q, phase * ez_q[::-1, :].T,
                                atol=1e-12 * scale)
+
+
+# --- staggered components unfold too (Hx/Hy under every fold) --------------
+
+def _run_h(symmetries, src_pos):
+    """Ez dipole run returning all three TM components on the FULL cell.
+
+    The source list has to obey the symmetry as well as the structure, so the
+    full-cell reference carries every partner the fold implies. A lone
+    off-centre dipole is a different physical problem from its folded
+    counterpart, and comparing the two measures the source layout rather than
+    the unfold -- which is how this gate first "failed" while the code was
+    right. OFF sits on a cell centre so each image lands exactly on a grid row.
+    """
+    sim = mp.Simulation(
+        cell_size=mp.Vector3(8, 8), resolution=RES,
+        boundary_layers=[mp.PML(1.0)],
+        sources=[mp.Source(mp.GaussianSource(FCEN, fwidth=0.2 * FCEN),
+                           component=mp.Ez, center=c, amplitude=a)
+                 for c, a in src_pos],
+        symmetries=symmetries or None)
+    sim.run(until=25)
+    return {c: np.asarray(sim.get_array(component=c))
+            for c in ("Ez", "Hx", "Hy")}
+
+
+def _h_cases(p):
+    V = mp.Vector3
+    one = [(V(OFF, OFF), 1.0)]
+    return {
+        "Mirror(Y)": ([mp.Mirror(mp.Y, phase=p)], one,
+                      one + [(V(OFF, -OFF), p)]),
+        "Mirror(X)": ([mp.Mirror(mp.X, phase=p)], one,
+                      one + [(V(-OFF, OFF), p)]),
+        "Rotate2": ([mp.Rotate2(mp.Z, phase=p)], one,
+                    one + [(V(-OFF, -OFF), p)]),
+        "Rotate4": ([mp.Rotate4(mp.Z, phase=p)], one,
+                    one + [(V(OFF, -OFF), p), (V(-OFF, -OFF), 1.0),
+                           (V(-OFF, OFF), p)]),
+    }
+
+
+@pytest.mark.parametrize("phase", [+1, -1])
+@pytest.mark.parametrize("name", ["Mirror(Y)", "Mirror(X)", "Rotate2", "Rotate4"])
+def test_staggered_components_unfold(name, phase):
+    """Hx and Hy de-symmetrise onto the full cell, not just Ez.
+
+    These were refused outright before: the fold stores H one short along the
+    folded axis (H lives on the gaps between E nodes) and keeps the on-cut
+    node aside, so the naive unfold came out a row short. Under C4 it is worse
+    than bookkeeping -- a quarter turn maps the Hx grid onto the Hy grid, so
+    the full-cell Hx is assembled from folded Hx on two quadrants and folded
+    HY on the other two.
+    """
+    syms, fold_src, full_src = _h_cases(phase)[name]
+    full = _run_h([], full_src)
+    got = _run_h(syms, fold_src)
+    n = RES
+    for comp in ("Ez", "Hx", "Hy"):
+        a, b = got[comp], full[comp]
+        assert a.shape == b.shape, f"{name} {phase:+d} {comp}: {a.shape} vs {b.shape}"
+        rel = np.abs(a - b)[n:-n, n:-n].max() / np.abs(b).max()
+        assert rel < TOL, f"{name} {phase:+d} {comp} off by {rel:.3e} (tol {TOL:g})"
