@@ -76,6 +76,24 @@ class TMState(NamedTuple):
     Hy0: torch.Tensor | None = None      # (ny,)  Hy at the low-x cut
 
 
+
+def _replaced(state, **fields):
+    """``state._replace(**fields)``, but traceable by ``torch.compile``.
+
+    ``NamedTuple._replace`` raises a bare ``AssertionError`` inside dynamo
+    (torch 2.9.1, ``side_effects.codegen_save_tempvars``), so every stepper
+    using it was uncompilable -- which mattered more than it sounds. Measured
+    on this repo: the generic axis-generic steppers compile and gain 2.3-3.8x,
+    so an UNCOMPILABLE hand-written stepper is the slow path once compile is on
+    the table. ``_make`` and direct construction both trace fine, and
+    ``_fields`` is a static tuple so dynamo unrolls this comprehension.
+
+    Keeps ``_replace``'s shape at the call sites: these states carry ~20
+    fields, and writing every one out ten times would bury the two that change.
+    """
+    return type(state)._make(
+        [fields.get(name, value) for name, value in zip(state._fields, state)])
+
 def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
                   n_mpoles: int = 0, y_mirror: int = 0,
                   x_mirror: int = 0, y_rot2: int = 0,
@@ -208,15 +226,15 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
                 phase * gather(state.Ez), state.Ez[0, :], dx)
         if m.mc1x is not None:
             # W5.5 mu-Lorentz: B integrates the curl; update_eh(H) forms H = B - sum M
-            return state._replace(psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
+            return _replaced(state, psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
                                   Bx=state.Bx - dt * curl_hx,
                                   By=state.By + dt * curl_hy, **mir)
         if m.h1x is not None:
             # W5: dB/dt = -curl E - sigma_b B, B = mu H (fused: mu inside h2*)
-            return state._replace(psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
+            return _replaced(state, psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
                                   Hx=m.h1x * state.Hx - m.h2x * curl_hx,
                                   Hy=m.h1y * state.Hy + m.h2y * curl_hy, **mir)
-        return state._replace(psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
+        return _replaced(state, psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
                               Hx=state.Hx - dt * curl_hx,
                               Hy=state.Hy + dt * curl_hy, **mir)
 
@@ -272,7 +290,7 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         Dz = m.d1 * state.Dz + m.d2 * F.pad(curl, pad_spec)
     else:
         Dz = state.Dz + dt * F.pad(curl, pad_spec)
-    return state._replace(Dz=Dz, psi_Hyx=psi_Hyx, psi_Hxy=psi_Hxy)
+    return _replaced(state, Dz=Dz, psi_Hyx=psi_Hyx, psi_Hxy=psi_Hxy)
 
 
 def step_source(state: TMState, m: TMCoeffs, ft: str, amp=0.0,
@@ -301,19 +319,19 @@ def step_source(state: TMState, m: TMCoeffs, ft: str, amp=0.0,
         if src_hx_mask is not None:
             Hx = Hx - dt * amp * src_hx_mask
         if state.Bx is not None:
-            return state._replace(Bx=Hx, By=Hy)
-        return state._replace(Hx=Hx, Hy=Hy)
+            return _replaced(state, Bx=Hx, By=Hy)
+        return _replaced(state, Hx=Hx, Hy=Hy)
     if src_mask is None:
         return state
     scale = m.d2 if m.d1 is not None else dt
-    return state._replace(Dz=state.Dz - scale * amp * src_mask)
+    return _replaced(state, Dz=state.Dz - scale * amp * src_mask)
 
 
 def update_pols(state: TMState, m: TMCoeffs) -> TMState:
     """meep update_pols(E): ADE Lorentz recurrence
     P(n+1) = c1 P(n) + c2 P(n-1) + c3 Ez(n)."""
     P_new = m.c1 * state.P_cur + m.c2 * state.P_prev + m.c3 * state.Ez
-    return state._replace(P_cur=P_new, P_prev=state.P_cur)
+    return _replaced(state, P_cur=P_new, P_prev=state.P_cur)
 
 
 def update_eh(state: TMState, m: TMCoeffs, ft: str) -> TMState:
@@ -327,7 +345,7 @@ def update_eh(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         # W5.5: M precesses off H(n-1/2), H = B - sum M (mu_inf = 1)
         Mx_new = m.mc1x * state.Mx_cur + m.mc2x * state.Mx_prev + m.mc3x * state.Hx
         My_new = m.mc1y * state.My_cur + m.mc2y * state.My_prev + m.mc3y * state.Hy
-        return state._replace(Hx=state.Bx - Mx_new.sum(0),
+        return _replaced(state, Hx=state.Bx - Mx_new.sum(0),
                               Hy=state.By - My_new.sum(0),
                               Mx_cur=Mx_new, Mx_prev=state.Mx_cur,
                               My_cur=My_new, My_prev=state.My_cur)
@@ -337,7 +355,7 @@ def update_eh(state: TMState, m: TMCoeffs, ft: str) -> TMState:
     if m.has_kerr or m.has_chi2:
         for _ in range(3):
             Ez = rhs / (m.eps_inf + m.chi2 * Ez + m.chi3 * Ez * Ez)
-    return state._replace(Ez=Ez)
+    return _replaced(state, Ez=Ez)
 
 
 def step_tm(

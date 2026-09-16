@@ -34,6 +34,24 @@ class TEState(NamedTuple):
     psi_Hzx: torch.Tensor  # (nx-2, ny-1)
 
 
+
+def _replaced(state, **fields):
+    """``state._replace(**fields)``, but traceable by ``torch.compile``.
+
+    ``NamedTuple._replace`` raises a bare ``AssertionError`` inside dynamo
+    (torch 2.9.1, ``side_effects.codegen_save_tempvars``), so every stepper
+    using it was uncompilable -- which mattered more than it sounds. Measured
+    on this repo: the generic axis-generic steppers compile and gain 2.3-3.8x,
+    so an UNCOMPILABLE hand-written stepper is the slow path once compile is on
+    the table. ``_make`` and direct construction both trace fine, and
+    ``_fields`` is a static tuple so dynamo unrolls this comprehension.
+
+    Keeps ``_replace``'s shape at the call sites: these states carry ~20
+    fields, and writing every one out ten times would bury the two that change.
+    """
+    return type(state)._make(
+        [fields.get(name, value) for name, value in zip(state._fields, state)])
+
 def init_te_state(grid: Grid, n_poles: int = 0, n_poles_y: int | None = None) -> TEState:
     """Allocate TE state. n_poles sizes the Ex-axis polarization buffers
     (Px_cur/Px_prev); n_poles_y sizes the Ey-axis buffers (Py_cur/Py_prev)
@@ -111,7 +129,7 @@ def step_db(state: TEState, m, ft: str) -> TEState:
         else:
             Dx = state.Dx + dt * curl_x
             Dy = state.Dy - dt * curl_y
-        return state._replace(Dx=Dx, Dy=Dy, psi_Hzy=psi_Hzy, psi_Hzx=psi_Hzx)
+        return _replaced(state, Dx=Dx, Dy=Dy, psi_Hzy=psi_Hzy, psi_Hzx=psi_Hzx)
 
     # --- Hz update (from E at n+1/2) ---
     dEy_dx = _dEy_dx(state.Ey[:-1, :], state.Ey[1:, :], dx)     # (nx-1, ny-1)
@@ -125,7 +143,7 @@ def step_db(state: TEState, m, ft: str) -> TEState:
         Hz = m.hz1 * state.Hz - m.hz2 * curl_z
     else:
         Hz = state.Hz - dt * curl_z
-    return state._replace(Hz=Hz, psi_Eyx=psi_Eyx, psi_Exy=psi_Exy)
+    return _replaced(state, Hz=Hz, psi_Eyx=psi_Eyx, psi_Exy=psi_Exy)
 
 
 def step_source(state: TEState, m, ft: str, amp=0.0,
@@ -138,11 +156,11 @@ def step_source(state: TEState, m, ft: str, amp=0.0,
     if ft == "B":
         if src_hz_mask is None:
             return state
-        return state._replace(Hz=state.Hz - dt * amp * src_hz_mask)
+        return _replaced(state, Hz=state.Hz - dt * amp * src_hz_mask)
     if src_mask is None:
         return state
     scale = m.d2y if m.d1x is not None else dt
-    return state._replace(Dy=state.Dy - scale * amp * src_mask)
+    return _replaced(state, Dy=state.Dy - scale * amp * src_mask)
 
 
 def update_pols(state: TEState, m) -> TEState:
@@ -154,7 +172,7 @@ def update_pols(state: TEState, m) -> TEState:
         # oriented poles: off-diagonal chi drives Px from Ey (and Py from Ex)
         Px_new = Px_new + m.c3xy * _avg4_to_ex(state.Ey)
         Py_new = Py_new + m.c3yx * _avg4_to_ey(state.Ex)
-    return state._replace(Px_cur=Px_new, Px_prev=state.Px_cur,
+    return _replaced(state, Px_cur=Px_new, Px_prev=state.Px_cur,
                           Py_cur=Py_new, Py_prev=state.Py_cur)
 
 
@@ -183,7 +201,7 @@ def update_eh(state: TEState, m, ft: str) -> TEState:
             E2y = Ey * Ey + _avg4_to_ey(Ex) ** 2
             Ex = rhs_x / (m.eps_x + m.chi2_x * Ex + m.chi3_x * E2x)
             Ey = rhs_y / (m.eps_y + m.chi2_y * Ey + m.chi3_y * E2y)
-    return state._replace(Ex=Ex, Ey=Ey)
+    return _replaced(state, Ex=Ex, Ey=Ey)
 
 
 def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = None,
