@@ -558,6 +558,146 @@ def _compile_pml():
 PSI_NEW, STRETCHED = _compile_pml()
 
 
+# ----------------------------------------------------------- the allocator --
+# Twelve steppers allocate their state by hand. The shapes are not arbitrary:
+# they follow from the component's Yee offsets and the boundary on each axis,
+# and this derives them. Nothing in the steppers calls this yet -- it is gated
+# against what they actually allocate (tests/analytic/test_allocator.py), which
+# is the only way to find out whether the rule is real.
+
+#: Boundary kinds a stepper axis can have. A FOLD is a symmetry cut: it behaves
+#: like a wall for the fencepost (the kept half ends there) but the field on the
+#: cut plane may be live, which is what `cut_plane_row` decides.
+WALL, PERIODIC, FOLD = "wall", "periodic", "fold"
+
+
+def field_shape(component: str, extents, boundaries, origin=None) -> tuple:
+    """Shape of ``component`` on a grid of ``extents`` with these boundaries.
+
+    A half-offset component is short by one along an axis IFF that axis has a
+    wall: H lives on the gaps between E nodes, and ``n`` nodes have ``n - 1``
+    gaps. On a PERIODIC axis it keeps the full extent, because the wrap supplies
+    the partner that a wall would have cut off.
+
+    That second half is the part a Yee table alone does not give, and getting it
+    wrong is not hypothetical: ``stepper_bloch`` has ``Hx (nx, ny)`` where the
+    PEC rule predicts ``(nx, ny-1)``, and ``Hy (nx-1, ny)`` where it predicts
+    the same -- short in x because x is walled, full in y because y wraps. A
+    rule read off the PEC steppers alone reproduces four of them and silently
+    contradicts the periodic ones.
+
+    ``origin`` shifts the lattice, and it is not hypothetical either. THIS
+    PACKAGE CONTAINS TWO TE CONVENTIONS. ``stepper_te`` places Hz at
+    ``(1/2, 1/2)`` -- standard Yee -- while ``stepper_bloch``'s TE half places
+    it at the integer node, the DUAL lattice, i.e. Yee shifted by
+    ``(1/2, 1/2, 0)``. Both are internally consistent and they disagree about
+    which fields are short. ``stepper_bloch2`` hides the difference because
+    every axis wraps there, so no component is short at all.
+
+    The offsets are taken mod 1, so a half shift swaps integer and half nodes.
+    """
+    if len(extents) != len(boundaries):
+        raise ValueError(f"{len(extents)} extents, {len(boundaries)} boundaries")
+    off = YEE[component]
+    if origin is not None:
+        off = tuple((o + d) % 1 for o, d in zip(off, origin))
+    return tuple(n - 1 if (off[a] == HALF and bc in (WALL, FOLD)) else n
+                 for a, (n, bc) in enumerate(zip(extents, boundaries)))
+
+
+#: The two lattice origins this package uses, as a shift on the Yee offsets.
+#: ``DUAL`` is ``stepper_bloch``'s TE convention; everything else is ``YEE``.
+LATTICE_YEE = (0, 0, 0)
+LATTICE_DUAL = (HALF, HALF, 0)
+
+
+def psi_extent(target: str, extents, boundaries, origin=None) -> tuple:
+    """Shape of a CPML memory array for the field updating ``target``.
+
+    A psi lives on its target's grid with the rows the stepper never writes
+    removed. A PEC wall forces TANGENTIAL E to zero, so an E component with a
+    node ON that wall is not updated there and needs no memory for it -- two
+    rows go, one per wall. H is free at a PEC wall and keeps its full extent.
+
+    So the trim is: minus two on each WALL axis where the target is
+    integer-offset (it has a node on the wall) AND the target is an E-family
+    component (the wall pins it). Derived from those two facts rather than read
+    off one stepper -- the first version of this rule trimmed on offset alone
+    and predicted Hx (10, 9) where stepper_tm allocates (12, 9).
+
+    KNOWN DIVERGENCE, and it is a convention rather than a bug. `stepper_3d`
+    trims only along the psi's OWN derivative axis, so its `psi_Hz_y` for Ex is
+    `(nx-1, ny-2, nz)` where this rule gives `(nx-1, ny-2, nz-2)`. Both are
+    self-consistent; the 3D extra rows are computed and then discarded by the
+    interior slice, which was verified by zeroing them and getting `torch.equal`
+    on every field. A unified allocator must PICK one, and picking this one
+    shrinks 3D's arrays without changing any number.
+    """
+    shape = field_shape(target, extents, boundaries, origin=origin)
+    off = YEE[target]
+    if origin is not None:
+        off = tuple((o + d) % 1 for o, d in zip(off, origin))
+    pinned = target[0] in ("E", "D")          # a PEC wall pins tangential E
+    return tuple(n - 2 if (pinned and off[a] != HALF and bc == WALL) else n
+                 for a, (n, bc) in enumerate(zip(shape, boundaries)))
+
+
+def companion_arrays(components, extents, boundaries, n_poles: int = 0,
+                     n_mpoles: int = 0, origin=None) -> dict:
+    """The non-field state a block carries, as ``{(role, component): shape}``.
+
+    Each E component brings a flux ``D`` on its own grid and an ADE pole pair
+    ``P_cur``/``P_prev`` with a leading pole axis. Each H component brings
+    ``B`` and ``M_cur``/``M_prev`` the same way, but ONLY when magnetic poles
+    are enabled -- ``stepper_tm`` allocates no ``Bx``/``By`` without them,
+    because without magnetic dispersion ``B = mu H`` is folded into the
+    coefficients and B is not a separate unknown.
+
+    The electric side is not symmetric with that: ``D`` and the pole pair are
+    allocated unconditionally, the pole axis simply having length zero when
+    there are no poles. That asymmetry is a CAPABILITY choice per stepper, not
+    physics, and it is where the allocator's 13% memory-pass win lives -- a
+    stepper that skips ``D`` when nothing needs it (no poles, no sigma_d, no
+    chi) saves a full-grid read that hand-written code carries anyway.
+
+    Names are left to the caller because the convention is not uniform: a block
+    with one E component drops the suffix (``Dz``, ``P_cur``) while a block with
+    two keeps it (``Dx``, ``Dy``, ``Px_cur``, ``Py_cur``).
+    """
+    out = {}
+    for c in components:
+        shape = field_shape(c, extents, boundaries, origin=origin)
+        if c[0] == "E":
+            out[("D", c)] = shape
+            out[("P_cur", c)] = (n_poles,) + shape
+            out[("P_prev", c)] = (n_poles,) + shape
+        elif c[0] == "H" and n_mpoles:
+            out[("B", c)] = shape
+            out[("M_cur", c)] = (n_mpoles,) + shape
+            out[("M_prev", c)] = (n_mpoles,) + shape
+    return out
+
+
+def cut_plane_row(component: str, axis: str, phase: int) -> bool:
+    """Whether a fold stores this component's node ON the cut plane.
+
+    The node exists only for a component half-offset along the cut normal. It is
+    then a fixed point of the reflection, so the sector relation reads
+    ``f = phase * M_cc * f``, which for ``phase * M_cc == -1`` has only the zero
+    solution -- the node is identically zero and is not stored. Mirrors are the
+    case where that bites; a C2 or C4 cut is not pointwise fixed and the row is
+    always live.
+
+    This is why ``stepper_tm`` allocates ``Hx0`` for an odd y-mirror and pads a
+    zero row for an even one, and the derivation agrees rather than the code
+    being told.
+    """
+    a = AXES.index(axis)
+    if YEE[component][a] != HALF:
+        return False
+    return phase * component_sign(f"mirror_{axis}", component) == 1
+
+
 def ordered_sum(terms):
     """Left-to-right nested binary ``Add``, so the association survives printing.
 
