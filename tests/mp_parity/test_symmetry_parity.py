@@ -264,3 +264,56 @@ def test_staggered_components_unfold(name, phase):
         assert a.shape == b.shape, f"{name} {phase:+d} {comp}: {a.shape} vs {b.shape}"
         rel = np.abs(a - b)[n:-n, n:-n].max() / np.abs(b).max()
         assert rel < TOL, f"{name} {phase:+d} {comp} off by {rel:.3e} (tol {TOL:g})"
+
+
+# --- the structure is checked against the declared symmetry ----------------
+#
+# meep does not make this check. Its docs: "Meep does not check whether the
+# symmetry is obeyed. If you specify a symmetry that does not preserve your
+# structure/sources, then the results are undefined." Undefined means silently
+# wrong, because the fold never rasterises the half that disagrees.
+
+def _sim_with(geometry, symmetries):
+    sim = mp.Simulation(
+        cell_size=mp.Vector3(8, 8), resolution=RES, geometry=geometry,
+        sources=[mp.Source(mp.ContinuousSource(FCEN), mp.Ez,
+                           center=mp.Vector3(OFF, OFF))],
+        symmetries=symmetries, boundary_layers=[mp.PML(1.0)])
+    sim.init_sim()
+    return sim
+
+
+_CENTRED = [mp.Block(size=mp.Vector3(2, 2), center=mp.Vector3(0, 0),
+                     material=mp.Medium(index=3.4))]
+_OFFSET_X = [mp.Block(size=mp.Vector3(2, 2), center=mp.Vector3(1.0, 0),
+                      material=mp.Medium(index=3.4))]
+
+
+@pytest.mark.parametrize("geometry,symmetries", [
+    ([], [mp.Mirror(mp.Y, phase=+1)]),                 # vacuum
+    (_CENTRED, [mp.Mirror(mp.Y, phase=+1)]),
+    (_CENTRED, [mp.Mirror(mp.X, phase=-1)]),
+    (_CENTRED, [mp.Rotate2(mp.Z, phase=+1)]),
+    (_CENTRED, [mp.Rotate4(mp.Z, phase=+1)]),
+    # offset in x is genuinely symmetric about y -- the check must not object
+    (_OFFSET_X, [mp.Mirror(mp.Y, phase=+1)]),
+])
+def test_symmetric_structures_are_accepted(geometry, symmetries):
+    _sim_with(geometry, symmetries)
+
+
+@pytest.mark.parametrize("symmetries", [
+    [mp.Mirror(mp.X, phase=+1)],
+    [mp.Mirror(mp.X, phase=-1)],
+    [mp.Rotate2(mp.Z, phase=+1)],
+    [mp.Rotate4(mp.Z, phase=+1)],
+])
+def test_asymmetric_structure_is_refused(symmetries):
+    """The half of this gate that makes the other half mean something.
+
+    A block offset in x has none of these symmetries. Before this check the
+    run proceeded and quietly solved a different problem -- the fold keeps the
+    x >= cut half and the offset block's other side simply never existed.
+    """
+    with pytest.raises(ValueError, match="not obeyed by the structure"):
+        _sim_with(_OFFSET_X, symmetries)

@@ -549,6 +549,7 @@ class Simulation:
                 sd = sd + ramp
                 sb = sb + ramp
             self._cond = (sd, sb, mu)
+        self._assert_symmetry_obeyed()
         if self._sym_cy or self._sym_cx:
             # Mirror halving: rasterize the full cell (above), then run the
             # engine on the kept half/quarter with a mirror wall at each cut
@@ -929,6 +930,79 @@ class Simulation:
         if self._sym_cx:
             a = np.concatenate([parity[0] * a[::-1, :], a], axis=0)
         return a
+
+    #: Point map of each symmetry on a cell-centred scalar grid, as a slice.
+    #: Verified against an explicit index loop rather than derived by eye.
+    _STRUCTURE_MAP = {
+        "mirror_x": lambda a: a[::-1, :],
+        "mirror_y": lambda a: a[:, ::-1],
+        "rot2": lambda a: a[::-1, ::-1],
+        "rot4": lambda a: a[:, ::-1].T,
+    }
+
+    def _assert_symmetry_obeyed(self):
+        """Check the STRUCTURE actually has the symmetry that was declared.
+
+        meep does not do this. Its own documentation is explicit: "Meep does
+        not check whether the symmetry is obeyed. If you specify a symmetry
+        that does not preserve your structure/sources, then the results are
+        undefined." Undefined here means a silently wrong answer, because the
+        fold simply never rasterises the half that disagrees.
+
+        The check is ``eps(P r) == eps(r)`` on the FULL-cell raster, run at the
+        one moment it is free: rasterisation builds the whole cell and the
+        halving happens immediately after, so this costs one comparison of an
+        array that already exists, O(N) once at setup.
+
+        Phases are deliberately absent. They apply to the FIELDS, not to the
+        structure -- "the phase factors are ignored when applying the symmetry
+        to the structure" -- so an odd mirror still demands an even eps.
+
+        TOLERANCE. 1e-9 relative, and it is not a judgement call: the two
+        regimes are ten orders apart. A genuinely symmetric geometry rasterised
+        with a symmetric averaging stencil differs across the map only by
+        summation-order rounding, a few ulp (~1e-13 relative). A genuinely
+        asymmetric one differs by at least one boundary pixel, which is
+        |eps1 - eps2| times a fill fraction -- order 1e-2 to 1e1 absolute. Any
+        threshold between 1e-10 and 1e-3 gives the same verdict. So the error
+        says "not symmetric up to rounding", not "outside a physical
+        tolerance": the check is for an exact property, not an approximate one.
+        """
+        kinds = []
+        if self._sym_rot4:
+            kinds = ["rot4"]
+        elif self._sym_rot2:
+            kinds = ["rot2"]
+        else:
+            if self._sym_cx:
+                kinds.append("mirror_x")
+            if self._sym_cy:
+                kinds.append("mirror_y")
+        if not kinds:
+            return
+        fields = [("epsilon", self._rm.eps_tm)]
+        if self._cond is not None:
+            fields += list(zip(("D_conductivity", "B_conductivity", "mu"),
+                               self._cond))
+        for kind in kinds:
+            mapped = self._STRUCTURE_MAP[kind]
+            for name, t in fields:
+                if t is None:
+                    continue
+                a = t.detach().cpu().numpy()
+                if kind == "rot4" and a.shape[0] != a.shape[1]:
+                    continue                      # guarded earlier as a square-cell requirement
+                scale = float(np.abs(a).max()) or 1.0
+                err = float(np.abs(mapped(a) - a).max()) / scale
+                if err > 1e-9:
+                    raise ValueError(
+                        f"the declared symmetry is not obeyed by the structure: "
+                        f"{name} differs from its image under {kind} by "
+                        f"{err:.3e} relative, which is far above rounding "
+                        f"(~1e-13). A fold never rasterises the half that "
+                        f"disagrees, so the run would silently solve a "
+                        f"different problem. Make the geometry symmetric about "
+                        f"the cut, or drop the symmetry.")
 
     def _stored_h(self, comp):
         """Folded H array WITH its cut-plane row/column, as a (H, H)-style block.
