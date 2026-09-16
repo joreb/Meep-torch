@@ -293,3 +293,76 @@ def test_the_residual_localises_the_mistake(system):
                 assert got == 0.0, (
                     f"{dest}<-{src} should be clean, got {got:.3e} -- the "
                     f"residual is not localising the mistake")
+
+
+# --- the cut-plane ghost, derived from R rather than typed per case ---------
+
+_FOLDS = {
+    "mirror_y_odd": dict(y_mirror=-1),
+    "mirror_x_odd": dict(x_mirror=-1),
+    "rot2_even": dict(y_rot2=+1),
+    "rot2_odd": dict(y_rot2=-1),
+    "rot4_even": dict(rot4=+1),
+    "rot4_odd": dict(rot4=-1),
+}
+
+
+def _folded_run(steps=6, **fold):
+    from meep_torch.core.coeffs import build_tm_coeffs
+    from meep_torch.core.grid import Grid
+    from meep_torch.core.stepper_tm import init_tm_state, step_tm
+
+    g = Grid(nx=16, ny=16, dx=0.05)
+    m = build_tm_coeffs(g, npml=3, **fold)
+    s = init_tm_state(g, **fold)
+    torch.manual_seed(0)
+    s = s._replace(Ez=torch.randn(g.nx, g.ny, dtype=g.dtype))
+    s = s._replace(Dz=s.Ez.clone())
+    for _ in range(steps):
+        s = step_tm(s, m)
+    return s
+
+
+@pytest.mark.parametrize("name", sorted(_FOLDS))
+def test_the_derived_ghost_reproduces_every_fold(name):
+    """The ghost comes from ``R f = lam f``; it used to be three typed branches.
+
+    The eigen-relation holds pointwise at every node including ghosts, so the
+    ghost is the phase times whichever of ``P`` / ``P^-1`` reaches inside the
+    fold. This asserts the folds still RUN and stay finite; the bitwise claim
+    is the one below, which is what the substitution actually has to preserve.
+    """
+    s = _folded_run(**_FOLDS[name])
+    assert torch.isfinite(s.Ez).all(), f"{name}: Ez went non-finite"
+    assert s.Ez.abs().max() > 0, f"{name}: field is identically zero"
+
+
+def test_the_two_cut_rays_are_one_ray():
+    """``Hy0 = conj(lam) Hx0`` -- the fold is not a strict fundamental domain.
+
+    Under C4 the two cut-plane rays are images of each other, so storing both
+    is redundant and they must agree exactly. The quarter turn carries the Hx0
+    node onto the Hy0 node at the SAME fold index, and
+    (M_H)_yx = +1 for the +90-degree convention, so with a real phase the
+    relation is Hy0 = lam Hx0. It holds bitwise once the ghosts are derived,
+    because both updates then come from the same expression.
+    """
+    for phase in (+1, -1):
+        s = _folded_run(rot4=phase)
+        assert torch.equal(s.Hy0, phase * s.Hx0), (
+            f"rot4={phase:+d}: the two rays disagree, "
+            f"max {(s.Hy0 - phase * s.Hx0).abs().max():.3e}")
+        # and it is not vacuous: the rays are nonzero, and the OPPOSITE sign
+        # does not also satisfy it
+        assert s.Hx0.abs().max() > 0
+        assert not torch.equal(s.Hy0, -phase * s.Hx0)
+
+
+def test_the_component_transform_supplies_the_ray_sign():
+    """(M_H)_yx = +1 is read off the transform, not chosen to fit.
+
+    The test above asserts a sign; this is where that sign comes from, so the
+    two cannot drift apart silently.
+    """
+    assert component_transform("rot4_z", "Hy") == {"Hx": 1}
+    assert component_transform("rot4_z", "Hx") == {"Hy": -1}

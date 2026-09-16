@@ -113,6 +113,62 @@ def init_tm_state(grid: Grid, n_poles: int = 0, y_pmc: bool = False,
     )
 
 
+# --- the cut-plane ghost, from the symmetry rather than per case -------------
+#
+# A fold confines the solution to an eigenspace of the symmetry operator:
+# R f = lam f. That relation holds POINTWISE at every node, ghost nodes
+# included, and it can be read in two equivalent directions,
+#
+#     f(x) = conj(lam) M   f(P^-1 x)          [pre-image form]
+#     f(x) = lam       M^T f(P   x)          [image form]
+#
+# so the ghost just beyond a cut is whichever of the two reaches a node inside
+# the kept domain. For an INVOLUTION (mirror, C2) P = P^-1 and lam = conj(lam),
+# the two coincide, and the ghost is the cut row itself times the phase. C4 is
+# not an involution, so the two low edges take OPPOSITE powers of P: the low-y
+# ghost reads the first column and the low-x ghost the first row, which is the
+# "ghost comes from the other cut line, transposed" fact -- forced, not extra.
+#
+# M drops out here: M_E = 1 for Ez under every in-plane rotation and both
+# in-plane mirrors, because they all fix the z axis (component_transform
+# confirms it). Only the phase and the gather survive.
+#
+# The GATHER stays index algebra deliberately. "The C2 partner is this row
+# reversed in x" and C4's transposed column are tensor index operations, not
+# expressions sympy carries. What the derivation supplies is which gather and
+# which phase power -- and the collapse those cases tempt you into
+# (2*Ez0/h odd, 0 even, Ez0*(1-p)/h for C2) is a special case that holds only
+# where the flip maps an element onto itself, not the general form.
+#
+# NOTE ON THE PHASE. The two edges carry lam and conj(lam). They agree only
+# because the engine restricts to lam in {+1, -1}: the C4 irreps are
+# {1, i, -1, -i}, and at +-i a single phase on both edges would be wrong. The
+# restriction is real (a real field is never in one circular sector alone, so
+# +-i buys nothing over a C2-odd half fold), but the shortcut below depends on
+# it, so it is named rather than left load-bearing and silent.
+_CUT_GATHER = {
+    # (low-y ghost, low-x ghost), each as a function of the folded Ez
+    "mirror": (lambda Ez: Ez[:, 0], lambda Ez: Ez[0, :]),          # P = P^-1
+    "rot2": (lambda Ez: Ez[:, 0].flip(0), None),                   # C2, y cut
+    "rot4": (lambda Ez: Ez[0, :], lambda Ez: Ez[:, 0]),            # P, then P^-1
+}
+
+
+def _cut_ghost(m: TMCoeffs, axis: str):
+    """``(phase, gather)`` for the ghost beyond the low-``axis`` cut plane."""
+    if m.rot4_lo:
+        kind, phase = "rot4", m.rot4_lo
+    elif axis == "y" and m.y_rot2_lo:
+        kind, phase = "rot2", m.y_rot2_lo
+    else:
+        # the only remaining live cut-plane node is an ODD mirror; the even
+        # one has no ghost at all (H = 0 is padded in, see step_db's D phase)
+        kind, phase = "mirror", -1
+    gather = _CUT_GATHER[kind][0 if axis == "y" else 1]
+    assert gather is not None, f"{kind} has no low-{axis} cut plane"
+    return phase, gather
+
+
 # --- meep fields::step phases (src/step.cpp) ---------------------------------
 # step_tm is split at meep's phase boundaries; the math lines are the original
 # fused kernel's, only moved. Each phase maps TMState -> TMState.
@@ -142,33 +198,14 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         #   Rotate4     ghost = phase * the OTHER cut's line, transposed: C4
         #               carries the y cut onto the x cut, so the row below
         #               the y cut is the first column and vice versa
-        #
-        # Only the DIFFERENCE is symbolic. The ghost is built by index algebra
-        # above and stays that way: rot2's "the C2 partner is this row
-        # reversed in x" and rot4's transposed column are tensor index
-        # operations, not expressions sympy can carry. The tempting collapse
-        # -- substitute the ghost at derive time and read off 2*Ez0/h (odd),
-        # 0 (even), Ez0*(1-p)/h (rot2) -- only holds where the flip maps an
-        # element onto itself, so it is a special case, not the general form.
-        # What IS general is the stencil: the ghost sits at -h/2 and Ez[0] at
-        # +h/2, straddling the plane H node, which is the same |delta| = 1/2
-        # the B-phase differences use. So the same compiled stencil applies,
-        # with the ghost as the low sample: _dEz_dy(c, nb, h) = (nb - c)/h,
-        # hence ghost FIRST. (Bitwise-identical to (ez0 - ghost)/dx: IEEE
-        # subtraction is exactly a + (-b) and addition commutes.)
         if state.Hx0 is not None:
-            ez0 = state.Ez[:, 0]
-            if m.rot4_lo:
-                ghost = m.rot4_lo * state.Ez[0, :]
-            elif m.y_rot2_lo:
-                ghost = m.y_rot2_lo * ez0.flip(0)
-            else:
-                ghost = -ez0
-            mir["Hx0"] = state.Hx0 - dt * _dEz_dy(ghost, ez0, dx)
+            phase, gather = _cut_ghost(m, "y")
+            mir["Hx0"] = state.Hx0 - dt * _dEz_dy(
+                phase * gather(state.Ez), state.Ez[:, 0], dx)
         if state.Hy0 is not None:
-            ez0x = state.Ez[0, :]
-            ghost_x = (m.rot4_lo * state.Ez[:, 0]) if m.rot4_lo else -ez0x
-            mir["Hy0"] = state.Hy0 + dt * _dEz_dx(ghost_x, ez0x, dx)
+            phase, gather = _cut_ghost(m, "x")
+            mir["Hy0"] = state.Hy0 + dt * _dEz_dx(
+                phase * gather(state.Ez), state.Ez[0, :], dx)
         if m.mc1x is not None:
             # W5.5 mu-Lorentz: B integrates the curl; update_eh(H) forms H = B - sum M
             return state._replace(psi_Ezy=psi_Ezy, psi_Ezx=psi_Ezx,
