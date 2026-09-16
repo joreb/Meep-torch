@@ -8,8 +8,7 @@ import torch.nn.functional as F
 from .coeffs import TMCoeffs
 from .grid import Grid
 import sympy as sp
-from .symbolic import (PSI_NEW, STRETCHED, compiled_difference,
-                       compiled_stretched_curl, whole_curl_enabled)
+from .symbolic import PSI_NEW, STRETCHED, compiled_difference
 
 # Yee differences derived in symbolic.py rather than written here. Which of
 # these is a forward and which a backward difference is a consequence of the
@@ -20,36 +19,6 @@ _dEz_dy = compiled_difference("Ez", "y", "Hx")   # forward
 _dEz_dx = compiled_difference("Ez", "x", "Hy")   # forward
 _dHx_dy = compiled_difference("Hx", "y", "Ez")   # backward
 _dHy_dx = compiled_difference("Hy", "x", "Ez")   # backward
-
-# The D-phase curl derived in ONE piece: sympy.vector's curl H, discretised at
-# the Ez node, with the CPML stretch entering per-difference. Argument order is
-# (Hy_m1, Hy, Hx_m1, Hx, psi_Hxy, psi_Hyx, b_y, a_y, k_y, b_x, a_x, k_x, h).
-#
-# This is the DEFAULT D-phase curl -- see symbolic.whole_curl_enabled. It is
-# not bitwise-equal to composing the pieces in meep's left-to-right order
-# (sympy assembles its own canonical Add), but the gap is ~9e-18 relative and
-# the two forms agree with the analytic 2D Green's function to the same digit.
-# MEEP_TORCH_WHOLE_CURL=0 restores meep's association for bit-for-bit runs.
-_curl_ez, _CURL_EZ_ARGS = compiled_stretched_curl(
-    (sp.Symbol("Hx"), sp.Symbol("Hy"), sp.Symbol("Hz")), "Ez")
-
-# The signature is canonical (see compiled_stretched_curl), not the order
-# sympy happened to traverse the expression in. It used to be the latter, and
-# it permuted under an unrelated change to which curl component was built
-# first -- samples swapping Hx against Hy, which a positional call would have
-# bound silently and negated. That is the compiled_uniform_difference bug
-# again: a correct BODY behind a permuted signature, invisible to inspection
-# of the generated source.
-#
-# So the call below binds by KEYWORD, and this asserts the invariant so a
-# change becomes an ImportError rather than a wrong answer.
-assert _CURL_EZ_ARGS == [
-    "Hx_m1", "Hx", "Hy_m1", "Hy", "psi_Hxy", "psi_Hyx",
-    "b_x", "a_x", "k_x", "b_y", "a_y", "k_y", "h"], (
-    f"compiled_stretched_curl signature changed to {_CURL_EZ_ARGS}; the "
-    f"keyword call below still binds correctly, but re-read the canonical "
-    f"ordering rule before relying on anything positional")
-
 
 class TMState(NamedTuple):
     Ez: torch.Tensor       # (nx, ny)        E_z at time n
@@ -268,23 +237,14 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
 
     psi_Hyx = PSI_NEW(dHy_dx, state.psi_Hyx, m.b_ex, m.a_ex)
     psi_Hxy = PSI_NEW(dHx_dy, state.psi_Hxy, m.b_ey, m.a_ey)
-    if whole_curl_enabled():
-        # The whole curl straight from the derivation. The psi recursions above
-        # are still computed separately because they are STATE -- the derived
-        # expression consumes the OLD psi and reconstructs the update inside.
-        # bound by NAME: see the assertion beside the compile above
-        curl = _curl_ez(Hy_m1=Hy[:-1, ys], Hy=Hy[1:, ys],
-                        Hx_m1=Hx[xs, :-1], Hx=Hx[xs, 1:],
-                        psi_Hxy=state.psi_Hxy, psi_Hyx=state.psi_Hyx,
-                        b_y=m.b_ey, a_y=m.a_ey, k_y=m.k_ey,
-                        b_x=m.b_ex, a_x=m.a_ex, k_x=m.k_ex, h=dx)
-    else:
-        # MEEP_TORCH_WHOLE_CURL=0: meep's association, left to right,
-        # (((d1/k1 + psi1) - d2/k2) - psi2), composed from the derived pieces.
-        # Same algebra as the branch above, different floats -- this one is
-        # bitwise meep, and its rounding lets solve_cw's BiCGSTAB(2) reach
-        # tol=1e-10 where the canonical-Add grouping floors just above it.
-        curl = STRETCHED(dHy_dx, psi_Hyx, m.k_ex) - dHx_dy / m.k_ey - psi_Hxy
+    # meep's association, left to right: (((d1/k1 + psi1) - d2/k2) - psi2).
+    # Grouping it as (d1/k1 + psi1) - (d2/k2 + psi2) is the same algebra and
+    # different floats, so this is not a style choice -- it is what makes the
+    # step bitwise with meep. The whole curl derived in one piece lives in
+    # symbolic.compiled_stretched_curl and is the ORACLE this is proven equal
+    # to (symbolic_test/derive_twice.py); it is not run, because an expression
+    # tree cannot carry an association.
+    curl = STRETCHED(dHy_dx, psi_Hyx, m.k_ex) - dHx_dy / m.k_ey - psi_Hxy
     if m.d1 is not None:
         # W5: dD/dt = curl H - sigma_d D
         Dz = m.d1 * state.Dz + m.d2 * F.pad(curl, pad_spec)

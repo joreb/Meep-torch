@@ -148,38 +148,60 @@ def _run_tm(steps, npml):
     return s.Ez
 
 
-def test_whole_curl_and_meep_association_agree(monkeypatch):
-    """Both sides of the gate, exercised.
+def test_the_derived_whole_curl_is_an_oracle_for_what_runs():
+    """The one-piece derived curl agrees with the composition the stepper runs.
 
-    The whole-curl form is the default; MEEP_TORCH_WHOLE_CURL=0 restores meep's
-    bitwise left-to-right association. Whichever is the non-default, it is an
-    unreached branch -- and an unreached branch is where the
-    compiled_uniform_difference argument-order bug hid in stepper_kz while
-    reporting 0.000e+00. So run both. Deliberately time-domain: solve_cw's
-    BiCGSTAB(2) has a residual floor just above 1e-10 on the whole-curl form,
-    which is a conditioning property and would read here as a field error.
+    Both forms still exist and only one executes. `compiled_stretched_curl`
+    assembles the whole curl as a single sympy expression -- the derivation --
+    and `stepper_tm` composes the derived per-difference pieces in meep's
+    left-to-right order, which is what makes the step bitwise.
+
+    They cannot be the same code, and the reason is not style. An expression
+    tree does not carry an association: freezing the top-level one with
+    `UnevaluatedExpr` still lets sympy re-associate beneath it, turning meep's
+    `a*(d/dx)` into `(a*d)/dx`. Bitwise parity is an evaluation-order property,
+    so the derivation is the oracle and the composition is the executable.
+    Measured agreement between them is ~1e-18 relative, one ulp.
     """
     import torch
 
-    from meep_torch.core import symbolic
+    from meep_torch.core.coeffs import build_tm_coeffs
+    from meep_torch.core.grid import Grid
+    from meep_torch.core.stepper_tm import init_tm_state, step_tm
+    from meep_torch.core.symbolic import compiled_stretched_curl
 
-    monkeypatch.delenv("MEEP_TORCH_WHOLE_CURL", raising=False)
-    assert symbolic.whole_curl_enabled(), "whole curl is the default"
-    whole = _run_tm(steps=40, npml=8)
+    fn, args = compiled_stretched_curl(
+        (sp.Symbol("Hx"), sp.Symbol("Hy"), sp.Symbol("Hz")), "Ez")
+    assert args == ["Hx_m1", "Hx", "Hy_m1", "Hy", "psi_Hxy", "psi_Hyx",
+                    "b_x", "a_x", "k_x", "b_y", "a_y", "k_y", "h"], args
 
-    monkeypatch.setenv("MEEP_TORCH_WHOLE_CURL", "0")
-    assert not symbolic.whole_curl_enabled()
-    meep_order = _run_tm(steps=40, npml=8)
+    g = Grid(nx=24, ny=20, dx=0.05)
+    m = build_tm_coeffs(g, npml=6)
+    s = init_tm_state(g)
+    torch.manual_seed(0)
+    s = s._replace(Ez=torch.randn(g.nx, g.ny, dtype=g.dtype))
+    s = s._replace(Dz=s.Ez.clone())
+    for _ in range(4):
+        s = step_tm(s, m)
 
-    # Not bitwise: sympy assembles its own canonical Add rather than meep's
-    # left-to-right association. One ulp apart, accumulated over 40 steps.
-    assert meep_order.abs().max() > 0
-    rel = (torch.linalg.vector_norm(whole - meep_order)
-           / torch.linalg.vector_norm(meep_order))
-    assert rel < 1e-13, f"the two associations disagree by {rel:.3e}"
-    assert not torch.equal(whole, meep_order), (
-        "the two forms came out bitwise-equal -- the gate is not switching the "
-        "code path, or the PML is not live")
+    Hx, Hy = s.Hx[1:-1, :], s.Hy[:, 1:-1]
+    oracle = fn(Hx_m1=Hx[:, :-1], Hx=Hx[:, 1:], Hy_m1=Hy[:-1, :], Hy=Hy[1:, :],
+                psi_Hxy=s.psi_Hxy, psi_Hyx=s.psi_Hyx,
+                b_x=m.b_ex, a_x=m.a_ex, k_x=m.k_ex,
+                b_y=m.b_ey, a_y=m.a_ey, k_y=m.k_ey, h=m.dx)
+    dHy = (s.Hy[1:, 1:-1] - s.Hy[:-1, 1:-1]) / m.dx
+    dHx = (s.Hx[1:-1, 1:] - s.Hx[1:-1, :-1]) / m.dx
+    px = m.b_ex * s.psi_Hyx + m.a_ex * dHy
+    py = m.b_ey * s.psi_Hxy + m.a_ey * dHx
+    running = dHy / m.k_ex + px - dHx / m.k_ey - py
+
+    scale = running.abs().max()
+    assert scale > 0
+    rel = (oracle - running).abs().max() / scale
+    assert rel < 1e-15, f"oracle and running form disagree by {rel:.3e}"
+    assert not torch.equal(oracle, running), (
+        "bitwise equal -- then the association argument above is untested, and "
+        "this test would pass even if sympy had started preserving order")
 
 
 def test_symmetry_signs_come_from_the_transform_not_a_table():

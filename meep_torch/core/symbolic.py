@@ -66,8 +66,6 @@ details carry it, and both are load-bearing:
 """
 from __future__ import annotations
 
-import os
-
 import sympy as sp
 from sympy.calculus.finite_diff import finite_diff_weights
 from sympy.vector import CoordSys3D, curl as _vector_curl
@@ -560,46 +558,6 @@ def _compile_pml():
 PSI_NEW, STRETCHED = _compile_pml()
 
 
-def whole_curl_enabled() -> bool:
-    """Whether steppers assemble the D-phase curl as ONE derived expression.
-
-    Two forms of the same algebra are available. The default is
-    :func:`compiled_stretched_curl`, which hands the whole curl to sympy and
-    lets it assemble its own canonical ``Add`` -- derived in one piece. The
-    alternative composes the derived per-difference pieces in meep's
-    left-to-right association, ``d1/k1 + psi1 - d2/k2 - psi2``, and is
-    bitwise-identical to meep.
-
-    The two are physically indistinguishable. Against the analytic 2D Green's
-    function ``(i/4) H_0^(1)(kr)`` both land at rel-L2 ``4.796918e-02`` -- the
-    resolution-20 grid error, identical to seven digits -- and they differ from
-    each other by ``1.520e-11``, nine orders below that (see
-    ``symbolic_test/plot_cw_comparison.py``). That gap is negligible against
-    every error the discretisation already carries, so the derived form is the
-    default: the curl is derived, not hand-composed, everywhere.
-
-    The one real cost is a ``solve_cw`` residual floor. Both step operators
-    were later extracted and compared: bitwise identical without a PML, and
-    with one differing by a few dozen 1-ulp entries confined to the D-phase
-    rows in the PML band, with IDENTICAL adjoint defect, commutator norm,
-    Henrici departure and spectrum. So this is not worse conditioning -- the
-    two operators are equally non-normal -- it is the rounding path of an
-    already ill-conditioned solve, where two operators one ulp apart can floor
-    either side of ``tol=1e-10``. It converges from ``1e-9`` down, to the same
-    answer. Set
-    ``MEEP_TORCH_WHOLE_CURL=0`` to get meep's bitwise left-to-right
-    association back -- needed for bit-for-bit meep comparison and for a
-    ``solve_cw`` at ``1e-10``.
-
-    Read at CALL time, not captured at import, so a test can flip it.
-
-    Only the TM D phase has a whole-curl alternative today; stepper_te and
-    stepper_1d compose the pieces unconditionally.
-    """
-    return os.environ.get("MEEP_TORCH_WHOLE_CURL", "1").lower() not in (
-        "0", "false", "no")
-
-
 def compiled_stretched_curl(vec, target: str, system: str = "cartesian",
                             order: int = 2):
     """Compile the CPML-stretched discrete curl at ``target`` into torch.
@@ -613,10 +571,15 @@ def compiled_stretched_curl(vec, target: str, system: str = "cartesian",
     the evaluation order is sympy's canonical Add, not meep's left-to-right
     ``d1/k1 + psi1 - d2/k2 - psi2``. Measured against meep's composition the
     two agree to ~9e-18 relative (7.3e-12 absolute on unit-scale inputs) --
-    mathematically identical, one ulp apart, NOT bitwise. This is the default
-    form; composing the per-difference pieces in the stepper (see
-    :func:`compiled_difference`) is what reproduces meep exactly, and
-    :func:`whole_curl_enabled` is the switch between them.
+    mathematically identical, one ulp apart, NOT bitwise.
+
+    NOT USED BY ANY STEPPER. It is the ORACLE: the whole curl derived in one
+    piece, against which the per-difference composition the steppers actually
+    run is proven equal. Deriving it and running it are different jobs -- an
+    expression tree does not carry evaluation order, and bitwise parity with
+    meep is an evaluation-order property, so the derivation cannot be the thing
+    that executes. See symbolic_test/derive_twice.py for the argument and
+    test_oracle_vs_core.py for the proof.
     """
     h = sp.Symbol("h")
     used: list = []

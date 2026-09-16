@@ -125,22 +125,23 @@ def _operators(N=10, npml=3):
     return a_core, a_oracle
 
 
-def test_meep_association_is_bitwise(monkeypatch):
-    monkeypatch.setenv("MEEP_TORCH_WHOLE_CURL", "0")
-    assert not core.whole_curl_enabled()
+def test_core_and_oracle_steppers_are_bitwise():
+    """The core stepper and the standalone sympy oracle agree bit for bit.
+
+    Both compose the derived per-difference pieces in meep's left-to-right
+    order, so this is a real bitwise claim and not a tolerance. It used to be
+    conditional on MEEP_TORCH_WHOLE_CURL=0; that switch is gone, because the
+    one-piece derived curl cannot be what executes -- an expression tree does
+    not carry an association, and bitwise parity is an association property.
+    The derived form is now the oracle only (see derive_twice.py).
+
+    The dense operator is extracted rather than a few steps compared, so the
+    psi memory is live by construction -- asserted in _operators, because a
+    gate that cannot reach the PML is bitwise for any implementation.
+    """
     a_core, a_oracle = _operators()
     assert np.array_equal(a_core, a_oracle), (
         f"max |core - oracle| = {np.abs(a_core - a_oracle).max():.3e}, not bitwise")
-
-
-def test_whole_curl_default_is_one_ulp_from_the_oracle(monkeypatch):
-    monkeypatch.delenv("MEEP_TORCH_WHOLE_CURL", raising=False)
-    assert core.whole_curl_enabled(), "whole curl is the default"
-    a_core, a_oracle = _operators()
-    rel = np.linalg.norm(a_core - a_oracle) / np.linalg.norm(a_oracle)
-    assert rel < 1e-15, f"whole curl vs meep association: rel {rel:.3e}"
-    assert not np.array_equal(a_core, a_oracle), (
-        "bitwise equal: the switch is not selecting the whole-curl path")
 
 
 # ------------------------------------------ the axial factor, from the curl --

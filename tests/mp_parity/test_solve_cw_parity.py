@@ -30,15 +30,13 @@ def _sim(force_complex=True, symmetries=None, src_x=-2.0):
         force_complex_fields=force_complex)
 
 
-# BiCGSTAB(2)'s achievable residual floor is set by rounding in the operator
-# application, and the D-phase curl is assembled by sympy in its canonical Add
-# rather than meep's left-to-right association (core.symbolic.whole_curl_enabled).
-# That lands the floor just the wrong side of 1e-10. It converges from 1e-9 down
-# to the same answer: measured across 1e-10..1e-6 the agreement with the
-# time-domain steady state is 1.120e-02 at every tolerance that converges, so
-# the extra decade was never buying accuracy. Set MEEP_TORCH_WHOLE_CURL=0 for
-# meep's bitwise association, which does converge at 1e-10.
-CW_TOL = 1e-9
+# Back to meep's own tolerance. This was 1e-9 for one day, while the D-phase
+# curl defaulted to the one-piece derived form: sympy's canonical Add put
+# BiCGSTAB(2)'s residual floor just the wrong side of 1e-10. The derived form is
+# now the ORACLE rather than the executable -- an expression tree cannot carry
+# an association, so it cannot be the thing that runs -- and the stepper is
+# bitwise with meep again, which restores the tolerance with it.
+CW_TOL = 1e-10
 
 
 def test_solve_cw_matches_time_domain_steady_state():
