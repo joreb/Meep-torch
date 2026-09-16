@@ -63,11 +63,18 @@ def test_symmetry_family():
 
 
 def test_unsupported_symmetries_raise_at_simulation():
-    for sym in (mp.Mirror(mp.Z), mp.Rotate2(mp.X), mp.Rotate4(mp.X),
+    for sym in (mp.Rotate2(mp.X), mp.Rotate4(mp.X),
                 mp.Mirror(mp.Y, phase=1j), mp.Rotate2(mp.Z, phase=1j),
                 mp.Rotate4(mp.Z, phase=1j)):
         with pytest.raises(NotImplementedError):
             _wg_sim([sym])
+    # Mirror(Z) left this list when it became supported: in 2D it folds
+    # nothing (z has no extent) and is a phase-vs-polarisation check. This is
+    # a TM run, whose whole block is ODD under a reflection in xy, so the
+    # default phase=+1 is a contradiction -- ValueError, not "unsupported".
+    with pytest.raises(ValueError, match="contradicts the"):
+        _wg_sim([mp.Mirror(mp.Z)])
+    _wg_sim([mp.Mirror(mp.Z, phase=-1)])            # the consistent phase
     # Rotate4 folds onto a quadrant, so it needs a square cell; this one is
     # 15 x 6 (the engine support itself is gated in test_symmetry_parity)
     with pytest.raises(NotImplementedError, match="square cell"):
