@@ -98,8 +98,15 @@ def build_lean(nx, ny, nz, dx, eps, npml, poles=(), pole_masks=None,
         b, a, k = _prof(n, npml, offset, dt, dx, dtype, device)
         if offset == 0.0:
             b, a, k = b[1:-1], a[1:-1], k[1:-1]
-        # derive shell widths EXACTLY from the profile content
-        active = ((b != 0) | (a != 0) | (k != 1)).nonzero().flatten()
+        # Derive shell widths EXACTLY from the profile content. A cell is
+        # inert iff a == 0 AND k == 1: the recursion is psi' = b psi + a d, so
+        # with a == 0 and psi starting at zero psi stays zero forever whatever
+        # b is, and k == 1 makes the stretched curl d/k + psi the raw d.
+        # Testing `b != 0` instead made every cell active and the shells the
+        # whole grid, because this project's profile is b == 1 outside the PML,
+        # not 0 -- the numerics stayed right and the memory claim was silently
+        # false (m_lo = 47 on a 96 grid with npml = 8).
+        active = ((a != 0) | (k != 1)).nonzero().flatten()
         half = len(b) // 2
         lo_idx = active[active < half]
         hi_idx = active[active >= half]
