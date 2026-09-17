@@ -6,7 +6,8 @@ import torch
 import torch.nn.functional as F
 
 from .grid import Grid
-from .symbolic import PSI_NEW, STRETCHED, compiled_difference
+from .symbolic import (PSI_NEW, STRETCHED, compiled_curl_composition,
+                       compiled_difference)
 
 # Derived in symbolic.py from the SAME 6x6 system that produces stepper_tm's:
 # TE is the (Hz, Ex, Ey) block, TM the (Ez, Hx, Hy) block, and which is which
@@ -51,6 +52,9 @@ def _replaced(state, **fields):
     """
     return type(state)._make(
         [fields.get(name, value) for name, value in zip(state._fields, state)])
+
+_COMPOSE = compiled_curl_composition(n_terms=2)
+
 
 def init_te_state(grid: Grid, n_poles: int = 0, n_poles_y: int | None = None) -> TEState:
     """Allocate TE state. n_poles sizes the Ex-axis polarization buffers
@@ -137,7 +141,12 @@ def step_db(state: TEState, m, ft: str) -> TEState:
     psi_Eyx = PSI_NEW(dEy_dx, state.psi_Eyx, m.b_hx, m.a_hx)
     psi_Exy = PSI_NEW(dEx_dy, state.psi_Exy, m.b_hy, m.a_hy)
     # meep's association, left to right -- see stepper_tm's D phase.
-    curl_z = STRETCHED(dEy_dx, psi_Eyx, m.k_hx) - dEx_dy / m.k_hy - psi_Exy
+    # the association is emitted by the derivation, not typed here -- see
+    # stepper_tm's D phase. Three terms is where it matters: sympy's canonical
+    # Add sort would regroup them, and (a + b) + c is not (a + c) + b in
+    # floating point.
+    curl_z = _COMPOSE(STRETCHED(dEy_dx, psi_Eyx, m.k_hx),
+                      dEx_dy, m.k_hy, psi_Exy)
     if m.hz1 is not None:
         # W5: dB/dt = -curl E - sigma_b B, B = mu H
         Hz = m.hz1 * state.Hz - m.hz2 * curl_z

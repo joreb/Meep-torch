@@ -23,6 +23,7 @@ import torch
 
 from .coeffs import _pole_recurrence
 from .pml import absorber_sigma, cpml_profiles, side_counts
+from .symbolic import PSI_NEW, STRETCHED
 
 
 class Coeffs3D(NamedTuple):
@@ -408,29 +409,29 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
 
     # H update (dB/dt = -curl E); each derivative gets its axis CPML.
     dEz_dy = _d(state.Ez, 1) / dx
-    psi_Ez_y = bHy * state.psi_Ez_y + aHy * dEz_dy
-    ce_y = dEz_dy / kHy + psi_Ez_y
+    psi_Ez_y = PSI_NEW(dEz_dy, state.psi_Ez_y, bHy, aHy)
+    ce_y = STRETCHED(dEz_dy, psi_Ez_y, kHy)
     dEy_dz = _d(state.Ey, 2) / dx
-    psi_Ey_z = bHz * state.psi_Ey_z + aHz * dEy_dz
-    ce_z = dEy_dz / kHz + psi_Ey_z
+    psi_Ey_z = PSI_NEW(dEy_dz, state.psi_Ey_z, bHz, aHz)
+    ce_z = STRETCHED(dEy_dz, psi_Ey_z, kHz)
     d1, d2 = c.damp["hx"]
     Hx = d1 * state.Hx - d2 * (ce_y - ce_z)
 
     dEx_dz = _d(state.Ex, 2) / dx
-    psi_Ex_z = bHz * state.psi_Ex_z + aHz * dEx_dz
-    ce_z2 = dEx_dz / kHz + psi_Ex_z
+    psi_Ex_z = PSI_NEW(dEx_dz, state.psi_Ex_z, bHz, aHz)
+    ce_z2 = STRETCHED(dEx_dz, psi_Ex_z, kHz)
     dEz_dx = _d(state.Ez, 0) / dx
-    psi_Ez_x = bHx * state.psi_Ez_x + aHx * dEz_dx
-    ce_x = dEz_dx / kHx + psi_Ez_x
+    psi_Ez_x = PSI_NEW(dEz_dx, state.psi_Ez_x, bHx, aHx)
+    ce_x = STRETCHED(dEz_dx, psi_Ez_x, kHx)
     d1, d2 = c.damp["hy"]
     Hy = d1 * state.Hy - d2 * (ce_z2 - ce_x)
 
     dEy_dx = _d(state.Ey, 0) / dx
-    psi_Ey_x = bHx * state.psi_Ey_x + aHx * dEy_dx
-    ce_x2 = dEy_dx / kHx + psi_Ey_x
+    psi_Ey_x = PSI_NEW(dEy_dx, state.psi_Ey_x, bHx, aHx)
+    ce_x2 = STRETCHED(dEy_dx, psi_Ey_x, kHx)
     dEx_dy = _d(state.Ex, 1) / dx
-    psi_Ex_y = bHy * state.psi_Ex_y + aHy * dEx_dy
-    ce_y2 = dEx_dy / kHy + psi_Ex_y
+    psi_Ex_y = PSI_NEW(dEx_dy, state.psi_Ex_y, bHy, aHy)
+    ce_y2 = STRETCHED(dEx_dy, psi_Ex_y, kHy)
     d1, d2 = c.damp["hz"]
     Hz = d1 * state.Hz - d2 * (ce_x2 - ce_y2)
 
@@ -438,11 +439,11 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     # the in-plane derivatives.
     eps_x = _avg(c.eps, 0)
     dHz_dy = _trim_full(_d(Hz, 1), (1, 2), 2, pmc) / dx
-    psi_Hz_y = bEy * state.psi_Hz_y + aEy * dHz_dy
-    ch_y = dHz_dy / kEy + psi_Hz_y
+    psi_Hz_y = PSI_NEW(dHz_dy, state.psi_Hz_y, bEy, aEy)
+    ch_y = STRETCHED(dHz_dy, psi_Hz_y, kEy)
     dHy_dz = _trim_full(_d(Hy, 2), (1, 2), 1, pmc) / dx
-    psi_Hy_z = bEz * state.psi_Hy_z + aEz * dHy_dz
-    ch_z = dHy_dz / kEz + psi_Hy_z
+    psi_Hy_z = PSI_NEW(dHy_dz, state.psi_Hy_z, bEz, aEz)
+    ch_z = STRETCHED(dHy_dz, psi_Hy_z, kEz)
     curl_x = _pad_interior(_pad_pmc(ch_y, (1, 2), 2, pmc)
                            - _pad_pmc(ch_z, (1, 2), 1, pmc), (1, 2), pmc)
     d1, d2 = c.damp["ex"]
@@ -452,11 +453,11 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
 
     eps_y = _avg(c.eps, 1)
     dHx_dz = _trim_full(_d(Hx, 2), (0, 2), 0, pmc) / dx
-    psi_Hx_z = bEz * state.psi_Hx_z + aEz * dHx_dz
-    ch_z2 = dHx_dz / kEz + psi_Hx_z
+    psi_Hx_z = PSI_NEW(dHx_dz, state.psi_Hx_z, bEz, aEz)
+    ch_z2 = STRETCHED(dHx_dz, psi_Hx_z, kEz)
     dHz_dx = _trim_full(_d(Hz, 0), (0, 2), 2, pmc) / dx
-    psi_Hz_x = bEx * state.psi_Hz_x + aEx * dHz_dx
-    ch_x = dHz_dx / kEx + psi_Hz_x
+    psi_Hz_x = PSI_NEW(dHz_dx, state.psi_Hz_x, bEx, aEx)
+    ch_x = STRETCHED(dHz_dx, psi_Hz_x, kEx)
     curl_y = _pad_interior(_pad_pmc(ch_z2, (0, 2), 0, pmc)
                            - _pad_pmc(ch_x, (0, 2), 2, pmc), (0, 2), pmc)
     d1, d2 = c.damp["ey"]
@@ -466,11 +467,11 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
 
     eps_z = _avg(c.eps, 2)
     dHy_dx = _trim_full(_d(Hy, 0), (0, 1), 1, pmc) / dx
-    psi_Hy_x = bEx * state.psi_Hy_x + aEx * dHy_dx
-    ch_x2 = dHy_dx / kEx + psi_Hy_x
+    psi_Hy_x = PSI_NEW(dHy_dx, state.psi_Hy_x, bEx, aEx)
+    ch_x2 = STRETCHED(dHy_dx, psi_Hy_x, kEx)
     dHx_dy = _trim_full(_d(Hx, 1), (0, 1), 0, pmc) / dx
-    psi_Hx_y = bEy * state.psi_Hx_y + aEy * dHx_dy
-    ch_y2 = dHx_dy / kEy + psi_Hx_y
+    psi_Hx_y = PSI_NEW(dHx_dy, state.psi_Hx_y, bEy, aEy)
+    ch_y2 = STRETCHED(dHx_dy, psi_Hx_y, kEy)
     curl_z = _pad_interior(_pad_pmc(ch_x2, (0, 1), 1, pmc)
                            - _pad_pmc(ch_y2, (0, 1), 0, pmc), (0, 1), pmc)
     d1, d2 = c.damp["ez"]

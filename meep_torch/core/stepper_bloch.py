@@ -26,7 +26,8 @@ import torch
 import torch.nn.functional as F
 
 from .coeffs import TMCoeffs
-from .symbolic import compiled_uniform_difference
+from .symbolic import (PSI_NEW, STRETCHED,
+                       compiled_uniform_difference)
 
 # Differences derived in core.symbolic rather than written here. A Bloch run
 # carries two real quadratures (c/s) of a complex envelope and takes its
@@ -111,11 +112,11 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
 
     # x-derivative for Hy (x-CPML)
     dEz_dx = _FWD(state.Ez_c[:-1, :], state.Ez_c[1:, :], dx)
-    psi_Ezx_c = m.b_hx * state.psi_Ezx_c + m.a_hx * dEz_dx
-    Hy_c = state.Hy_c + dt * (dEz_dx / m.k_hx + psi_Ezx_c)
+    psi_Ezx_c = PSI_NEW(dEz_dx, state.psi_Ezx_c, m.b_hx, m.a_hx)
+    Hy_c = state.Hy_c + dt * (STRETCHED(dEz_dx, psi_Ezx_c, m.k_hx))
     dEz_dx_s = _FWD(state.Ez_s[:-1, :], state.Ez_s[1:, :], dx)
-    psi_Ezx_s = m.b_hx * state.psi_Ezx_s + m.a_hx * dEz_dx_s
-    Hy_s = state.Hy_s + dt * (dEz_dx_s / m.k_hx + psi_Ezx_s)
+    psi_Ezx_s = PSI_NEW(dEz_dx_s, state.psi_Ezx_s, m.b_hx, m.a_hx)
+    Hy_s = state.Hy_s + dt * (STRETCHED(dEz_dx_s, psi_Ezx_s, m.k_hx))
 
     # --- D update (envelope y-curl of Hx + i k_y coupling, x-curl of Hy) ---
     # Yee staggering: the Hx update uses the FORWARD y-difference of Ez
@@ -130,14 +131,14 @@ def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
     Hxm_s = 0.5 * (Hx_s + torch.roll(Hx_s, 1, dims=1))
     dHy_dx_c = _FWD(Hy_c[:-1, :], Hy_c[1:, :], dx)
     dHy_dx_s = _FWD(Hy_s[:-1, :], Hy_s[1:, :], dx)
-    psi_Hyx_c = m.b_ex * state.psi_Hyx_c + m.a_ex * dHy_dx_c
-    psi_Hyx_s = m.b_ex * state.psi_Hyx_s + m.a_ex * dHy_dx_s
+    psi_Hyx_c = PSI_NEW(dHy_dx_c, state.psi_Hyx_c, m.b_ex, m.a_ex)
+    psi_Hyx_s = PSI_NEW(dHy_dx_s, state.psi_Hyx_s, m.b_ex, m.a_ex)
     # x-CPML on the x-curl (interior x); y is full-periodic -> take the y-curl
     # at interior x too, pad x only (y_pmc-style).
     curlY_c_int = (dhxc_dy - ky * Hxm_s)[1:-1, :]
     curlY_s_int = (dhxs_dy + ky * Hxm_c)[1:-1, :]
-    curl_c = dHy_dx_c / m.k_ex + psi_Hyx_c - curlY_c_int
-    curl_s = dHy_dx_s / m.k_ex + psi_Hyx_s - curlY_s_int
+    curl_c = STRETCHED(dHy_dx_c, psi_Hyx_c, m.k_ex) - curlY_c_int
+    curl_s = STRETCHED(dHy_dx_s, psi_Hyx_s, m.k_ex) - curlY_s_int
     Dz_c = state.Dz_c + dt * F.pad(curl_c, (0, 0, 1, 1))
     Dz_s = state.Dz_s + dt * F.pad(curl_s, (0, 0, 1, 1))
     if src_mask is not None:
@@ -288,11 +289,11 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     # H profile, which was the tell that the lattice was accidental.
     dHz_dx_c = _BWD(state.Hz_c[1:, :], state.Hz_c[:-1, :], dx)
     dHz_dx_s = _BWD(state.Hz_s[1:, :], state.Hz_s[:-1, :], dx)
-    psi_Hzx_c = m.b_ex * state.psi_Hzx_c + m.a_ex * dHz_dx_c
-    psi_Hzx_s = m.b_ex * state.psi_Hzx_s + m.a_ex * dHz_dx_s
+    psi_Hzx_c = PSI_NEW(dHz_dx_c, state.psi_Hzx_c, m.b_ex, m.a_ex)
+    psi_Hzx_s = PSI_NEW(dHz_dx_s, state.psi_Hzx_s, m.b_ex, m.a_ex)
     pad_x = (0, 0, 1, 1)
-    Dy_c = state.Dy_c - dt * F.pad(dHz_dx_c / m.k_ex + psi_Hzx_c, pad_x)
-    Dy_s = state.Dy_s - dt * F.pad(dHz_dx_s / m.k_ex + psi_Hzx_s, pad_x)
+    Dy_c = state.Dy_c - dt * F.pad(STRETCHED(dHz_dx_c, psi_Hzx_c, m.k_ex), pad_x)
+    Dy_s = state.Dy_s - dt * F.pad(STRETCHED(dHz_dx_s, psi_Hzx_s, m.k_ex), pad_x)
     Ey_c, Ey_s = Dy_c / eps_y, Dy_s / eps_y
 
     # --- Hz update (from E at n+1/2) ---
@@ -304,10 +305,10 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     curlY_s = dexs_dy + ky * Exm_c
     dEy_dx_c = _FWD(Ey_c[:-1, :], Ey_c[1:, :], dx)      # (nx-1, ny), Hz's grid
     dEy_dx_s = _FWD(Ey_s[:-1, :], Ey_s[1:, :], dx)
-    psi_Eyx_c = m.b_hx * state.psi_Eyx_c + m.a_hx * dEy_dx_c
-    psi_Eyx_s = m.b_hx * state.psi_Eyx_s + m.a_hx * dEy_dx_s
-    curl_c = dEy_dx_c / m.k_hx + psi_Eyx_c - curlY_c
-    curl_s = dEy_dx_s / m.k_hx + psi_Eyx_s - curlY_s
+    psi_Eyx_c = PSI_NEW(dEy_dx_c, state.psi_Eyx_c, m.b_hx, m.a_hx)
+    psi_Eyx_s = PSI_NEW(dEy_dx_s, state.psi_Eyx_s, m.b_hx, m.a_hx)
+    curl_c = STRETCHED(dEy_dx_c, psi_Eyx_c, m.k_hx) - curlY_c
+    curl_s = STRETCHED(dEy_dx_s, psi_Eyx_s, m.k_hx) - curlY_s
     Hz_c = state.Hz_c - dt * curl_c
     Hz_s = state.Hz_s - dt * curl_s
     if src_mask is not None:
