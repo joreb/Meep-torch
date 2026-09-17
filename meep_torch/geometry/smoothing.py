@@ -69,3 +69,71 @@ def blend_te_supersampled(blocks):
     cov_t = torch.as_tensor((flat >= hi - 1e-12).mean(axis=2),
                             dtype=torch.float64)
     return blend_te(hi, lo, cov_t, normals(cov_t))
+
+
+# --------------------------------------------------------------- Kottke tau --
+# The general (anisotropic) Kottke blend. `blend_te` above is the scalar
+# closed form with only its diagonal kept; this is the tau-map route, which
+# takes tensor constituents and keeps the off-diagonal. Derived and proved
+# equal to the closed form in `symbolic_test/kottke.py`; the equality is
+# gated in `symbolic_test/test_kottke.py`.
+#
+# The normal is the BLEND AXIS. Averaging two adjacent cells onto the node
+# between them is a two-phase cell whose interface is perpendicular to that
+# axis, so no normal estimation is needed -- the thing that usually makes
+# Kottke awkward to apply to a sampled (rather than polygonal) epsilon.
+
+_PERM = {0: (0, 1, 2), 1: (1, 0, 2), 2: (2, 0, 1)}
+
+
+def _as_matrix(eps6):
+    """(exx, exy, exz, eyy, eyz, ezz) -> (..., 3, 3) symmetric."""
+    exx, exy, exz, eyy, eyz, ezz = eps6
+    rows = [torch.stack([exx, exy, exz], dim=-1),
+            torch.stack([exy, eyy, eyz], dim=-1),
+            torch.stack([exz, eyz, ezz], dim=-1)]
+    return torch.stack(rows, dim=-2)
+
+
+def _as_six(m):
+    return (m[..., 0, 0], m[..., 0, 1], m[..., 0, 2],
+            m[..., 1, 1], m[..., 1, 2], m[..., 2, 2])
+
+
+def _tau(e, sign):
+    """Kottke's map (``sign=+1``) and its inverse (``sign=-1``).
+
+    The two differ only in the sign of the first row and column's
+    off-diagonals, which is why one function covers both.
+    """
+    e11 = e[..., 0, 0]
+    a01, a02 = e[..., 0, 1] / e11, e[..., 0, 2] / e11
+    a10, a20 = e[..., 1, 0] / e11, e[..., 2, 0] / e11
+    out = torch.empty_like(e)
+    out[..., 0, 0] = -1.0 / e11
+    out[..., 0, 1], out[..., 0, 2] = sign * a01, sign * a02
+    out[..., 1, 0], out[..., 2, 0] = sign * a10, sign * a20
+    out[..., 1, 1] = e[..., 1, 1] - a10 * e[..., 0, 1]
+    out[..., 1, 2] = e[..., 1, 2] - a10 * e[..., 0, 2]
+    out[..., 2, 1] = e[..., 2, 1] - a20 * e[..., 0, 1]
+    out[..., 2, 2] = e[..., 2, 2] - a20 * e[..., 0, 2]
+    return out
+
+
+def blend_tensor_tau(eps6_a, eps6_b, axis: int, cov=0.5):
+    """Kottke-blend two tensor media whose interface is normal to ``axis``.
+
+    ``cov`` is the fill fraction of ``eps6_a``. Returns the six independent
+    components of the blended tensor. Reduces to harmonic-normal /
+    arithmetic-parallel for scalar constituents, which is the whole point:
+    a plain arithmetic average of eps across an interface is FIRST order and
+    measurably worse than not averaging at all.
+    """
+    p = _PERM[axis]
+    inv_p = [p.index(i) for i in range(3)]
+    A = _as_matrix(eps6_a)[..., p, :][..., :, p]
+    B = _as_matrix(eps6_b)[..., p, :][..., :, p]
+    t = cov * _tau(A, +1) + (1.0 - cov) * _tau(B, +1)
+    e = _tau(t, -1)
+    e = e[..., inv_p, :][..., :, inv_p]
+    return _as_six(e)

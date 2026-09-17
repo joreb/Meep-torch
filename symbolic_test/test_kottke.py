@@ -11,6 +11,7 @@ import math
 
 import pytest
 import sympy as sp
+import torch
 
 from .kottke import (blend_te_diagonal, dropped_offdiagonal, kottke_scalar,
                      kottke_tensor, projector, prove_routes_agree, tau,
@@ -130,3 +131,100 @@ def test_projector_is_the_householder_building_block():
               (sp.Rational(3, 5), sp.Rational(4, 5), 0)):   # and an oblique one
         assert sp.simplify(sp.eye(3) - 2 * projector(n)
                            - mirror_matrix(n)) == sp.zeros(3, 3)
+
+
+# ---------------------------------------------------------------------------
+# The numeric implementation, gated against the algebra above.
+#
+# `geometry/smoothing.py::blend_tensor_tau` is what the engine calls; the
+# module above is what proves it right. They are written independently -- one
+# in torch over batched matrices, one in sympy over symbols -- so agreement is
+# evidence rather than a restatement.
+# ---------------------------------------------------------------------------
+
+def _t(x, shape=(2, 3)):
+    return torch.full(shape, float(x), dtype=torch.float64)
+
+
+def _six(exx, exy, exz, eyy, eyz, ezz, shape=(2, 3)):
+    return tuple(_t(v, shape) for v in (exx, exy, exz, eyy, eyz, ezz))
+
+
+@pytest.mark.parametrize("axis,n", [(0, (1, 0, 0)), (1, (0, 1, 0)), (2, (0, 0, 1))])
+def test_the_numeric_blend_reproduces_the_closed_form(axis, n):
+    """Scalar constituents: torch must give what the sympy closed form gives.
+
+    Harmonic along the blend axis, arithmetic across it. The blend AXIS is the
+    interface normal -- averaging two adjacent cells onto the node between them
+    is a two-phase cell whose interface is perpendicular to that axis, which is
+    what makes Kottke applicable to a sampled epsilon at all.
+    """
+    from meep_torch.geometry.smoothing import blend_tensor_tau
+
+    ei, eo = 12.0, 1.0
+    got = blend_tensor_tau(_six(ei, 0, 0, ei, 0, ei),
+                           _six(eo, 0, 0, eo, 0, eo), axis, 0.5)
+    want_m = kottke_scalar(n, sp.Rational(1, 2), ei, eo)
+    want = [want_m[i, j] for i, j in ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))]
+    for g, w in zip(got, want):
+        assert abs(float(g.flatten()[0]) - float(w)) < 1e-12
+
+
+def test_the_numeric_blend_reproduces_the_tau_route_for_a_tensor():
+    """Anisotropic constituents, where the closed form does not apply.
+
+    This is the case that matters: `stepper_fv2d`'s liquid-crystal director has
+    a live `eps_yz`, and a diagonal rule would throw the grating's physics away.
+    """
+    from meep_torch.geometry.smoothing import blend_tensor_tau
+
+    no2, ne2, phi = 2.25, 2.89, math.pi / 6
+    c, s = math.cos(phi), math.sin(phi)
+    lc = (no2, 0.0, 0.0, no2 * c * c + ne2 * s * s,
+          (ne2 - no2) * s * c, no2 * s * s + ne2 * c * c)
+    vac = (1.0, 0.0, 0.0, 1.0, 0.0, 1.0)
+    got = blend_tensor_tau(_six(*lc), _six(*vac), 0, 0.5)
+
+    lc_m = sp.Matrix([[lc[0], lc[1], lc[2]], [lc[1], lc[3], lc[4]],
+                      [lc[2], lc[4], lc[5]]])
+    want_m = kottke_tensor(sp.Rational(1, 2), lc_m, sp.eye(3))
+    want = [want_m[i, j] for i, j in ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))]
+    for g, w in zip(got, want):
+        assert abs(float(g.flatten()[0]) - float(w)) < 1e-10
+    assert abs(float(got[4].flatten()[0])) > 1e-6, "the director coupling vanished"
+
+
+@pytest.mark.parametrize("cov,which", [(0.0, 1), (1.0, 0)])
+def test_the_numeric_blend_collapses_with_no_interface(cov, which):
+    """A full or empty cell is the bare medium, whatever the axis."""
+    from meep_torch.geometry.smoothing import blend_tensor_tau
+
+    a, b = (7.0, 0.0, 0.0, 7.0, 0.0, 7.0), (2.0, 0.0, 0.0, 2.0, 0.0, 2.0)
+    got = blend_tensor_tau(_six(*a), _six(*b), 1, cov)
+    want = (a, b)[which][0]
+    for k, g in zip((0, 3, 5), (got[0], got[3], got[5])):
+        assert abs(float(g.flatten()[0]) - want) < 1e-12
+    for k in (1, 2, 4):
+        assert abs(float(got[k].flatten()[0])) < 1e-12
+
+
+def test_the_numeric_blend_is_not_an_arithmetic_average():
+    """The check that would have caught the fix that made things worse.
+
+    Moving eps onto a node with a plain arithmetic mean is FIRST order across
+    an interface, and measured worse on `stepper_fv2d` than not moving it at
+    all. If `blend_tensor_tau` ever silently degraded to that, every test above
+    would still pass for the off-diagonal-free cases, so assert the difference
+    directly.
+    """
+    from meep_torch.geometry.smoothing import blend_tensor_tau
+
+    ei, eo = 12.0, 1.0
+    got = blend_tensor_tau(_six(ei, 0, 0, ei, 0, ei),
+                           _six(eo, 0, 0, eo, 0, eo), 0, 0.5)
+    arithmetic = 0.5 * (ei + eo)
+    harmonic = 1.0 / (0.5 / ei + 0.5 / eo)
+    assert abs(float(got[0].flatten()[0]) - harmonic) < 1e-12   # normal
+    assert abs(float(got[3].flatten()[0]) - arithmetic) < 1e-12  # parallel
+    assert abs(float(got[0].flatten()[0]) - arithmetic) > 1.0, (
+        "the normal component took the arithmetic mean")
