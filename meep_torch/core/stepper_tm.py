@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from .coeffs import TMCoeffs
 from .grid import Grid
 import sympy as sp
+from .kernels import ADE_POLE, CN_UPDATE, EH_FROM_D
 from .symbolic import (PSI_NEW, STRETCHED, compiled_curl_composition,
                        compiled_difference)
 
@@ -253,7 +254,7 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
                     dHx_dy, m.k_ey, psi_Hxy)
     if m.d1 is not None:
         # W5: dD/dt = curl H - sigma_d D
-        Dz = m.d1 * state.Dz + m.d2 * F.pad(curl, pad_spec)
+        Dz = CN_UPDATE(state.Dz, F.pad(curl, pad_spec), m.d1, m.d2)
     else:
         Dz = state.Dz + dt * F.pad(curl, pad_spec)
     return _replaced(state, Dz=Dz, psi_Hyx=psi_Hyx, psi_Hxy=psi_Hxy)
@@ -296,7 +297,7 @@ def step_source(state: TMState, m: TMCoeffs, ft: str, amp=0.0,
 def update_pols(state: TMState, m: TMCoeffs) -> TMState:
     """meep update_pols(E): ADE Lorentz recurrence
     P(n+1) = c1 P(n) + c2 P(n-1) + c3 Ez(n)."""
-    P_new = m.c1 * state.P_cur + m.c2 * state.P_prev + m.c3 * state.Ez
+    P_new = ADE_POLE(state.P_cur, state.P_prev, state.Ez, m.c1, m.c2, m.c3)
     return _replaced(state, P_cur=P_new, P_prev=state.P_cur)
 
 
@@ -309,16 +310,19 @@ def update_eh(state: TMState, m: TMCoeffs, ft: str) -> TMState:
         if m.mc1x is None:
             return state
         # W5.5: M precesses off H(n-1/2), H = B - sum M (mu_inf = 1)
-        Mx_new = m.mc1x * state.Mx_cur + m.mc2x * state.Mx_prev + m.mc3x * state.Hx
-        My_new = m.mc1y * state.My_cur + m.mc2y * state.My_prev + m.mc3y * state.Hy
+        Mx_new = ADE_POLE(state.Mx_cur, state.Mx_prev, state.Hx,
+                          m.mc1x, m.mc2x, m.mc3x)
+        My_new = ADE_POLE(state.My_cur, state.My_prev, state.Hy,
+                          m.mc1y, m.mc2y, m.mc3y)
         return _replaced(state, Hx=state.Bx - Mx_new.sum(0),
                               Hy=state.By - My_new.sum(0),
                               Mx_cur=Mx_new, Mx_prev=state.Mx_cur,
                               My_cur=My_new, My_prev=state.My_cur)
     # D = eps*E + chi2*E^2 + chi3*E^3  ->  E = rhs / (eps + chi2*E + chi3*E^2)
-    rhs = state.Dz - state.P_cur.sum(0)
-    Ez = rhs / m.eps_inf
+    P_sum = state.P_cur.sum(0)
+    Ez = EH_FROM_D(state.Dz, P_sum, m.eps_inf)
     if m.has_kerr or m.has_chi2:
+        rhs = state.Dz - P_sum
         for _ in range(3):
             Ez = rhs / (m.eps_inf + m.chi2 * Ez + m.chi3 * Ez * Ez)
     return _replaced(state, Ez=Ez)
