@@ -50,12 +50,16 @@ class State3D(NamedTuple):
     psi_Ez_x: torch.Tensor | None = None   # (nx-1, ny, nz-1)  Hy <- dEz/dx
     psi_Ey_x: torch.Tensor | None = None   # (nx-1, ny-1, nz)   Hz <- dEy/dx
     psi_Ex_y: torch.Tensor | None = None   # (nx-1, ny-1, nz)   Hz <- dEx/dy
-    psi_Hz_y: torch.Tensor | None = None   # (nx-1, ny-2, nz)   Ex <- dHz/dy
-    psi_Hy_z: torch.Tensor | None = None   # (nx-1, ny, nz-2)   Ex <- dHy/dz
-    psi_Hx_z: torch.Tensor | None = None   # (nx, ny-1, nz-2)   Ey <- dHx/dz
-    psi_Hz_x: torch.Tensor | None = None   # (nx-2, ny-1, nz)   Ey <- dHz/dx
-    psi_Hy_x: torch.Tensor | None = None   # (nx-2, ny, nz-1)   Ez <- dHy/dx
-    psi_Hx_y: torch.Tensor | None = None   # (nx, ny-2, nz-1)   Ez <- dHx/dy
+    # The six E-update memories are allocated at the extent step_3d writes,
+    # which is smaller than the raw derivative and depends on the PMC axes --
+    # see _psi_e_shapes. Ex <- dHz/dy, dHy/dz; Ey <- dHx/dz, dHz/dx;
+    # Ez <- dHy/dx, dHx/dy.
+    psi_Hz_y: torch.Tensor | None = None
+    psi_Hy_z: torch.Tensor | None = None
+    psi_Hx_z: torch.Tensor | None = None
+    psi_Hz_x: torch.Tensor | None = None
+    psi_Hy_x: torch.Tensor | None = None
+    psi_Hx_y: torch.Tensor | None = None
     # ADE polarization buffers (allocated only when n_poles > 0): per E comp a
     # (n_poles, *comp_shape) cur/prev pair for P(n+1) = c1 P(n) + c2 P(n-1) +
     # c3 E(n).
@@ -96,25 +100,62 @@ def _pad_interior(t, axes, pmc=()):
     return torch.nn.functional.pad(t, pad)
 
 
-def _term_pmc(t, padaxes, fullax, pmc):
-    """PMC wall handling for one E-update curl term (2D ``y_pmc`` mirror:
-    tangential E live at the wall, H=0 ghost beyond it). On a pmc axis the
-    full-axis term (``fullax``) keeps its wall values (no interior trim) and
-    the reduced-axis term -- the derivative along the pmc axis -- is
-    zero-padded to the wall; that pad is exact for transverse-uniform fields,
-    whose derivative along the pmc axis is identically zero. Non-pmc axes are
-    left as-is for ``_pad_interior``. With ``pmc=()`` this reduces to the
-    plain interior trim."""
+def _trim_full(t, padaxes, fullax, pmc):
+    """Interior trim of an E-update curl term along its full-length axis.
+    The written region of a tangential E component stops one cell short of
+    each PEC wall; a PMC wall keeps it alive, so a pmc axis is not trimmed.
+    Applied to the raw derivative, BEFORE the psi recursion, so the CPML
+    memory is allocated at the extent the step actually writes. The trim is
+    always on an axis the recursion's coefficients are uniform along (they
+    vary along the derivative axis), so it commutes with the recursion
+    bitwise."""
     sl = [slice(None)] * 3
+    for a in padaxes:
+        if a == fullax and a not in pmc:
+            sl[a] = slice(1, -1)
+    return t[tuple(sl)]
+
+
+def _pad_pmc(t, padaxes, fullax, pmc):
+    """PMC wall handling for one E-update curl term (2D ``y_pmc`` mirror:
+    tangential E live at the wall, H=0 ghost beyond it). The reduced-axis
+    term -- the derivative along the pmc axis -- is zero-padded out to the
+    wall; that pad is exact for transverse-uniform fields, whose derivative
+    along the pmc axis is identically zero. Non-pmc axes are left as-is for
+    ``_pad_interior``. With ``pmc=()`` this is the identity."""
     pad = [0, 0, 0, 0, 0, 0]
     for a in padaxes:
-        if a == fullax:
-            if a not in pmc:
-                sl[a] = slice(1, -1)
-        elif a in pmc:
+        if a != fullax and a in pmc:
             pad[2 * (2 - a)] = pad[2 * (2 - a) + 1] = 1
-    t = t[tuple(sl)]
     return torch.nn.functional.pad(t, pad) if any(pad) else t
+
+
+def _term_pmc(t, padaxes, fullax, pmc):
+    """Trim then pad, for the absorber path where there is no psi recursion
+    to sit between the two halves."""
+    return _pad_pmc(_trim_full(t, padaxes, fullax, pmc), padaxes, fullax, pmc)
+
+
+def _psi_e_shapes(nx, ny, nz, pmc=()):
+    """Shapes of the six E-update CPML memories: the source H component's
+    grid, one shorter on the derivative axis and two shorter on the axis the
+    interior trim removes -- what ``step_3d`` writes, nothing more. Before
+    this was derived the arrays carried the untrimmed extent and the psi
+    recursion ran on two slabs that ``_trim_full`` then discarded."""
+    H = {"x": (nx, ny - 1, nz - 1), "y": (nx - 1, ny, nz - 1),
+         "z": (nx - 1, ny - 1, nz)}
+    #  name          source H, derivative axis, full axis
+    spec = (("psi_Hz_y", "z", 1, 2), ("psi_Hy_z", "y", 2, 1),
+            ("psi_Hx_z", "x", 2, 0), ("psi_Hz_x", "z", 0, 2),
+            ("psi_Hy_x", "y", 0, 1), ("psi_Hx_y", "x", 1, 0))
+    out = {}
+    for name, comp, dax, fax in spec:
+        s = list(H[comp])
+        s[dax] -= 1
+        if fax not in pmc:
+            s[fax] -= 2
+        out[name] = tuple(s)
+    return out
 
 
 def _prof(n, npml, offset, dt, dx, dtype, device):
@@ -267,7 +308,10 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
 
 
 def init_3d_state(nx: int, ny: int, nz: int, npml: int = 0, n_poles: int = 0,
-                  dtype=torch.float64, device="cpu") -> State3D:
+                  dtype=torch.float64, device="cpu", pmc=()) -> State3D:
+    """``pmc`` must match ``build_3d_coeffs``'s ``pmc_axes``: a PMC wall keeps
+    the tangential E alive, which widens the E-update CPML memories by one
+    cell at each end of that axis (see ``_psi_e_shapes``)."""
     z = lambda *s: torch.zeros(*s, dtype=dtype, device=device)
     psi = {}
     if npml > 0:
@@ -275,9 +319,7 @@ def init_3d_state(nx: int, ny: int, nz: int, npml: int = 0, n_poles: int = 0,
             psi_Ez_y=z(nx, ny - 1, nz - 1), psi_Ey_z=z(nx, ny - 1, nz - 1),
             psi_Ex_z=z(nx - 1, ny, nz - 1), psi_Ez_x=z(nx - 1, ny, nz - 1),
             psi_Ey_x=z(nx - 1, ny - 1, nz), psi_Ex_y=z(nx - 1, ny - 1, nz),
-            psi_Hz_y=z(nx - 1, ny - 2, nz), psi_Hy_z=z(nx - 1, ny, nz - 2),
-            psi_Hx_z=z(nx, ny - 1, nz - 2), psi_Hz_x=z(nx - 2, ny - 1, nz),
-            psi_Hy_x=z(nx - 2, ny, nz - 1), psi_Hx_y=z(nx, ny - 2, nz - 1),
+            **{k: z(*shape) for k, shape in _psi_e_shapes(nx, ny, nz, pmc).items()},
         )
     if n_poles:
         psi.update(
@@ -395,42 +437,42 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     # E update (dD/dt = curl H); PEC outer edge via _pad_interior, CPML on
     # the in-plane derivatives.
     eps_x = _avg(c.eps, 0)
-    dHz_dy = _d(Hz, 1) / dx
+    dHz_dy = _trim_full(_d(Hz, 1), (1, 2), 2, pmc) / dx
     psi_Hz_y = bEy * state.psi_Hz_y + aEy * dHz_dy
     ch_y = dHz_dy / kEy + psi_Hz_y
-    dHy_dz = _d(Hy, 2) / dx
+    dHy_dz = _trim_full(_d(Hy, 2), (1, 2), 1, pmc) / dx
     psi_Hy_z = bEz * state.psi_Hy_z + aEz * dHy_dz
     ch_z = dHy_dz / kEz + psi_Hy_z
-    curl_x = _pad_interior(_term_pmc(ch_y, (1, 2), 2, pmc)
-                           - _term_pmc(ch_z, (1, 2), 1, pmc), (1, 2), pmc)
+    curl_x = _pad_interior(_pad_pmc(ch_y, (1, 2), 2, pmc)
+                           - _pad_pmc(ch_z, (1, 2), 1, pmc), (1, 2), pmc)
     d1, d2 = c.damp["ex"]
     Ex = (_e_pole(state.Ex, state.Px_cur, pn["x"], d1, d2, eps_x, curl_x)
           if pols is not None else
           (d1 * state.Ex * eps_x + d2 * curl_x) / eps_x)
 
     eps_y = _avg(c.eps, 1)
-    dHx_dz = _d(Hx, 2) / dx
+    dHx_dz = _trim_full(_d(Hx, 2), (0, 2), 0, pmc) / dx
     psi_Hx_z = bEz * state.psi_Hx_z + aEz * dHx_dz
     ch_z2 = dHx_dz / kEz + psi_Hx_z
-    dHz_dx = _d(Hz, 0) / dx
+    dHz_dx = _trim_full(_d(Hz, 0), (0, 2), 2, pmc) / dx
     psi_Hz_x = bEx * state.psi_Hz_x + aEx * dHz_dx
     ch_x = dHz_dx / kEx + psi_Hz_x
-    curl_y = _pad_interior(_term_pmc(ch_z2, (0, 2), 0, pmc)
-                           - _term_pmc(ch_x, (0, 2), 2, pmc), (0, 2), pmc)
+    curl_y = _pad_interior(_pad_pmc(ch_z2, (0, 2), 0, pmc)
+                           - _pad_pmc(ch_x, (0, 2), 2, pmc), (0, 2), pmc)
     d1, d2 = c.damp["ey"]
     Ey = (_e_pole(state.Ey, state.Py_cur, pn["y"], d1, d2, eps_y, curl_y)
           if pols is not None else
           (d1 * state.Ey * eps_y + d2 * curl_y) / eps_y)
 
     eps_z = _avg(c.eps, 2)
-    dHy_dx = _d(Hy, 0) / dx
+    dHy_dx = _trim_full(_d(Hy, 0), (0, 1), 1, pmc) / dx
     psi_Hy_x = bEx * state.psi_Hy_x + aEx * dHy_dx
     ch_x2 = dHy_dx / kEx + psi_Hy_x
-    dHx_dy = _d(Hx, 1) / dx
+    dHx_dy = _trim_full(_d(Hx, 1), (0, 1), 0, pmc) / dx
     psi_Hx_y = bEy * state.psi_Hx_y + aEy * dHx_dy
     ch_y2 = dHx_dy / kEy + psi_Hx_y
-    curl_z = _pad_interior(_term_pmc(ch_x2, (0, 1), 1, pmc)
-                           - _term_pmc(ch_y2, (0, 1), 0, pmc), (0, 1), pmc)
+    curl_z = _pad_interior(_pad_pmc(ch_x2, (0, 1), 1, pmc)
+                           - _pad_pmc(ch_y2, (0, 1), 0, pmc), (0, 1), pmc)
     d1, d2 = c.damp["ez"]
     Ez = (_e_pole(state.Ez, state.Pz_cur, pn["z"], d1, d2, eps_z, curl_z)
           if pols is not None else

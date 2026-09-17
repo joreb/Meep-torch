@@ -296,3 +296,181 @@ def test_the_spec_can_be_wrong():
     folded = BlockSpec(_TM, (NX, NY), (WALL, "fold"),
                        folds=(("y", -1),)).state_shapes()
     assert folded["psi_Hyx"][1] == walled["psi_Hyx"][1] + 1
+
+
+_PSI3D_CASES = [
+    ("pec", (12, 11, 10), ()),
+    ("pmc_xy", (9, 9, 12), (0, 1)),
+    ("pmc_z", (10, 9, 11), (2,)),
+]
+
+
+@pytest.mark.parametrize("label,dims,pmc", _PSI3D_CASES,
+                         ids=[c[0] for c in _PSI3D_CASES])
+def test_3d_psi_is_allocated_at_what_it_writes(label, dims, pmc):
+    """A step must not change the shape of its own CPML memory.
+
+    The six E-update memories used to carry the raw derivative extent, two
+    slabs of which the interior trim discarded before they reached a curl.
+    `_psi_e_shapes` allocates the written extent instead, which makes the step
+    shape-preserving -- and that is the property worth asserting, because a
+    stepper whose psi grows or shrinks under iteration breaks the checkpoint
+    plumbing long before it breaks the physics.
+
+    The pmc cases are the ones that need the boundary: a PMC wall keeps the
+    tangential E alive, so that axis is not trimmed and the memory is wider.
+    """
+    from meep_torch.core.stepper_3d import (_psi_e_shapes, build_3d_coeffs,
+                                            init_3d_state, step_3d)
+
+    nx, ny, nz = dims
+    c = build_3d_coeffs(nx, ny, nz, dx=0.05, npml=3, pmc_axes=pmc)
+    st = init_3d_state(nx, ny, nz, npml=3, pmc=pmc)
+
+    before = {k: tuple(getattr(st, k).shape)
+              for k in st._fields if k.startswith("psi_")}
+    assert {k: v for k, v in before.items() if k.startswith("psi_H")} \
+        == _psi_e_shapes(nx, ny, nz, pmc)
+
+    out = step_3d(st, c, 1.0, ("Ez", nx // 2, ny // 2, nz // 2))
+    after = {k: tuple(getattr(out, k).shape)
+             for k in out._fields if k.startswith("psi_")}
+    assert after == before, "the step reshaped its own psi"
+
+
+def test_the_3d_psi_rule_is_not_vacuous():
+    """The shapes above must actually depend on the trim and on the walls.
+
+    Without this the test would pass against the old untrimmed allocation --
+    which it has to fail, since that allocation is what the change removed.
+    """
+    from meep_torch.core.stepper_3d import _psi_e_shapes
+
+    nx, ny, nz = 12, 11, 10
+    pec = _psi_e_shapes(nx, ny, nz)
+    untrimmed = {"psi_Hz_y": (nx - 1, ny - 2, nz), "psi_Hy_z": (nx - 1, ny, nz - 2),
+                 "psi_Hx_z": (nx, ny - 1, nz - 2), "psi_Hz_x": (nx - 2, ny - 1, nz),
+                 "psi_Hy_x": (nx - 2, ny, nz - 1), "psi_Hx_y": (nx, ny - 2, nz - 1)}
+    assert pec != untrimmed
+    assert all(pec[k] != untrimmed[k] for k in pec)
+
+    # under PEC the two terms of one curl meet on a common region; a PMC wall
+    # on one of the trimmed axes breaks that and widens only the term that
+    # owns it.
+    assert pec["psi_Hz_y"] == pec["psi_Hy_z"]
+    pmc = _psi_e_shapes(nx, ny, nz, (1,))
+    assert pmc["psi_Hy_z"] != pec["psi_Hy_z"]
+    assert pmc["psi_Hz_y"] == pec["psi_Hz_y"]
+
+
+def test_the_old_3d_psi_allocation_is_rejected():
+    """Handing the step the untrimmed memory must fail loudly.
+
+    This is what makes the shapes above evidence: the previous allocation is a
+    concrete wrong input, and the step refuses it rather than broadcasting.
+    Broadcasting is the real hazard -- a transverse-uniform test on a 3-cell
+    axis has `ny - 2 == 1`, which expands silently and agrees for exactly the
+    fields such a test drives.
+    """
+    from meep_torch.core.stepper_3d import (build_3d_coeffs, init_3d_state,
+                                            step_3d)
+
+    nx, ny, nz = 12, 11, 10
+    c = build_3d_coeffs(nx, ny, nz, dx=0.05, npml=3)
+    st = init_3d_state(nx, ny, nz, npml=3)
+    untrimmed = st._replace(
+        psi_Hz_y=torch.zeros(nx - 1, ny - 2, nz, dtype=torch.float64),
+        psi_Hy_z=torch.zeros(nx - 1, ny, nz - 2, dtype=torch.float64))
+    with pytest.raises(RuntimeError, match="must match the size"):
+        step_3d(untrimmed, c, 1.0, ("Ez", nx // 2, ny // 2, nz // 2))
+
+
+def test_3d_psi_matches_psi_extent():
+    """The 3D stepper and the derived rule must agree, or there are two rules.
+
+    `psi_extent` was written against the 2D steppers and recorded `stepper_3d`
+    as a known divergence -- it carried the untrimmed derivative extent and
+    threw two slabs away inside the curl. Moving that trim ahead of the psi
+    recursion closed the gap bitwise. This is the gate that keeps it closed.
+
+    PMC is excluded on purpose: a PMC wall makes the memory per-term rather
+    than per-component (one curl term is full-length at the wall, the other is
+    a derivative along it and gets padded out afterwards), which a
+    component-shaped rule cannot express. See `psi_extent`.
+    """
+    from meep_torch.core.stepper_3d import _psi_e_shapes
+    from meep_torch.core.symbolic import psi_extent
+
+    dims = (12, 11, 10)
+    target = {"psi_Hz_y": "Ex", "psi_Hy_z": "Ex", "psi_Hx_z": "Ey",
+              "psi_Hz_x": "Ey", "psi_Hy_x": "Ez", "psi_Hx_y": "Ez"}
+    got = _psi_e_shapes(*dims)
+    for name, comp in target.items():
+        assert got[name] == psi_extent(comp, dims, (WALL, WALL, WALL)), name
+
+    # both terms of one curl land on their component's region -- that is what
+    # makes a single per-component rule possible at all
+    assert got["psi_Hz_y"] == got["psi_Hy_z"]
+    assert got["psi_Hx_z"] == got["psi_Hz_x"]
+    assert got["psi_Hy_x"] == got["psi_Hx_y"]
+
+
+# Field sums after 30 steps, captured at 7df3716 -- BEFORE the E-update psi
+# arrays were trimmed to what step_3d writes. Hex floats, so the comparison is
+# exact rather than "close".
+_PSI3D_BITWISE = [
+    ("plain", dict(nx=16, ny=15, nz=14),
+     {"Ex": "-0x1.f84a5eeb3be7ep-11", "Ey": "-0x1.4000000000000p-59",
+      "Ez": "-0x1.e75e62858fcaap-5", "Hx": "-0x1.0000000000000p-61",
+      "Hy": "0x1.4209c28a3f57dp-8", "Hz": "-0x1.0000000000000p-110"}),
+    ("pmc01", dict(nx=10, ny=10, nz=18, pmc=(0, 1)),
+     {"Ex": "-0x1.5000000000000p-59", "Ey": "-0x1.0000000000000p-62",
+      "Ez": "-0x1.6c84c29ae1af2p-4", "Hx": "-0x1.d000000000000p-57",
+      "Hy": "0x1.1000000000000p-57", "Hz": "0x1.f800000000000p-113"}),
+    ("poles", dict(nx=14, ny=13, nz=12, n_poles=1),
+     {"Ex": "-0x1.4bad14cc7d68cp-11", "Ey": "0x1.4000000000000p-62",
+      "Ez": "-0x1.0ceec9035202ep-6", "Hx": "0x1.0000000000000p-60",
+      "Hy": "-0x1.49f1737b521f5p-7", "Hz": "-0x1.2000000000000p-111"}),
+    ("mixed", dict(nx=12, ny=12, nz=16, n_abs=4, absorber_axes=(2,)),
+     {"Ex": "-0x1.2441d2957125ap-10", "Ey": "-0x1.2441d29571258p-10",
+      "Ez": "0x1.9f87562e049e0p-8", "Hx": "0x1.cfb26dee73648p-7",
+      "Hy": "-0x1.cfb26dee73649p-7", "Hz": "-0x1.0209880000000p-112"}),
+]
+
+
+@pytest.mark.parametrize("label,kw,want", _PSI3D_BITWISE,
+                         ids=[c[0] for c in _PSI3D_BITWISE])
+def test_3d_psi_trim_changed_no_number(label, kw, want):
+    """Trimming the psi arrays must not move a single bit.
+
+    The recursion `psi' = b psi + a d` is pointwise, so slicing `d` before it
+    and slicing the result after it give the same numbers -- but only because
+    the axis being trimmed is one the coefficients are uniform along. `b`, `a`
+    and `k` vary along the DERIVATIVE axis; the interior trim is on the other
+    axis of the pair. Get that wrong and the recursion meets the wrong
+    coefficient row, which is the off-by-one this project has now hit three
+    times in stencil code.
+
+    So the claim is exact equality against numbers recorded before the change,
+    not a tolerance. The four cases cover every branch the E-phase psi reaches:
+    plain CPML, PMC walls (where a pmc axis is NOT trimmed), ADE poles, and the
+    mixed absorber (identity CPML profile on the absorber axis).
+    """
+    import math
+    from meep_torch.core.stepper_3d import (build_3d_coeffs, init_3d_state,
+                                            step_3d)
+
+    kw = dict(kw)
+    nx, ny, nz = kw.pop("nx"), kw.pop("ny"), kw.pop("nz")
+    pmc, n_poles = kw.pop("pmc", ()), kw.pop("n_poles", 0)
+    c = build_3d_coeffs(nx, ny, nz, dx=0.05, npml=4, pmc_axes=pmc,
+                        poles=((1.2, 0.0, 0.3),) if n_poles else (), **kw)
+    st = init_3d_state(nx, ny, nz, npml=4, n_poles=n_poles, pmc=pmc)
+    src = ("Ez", nx // 2, ny // 2, nz // 2)
+    for n in range(30):
+        amp = math.sin(0.3 * n) * math.exp(-((n - 10) / 6.0) ** 2)
+        st = step_3d(st, c, amp, src)
+
+    got = {f: float(getattr(st, f).sum()).hex() for f in want}
+    assert got == want
+    assert float(st.Ez.abs().max()) > 1e-6, "a dead field would match anything"

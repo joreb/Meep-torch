@@ -74,7 +74,8 @@ def _run_a(pole_on):
     mon = DFTFieldsMonitor3D(coeffs.dt, [F0], "Ey", plane=(2, PROBE_IZ_A))
     n_steps = int(round(T_END_A / coeffs.dt))
     _, (acc,) = run_3d(
-        init_3d_state(NXT, NXT, NZ_A, npml=NPML_A, n_poles=n_poles),
+        init_3d_state(NXT, NXT, NZ_A, npml=NPML_A, n_poles=n_poles,
+                      pmc=(0, 1)),
         coeffs, n_steps, source=src, monitors=[mon])
     # acc channels: [dt*sum cos(wt) F, -dt*sum sin(wt) F] -> phasor
     # int F e^{-iwt} dt = ch0 + i*ch1

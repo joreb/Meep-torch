@@ -627,13 +627,21 @@ def psi_extent(target: str, extents, boundaries, origin=None) -> tuple:
     off one stepper -- the first version of this rule trimmed on offset alone
     and predicted Hx (10, 9) where stepper_tm allocates (12, 9).
 
-    KNOWN DIVERGENCE, and it is a convention rather than a bug. `stepper_3d`
-    trims only along the psi's OWN derivative axis, so its `psi_Hz_y` for Ex is
-    `(nx-1, ny-2, nz)` where this rule gives `(nx-1, ny-2, nz-2)`. Both are
-    self-consistent; the 3D extra rows are computed and then discarded by the
-    interior slice, which was verified by zeroing them and getting `torch.equal`
-    on every field. A unified allocator must PICK one, and picking this one
-    shrinks 3D's arrays without changing any number.
+    `stepper_3d` used to diverge, trimming only along the psi's own derivative
+    axis: `psi_Hz_y` for Ex was `(nx-1, ny-2, nz)` where this rule gives
+    `(nx-1, ny-2, nz-2)`. It now agrees -- moving its interior trim ahead of
+    the psi recursion shrank the arrays bitwise, as predicted, since trimming
+    a pointwise recursion commutes with it. `test_3d_psi_matches_psi_extent`
+    holds the two together.
+
+    PMC is the one boundary this rule cannot express, and the reason is real
+    rather than an omission. A PMC wall leaves tangential E live, so the
+    written region is full-length there -- but only ONE of the two curl terms
+    supplies full-length rows; the other is a derivative along that axis and
+    is zero-padded out to the wall afterwards. The memory is then per-TERM,
+    not per-component, and a component-shaped rule has nowhere to put the
+    difference. Under PEC, PERIODIC and FOLD the two coincide, because H is
+    short by one on an E-integer axis and differencing costs the second row.
     """
     shape = field_shape(target, extents, boundaries, origin=origin)
     off = YEE[target]
