@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
-"""Bloch-periodic TM stepper (real-valued engine, two-quadrature envelope trick).
+"""Bloch-periodic TM and TE steppers (real-valued engine, two-quadrature
+envelope trick).
 
 A Bloch-periodic field E(y + Ly) = exp(i k_y Ly) E(y) is written as
 E(r) = e(r) exp(i k_y y) with e periodic (e(y+Ly)=e(y)). The FDTD evolves the
@@ -15,8 +16,10 @@ engine stays real-valued by running two real quadratures e = e_c + i e_s:
     D_s = de_s/dy + k_y * e_c        (the i k_y e coupling)
 
 x uses CPML (from build_tm_coeffs with y_pmc=True); y is periodic (wrap).
-Nondispersive + Kerr; dispersive Lorentz poles are added per quadrature when
-the scene has poles (passed via the same TMCoeffs c1/c2/c3 + P_cur/P_prev).
+The TM half is nondispersive + Kerr, with dispersive Lorentz poles added per
+quadrature when the scene has poles (passed via the same TMCoeffs c1/c2/c3 +
+P_cur/P_prev). The TE half carries neither: it divides D by the two
+scalar eps fields the caller supplies.
 """
 import math
 from typing import NamedTuple

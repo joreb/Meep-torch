@@ -2,24 +2,22 @@
 # Torch steppers compiled from the symbolic Maxwell system in maxwell_sympy.py.
 # Imports sympy and torch and NOTHING ELSE -- no meep_torch, no splitter_setup.
 #
-# Both polarisations come from one derivation. maxwell_sympy reduces the 3D
-# six-component system to two decoupled 3x3 blocks; `_block_stencils` compiles
-# whichever block it is handed, so TM and TE are the same code path with a
-# different component triplet rather than two implementations. That is the
-# difference from meep_torch, which carries stepper_tm.py and stepper_te.py
-# separately, and from fdtd_pylops_2d / fdtd_devito_2d, which each hand-write a
-# TM curl on top of meep_torch's phases.
+# The stencils come from one derivation. maxwell_sympy reduces the 3D
+# six-component system to two decoupled 3x3 blocks; `_tm_stencils` asks it for
+# the block whose E lies along the invariant axis and compiles that block's
+# four differences, so the component triplet is READ rather than hardcoded.
+# That is the difference from meep_torch, which carries stepper_tm.py and
+# stepper_te.py separately, and from fdtd_pylops_2d / fdtd_devito_2d, which
+# each hand-write a TM curl on top of meep_torch's phases. Only the TM block is
+# compiled today; TE would be the same code path with the other triplet.
 #
-# Two entry points:
+# Entry point:
 #
 #   step_tm_sympy(state, m, ...)  -- drop-in for meep_torch's step_tm. It never
 #       imports meep_torch: it reads `state` and `m` by ATTRIBUTE (state.Ez,
 #       m.b_hy, m.dt) and returns state._replace(...), which is a plain
 #       NamedTuple method. So it plugs into _make_runner and optimize_splitter
 #       --stepper sympy while this file stays standalone.
-#
-#   step_block(...)               -- the generic block stepper the above is
-#       built from, usable on the native Field6 state for TE or 3D work.
 #
 # Also exported, and the reason fdtd_pylops_2d / fdtd_devito_2d can drop their
 # own meep_torch import: step_source, update_pols, update_eh, derived here

@@ -20,8 +20,10 @@ not node-symmetric about the cut -- the low-side outermost row has no
 mirror partner (it sits deep in the PML). The kept half rows map onto full
 rows cx..nx-2 / cy..ny-2, so the de-mirror below maps the reconstructed
 array onto full rows/cols 1..n-2 and the comparison crops the PML bands.
-(get_array(component=Hz) cannot be used yet: its TE de-mirror path passes
-no mirror parity and its flip mapping is off by one -- see NOTES_te_sym.md.)
+(The de-mirror is done here on the raw arrays rather than through
+get_array(component=Hz), which once passed no mirror parity and had its flip
+mapping off by one. That path is fixed and gated separately, below, by
+test_te_get_array_hz_demirror.)
 
 Self-asymmetry reference: the full-cell run has no symmetry machinery, but
 it is only approximately symmetric about the cut (the low/high CPML ramps

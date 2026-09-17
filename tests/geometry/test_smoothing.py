@@ -17,7 +17,7 @@ def test_te_axis_aligned_vertical_interface():
     # normal = x-hat: eps_xx harmonic, eps_yy arithmetic
     cov = torch.tensor([[0.5]], dtype=torch.float64)
     nrm = torch.tensor([[[1.0, 0.0]]], dtype=torch.float64)
-    exx, eyy = blend_te(12.0, 2.0, cov, nrm)
+    exx, eyy, _ = blend_te(12.0, 2.0, cov, nrm)
     h = 1 / (0.5 / 12 + 0.5 / 2)   # 24/7
     a = 0.5 * 12 + 0.5 * 2         # 7
     assert exx.item() == pytest.approx(h)
@@ -27,7 +27,7 @@ def test_te_axis_aligned_vertical_interface():
 def test_te_no_boundary_is_arithmetic():
     cov = torch.tensor([[1.0, 0.0]], dtype=torch.float64)
     nrm = torch.zeros(1, 2, 2, dtype=torch.float64)
-    exx, eyy = blend_te(12.0, 2.0, cov, nrm)
+    exx, eyy, _ = blend_te(12.0, 2.0, cov, nrm)
     assert torch.allclose(exx, torch.tensor([[12.0, 2.0]], dtype=torch.float64))
     assert torch.allclose(eyy, exx)
 
@@ -36,7 +36,7 @@ def test_te_45deg_between_h_and_a():
     cov = torch.tensor([[0.5]], dtype=torch.float64)
     s = 1 / np.sqrt(2)
     nrm = torch.tensor([[[s, s]]], dtype=torch.float64)
-    exx, eyy = blend_te(12.0, 2.0, cov, nrm)
+    exx, eyy, _ = blend_te(12.0, 2.0, cov, nrm)
     h, a = 24 / 7, 7.0
     mid = 0.5 * h + 0.5 * a
     assert exx.item() == pytest.approx(mid)

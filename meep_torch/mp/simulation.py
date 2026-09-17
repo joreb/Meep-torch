@@ -236,7 +236,7 @@ class Simulation:
         self.dimensions = dimensions
         self.dtype = dtype
         # meep-torch extension: engine device. None -> default_device()
-        # (MEEP_TORCH_DEVICE, else CUDA when present).
+        # (MEEP_TORCH_DEVICE, else CPU -- never auto-CUDA; see core.grid).
         self.device = device or default_device()
         self.cell_size = cell_size
         self.resolution = resolution
@@ -570,6 +570,7 @@ class Simulation:
             self._rm = self._rm._replace(
                 eps_tm=half(self._rm.eps_tm), eps_te_xx=half(self._rm.eps_te_xx),
                 eps_te_yy=half(self._rm.eps_te_yy),
+                eps_te_xy=half(self._rm.eps_te_xy),
                 pole_masks=[half(m) for m in self._rm.pole_masks],
                 chi3=half(self._rm.chi3))
             if self._cond is not None:

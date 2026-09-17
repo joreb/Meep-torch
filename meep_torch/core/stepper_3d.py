@@ -345,9 +345,11 @@ def _e_pole(E_old, P_cur, P_new, d1, d2, eps_c, curl):
 
 def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
             src=None) -> State3D:
-    """One leapfrog step. ``src`` is either ``("Ez"|"Ex"|"Ey", i, j, k)`` for
-    a soft point current or ``("Ez"|"Ex"|"Ey", mask)`` for an area/plane
-    soft current (mask matches the component's node shape)."""
+    """One leapfrog step. ``src`` is ``("Ez"|"Ex"|"Ey", i, j, k)`` for a soft
+    point current, ``("Ez"|"Ex"|"Ey", mask)`` for an area/plane soft current
+    (mask matches the component's node shape), or ``(comp, ix, plane)`` for the
+    plane-indexed form the lean stepper uses, which injects into one x slice
+    without materializing a full-volume mask."""
     dx = c.dx
     cp = c.cpml
     pmc = c.pmc

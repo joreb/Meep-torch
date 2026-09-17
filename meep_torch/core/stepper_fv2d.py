@@ -8,9 +8,11 @@ Full-shape (nx, ny) fields; Yee staggering carried implicitly by
 forward/backward difference pairing (the Bloch-stepper pattern):
   Bx <- -dy_f Ez        By <- +dx Ez (CPML)     Bz <- -(dx Ey - dy_f Ex)
   Dx <- +dy_b Hz        Dy <- -dx Hz (CPML)     Dz <- +(dx Hy - dy_b Hx)
-E from D via the precomputed inverse of the 3x3 eps tensor (symmetric;
-components given at cell centers, applied pointwise -- no cross-position
-averaging, adequate for smoothly varying tensors like the LC director).
+E from D via the precomputed inverse of the 3x3 eps tensor (symmetric). By
+default the components are taken at cell centers and applied pointwise -- no
+cross-position averaging, adequate for smoothly varying tensors like the LC
+director. ``build_fv2d_coeffs(eps_at_nodes=True)`` instead Kottke-blends eps
+onto each E component's own Yee node first; see that function.
 """
 from typing import NamedTuple
 

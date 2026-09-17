@@ -589,12 +589,15 @@ def field_shape(component: str, extents, boundaries, origin=None) -> tuple:
     contradicts the periodic ones.
 
     ``origin`` shifts the lattice, and it is not hypothetical either. THIS
-    PACKAGE CONTAINS TWO TE CONVENTIONS. ``stepper_te`` places Hz at
-    ``(1/2, 1/2)`` -- standard Yee -- while ``stepper_bloch``'s TE half places
-    it at the integer node, the DUAL lattice, i.e. Yee shifted by
-    ``(1/2, 1/2, 0)``. Both are internally consistent and they disagree about
-    which fields are short. ``stepper_bloch2`` hides the difference because
-    every axis wraps there, so no component is short at all.
+    PACKAGE ONCE CONTAINED TWO TE CONVENTIONS. ``stepper_te`` places Hz at
+    ``(1/2, 1/2)`` -- standard Yee -- and ``stepper_bloch``'s TE half used to
+    place it at the integer node, the DUAL lattice, i.e. Yee shifted by
+    ``(1/2, 1/2, 0)``. Both were internally consistent and they disagreed about
+    which fields are short; ``stepper_bloch2`` hid the difference because every
+    axis wraps there, so no component is short at all. The rule failing on
+    bloch TE is what surfaced the split, and bloch TE has since moved onto Yee
+    -- so both TE steppers take ``LATTICE_YEE`` now, and the dual origin stays
+    only so the rule can still express one (tests/analytic/test_allocator.py).
 
     The offsets are taken mod 1, so a half shift swaps integer and half nodes.
     """
@@ -607,8 +610,9 @@ def field_shape(component: str, extents, boundaries, origin=None) -> tuple:
                  for a, (n, bc) in enumerate(zip(extents, boundaries)))
 
 
-#: The two lattice origins this package uses, as a shift on the Yee offsets.
-#: ``DUAL`` is ``stepper_bloch``'s TE convention; everything else is ``YEE``.
+#: The two lattice origins, as a shift on the Yee offsets. Every stepper here
+#: is on ``YEE``; ``DUAL`` was ``stepper_bloch``'s TE convention until that
+#: half moved onto Yee, and is kept so the rule can still describe one.
 LATTICE_YEE = (0, 0, 0)
 LATTICE_DUAL = (HALF, HALF, 0)
 

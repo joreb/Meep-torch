@@ -228,3 +228,66 @@ def test_the_numeric_blend_is_not_an_arithmetic_average():
     assert abs(float(got[3].flatten()[0]) - arithmetic) < 1e-12  # parallel
     assert abs(float(got[0].flatten()[0]) - arithmetic) > 1.0, (
         "the normal component took the arithmetic mean")
+
+
+# ---------------------------------------------------------------------------
+# blend_tm and blend_te are ONE rule, sliced. Gated so they cannot drift back
+# into two independently-typed conventions.
+# ---------------------------------------------------------------------------
+
+def _nrm(nx, ny, shape=(2, 3)):
+    n = torch.zeros(*shape, 2, dtype=torch.float64)
+    n[..., 0], n[..., 1] = nx, ny
+    return n
+
+
+@pytest.mark.parametrize("nx,ny", [(1.0, 0.0), (0.0, 1.0),
+                                   (math.sqrt(0.5), math.sqrt(0.5)),
+                                   (0.6, 0.8)])
+def test_blend_tm_is_the_zz_entry_of_blend(nx, ny):
+    """TM's arithmetic mean is `P_zz = 0`, not a separate convention.
+
+    Ez is parallel to every in-plane interface, so its row of the Kottke tensor
+    takes the arithmetic average -- which is exactly what `blend_tm` returns
+    without ever being told the normal. If these ever disagree, one of them has
+    been re-typed.
+    """
+    from meep_torch.geometry.smoothing import blend, blend_tm
+
+    cov = torch.full((2, 3), 0.5, dtype=torch.float64)
+    _, _, zz, _ = blend(12.0, 2.0, cov, _nrm(nx, ny))
+    assert torch.allclose(zz, blend_tm(12.0, 2.0, cov), atol=0, rtol=0)
+
+
+def test_the_off_diagonal_matches_the_derivation():
+    """`blend_te`'s third return equals the symbolically derived `(h - a) nx ny`."""
+    from meep_torch.geometry.smoothing import blend_te
+
+    ei, eo, c = 12.0, 1.0, sp.Rational(1, 2)
+    cov = torch.full((1, 1), 0.5, dtype=torch.float64)
+    for deg in (0, 30, 45, 60, 90):
+        th = math.radians(deg)
+        n = (sp.Float(math.cos(th)), sp.Float(math.sin(th)), 0)
+        _, _, xy = blend_te(ei, eo, cov, _nrm(math.cos(th), math.sin(th), (1, 1)))
+        want = float(dropped_offdiagonal(n, c, ei, eo))
+        assert abs(float(xy.flatten()[0]) - want) < 1e-12, f"{deg} deg"
+
+
+def test_the_off_diagonal_is_not_identically_zero():
+    """Or the wiring is decorative and every test above passes on zeros.
+
+    Axis-aligned interfaces must give exactly zero -- that is why the diagonal
+    form was exact for them -- and 45 degrees must give a term comparable to
+    the diagonal, not a rounding-scale one.
+    """
+    from meep_torch.geometry.smoothing import blend_te
+
+    cov = torch.full((1, 1), 0.5, dtype=torch.float64)
+    for nx, ny in ((1.0, 0.0), (0.0, 1.0)):
+        _, _, xy = blend_te(12.0, 1.0, cov, _nrm(nx, ny, (1, 1)))
+        assert abs(float(xy.flatten()[0])) < 1e-15
+
+    r = math.sqrt(0.5)
+    xx, _, xy = blend_te(12.0, 1.0, cov, _nrm(r, r, (1, 1)))
+    ratio = abs(float(xy.flatten()[0]) / float(xx.flatten()[0]))
+    assert ratio > 0.3, f"off-diagonal is only {ratio:.3f} of the diagonal"

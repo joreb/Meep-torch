@@ -3,8 +3,9 @@
 """Scene -> rasterized engine coefficient fields.
 
 Painter's-algorithm compositing: later items overwrite earlier where their coverage > 0,
-blending at their own boundary. TM uses arithmetic subpixel blending; TE uses the
-diagonal-projected Kottke pair (blend_te) composited against the prior arithmetic field.
+blending at their own boundary. TM uses arithmetic subpixel blending; TE uses the in-plane
+Kottke triple (blend_te: xx, yy and the off-diagonal xy) composited against the prior
+arithmetic field.
 Dispersive materials contribute their Lorentz poles to a union list with coverage-weighted
 masks; chi3 is painted coverage-weighted from a separate chi3_items list.
 """
@@ -24,8 +25,10 @@ SceneItem = tuple[Polygon, Union[Material, float]]
 
 class RasterizedMaterials(NamedTuple):
     eps_tm: torch.Tensor       # (nx, ny) arithmetic blend
-    eps_te_xx: torch.Tensor    # (nx, ny) diagonal-Kottke xx component
-    eps_te_yy: torch.Tensor    # (nx, ny) diagonal-Kottke yy component
+    eps_te_xx: torch.Tensor    # (nx, ny) Kottke diagonal xx -- the TE steppers
+    eps_te_yy: torch.Tensor    # (nx, ny) Kottke diagonal yy -- read these two
+    eps_te_xy: torch.Tensor    # (nx, ny) Kottke off-diagonal; no stepper reads
+                               # it yet -- see tasks/port_full-tensor-eps-smoothing
     poles: list                # list[LorentzPole], union over all materials
     pole_masks: list           # list[Tensor (nx, ny)], coverage-weighted
     chi3: torch.Tensor         # (nx, ny) Kerr coefficient
@@ -60,6 +63,7 @@ def rasterize_scene(
     eps_tm = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64, device=grid.device)
     eps_te_xx = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64, device=grid.device)
     eps_te_yy = torch.full((grid.nx, grid.ny), bg_val, dtype=torch.float64, device=grid.device)
+    eps_te_xy = torch.zeros((grid.nx, grid.ny), dtype=torch.float64, device=grid.device)
     chi3 = torch.zeros((grid.nx, grid.ny), dtype=torch.float64, device=grid.device)
 
     poles: list = list(bg_poles)
@@ -73,10 +77,10 @@ def rasterize_scene(
         # TM: arithmetic composite against the prior field.
         eps_tm_old = eps_tm
         eps_tm = blend_tm(val, eps_tm_old, cov)
-        # TE pair: Kottke blend of this item against the prior arithmetic field, composited
+        # TE triple: Kottke blend of this item against the prior arithmetic field, composited
         # the same way (boundary of the later item blends against the earlier field where
         # they overlap, against background elsewhere).
-        eps_te_xx, eps_te_yy = blend_te(val, eps_tm_old, cov, nrm)
+        eps_te_xx, eps_te_yy, eps_te_xy = blend_te(val, eps_tm_old, cov, nrm)
 
         # Pole masks: generic compositing field = cov*1 + (1-cov)*old for the item's own
         # poles (item_val=1), (1-cov)*old for others (item_val=0). Scale existing first,
@@ -97,6 +101,7 @@ def rasterize_scene(
 
     return RasterizedMaterials(
         eps_tm=eps_tm, eps_te_xx=eps_te_xx, eps_te_yy=eps_te_yy,
+        eps_te_xy=eps_te_xy,
         poles=poles, pole_masks=masks, chi3=chi3,
     )
 

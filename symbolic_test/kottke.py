@@ -31,23 +31,26 @@ TWO ROUTES, and the point of deriving is that they must agree.
   For scalar eps this collapses to the closed form, and `prove_routes_agree`
   checks that symbolically rather than by assertion.
 
-WHAT THIS EXPOSES. `meep_torch/geometry/smoothing.py::blend_te` keeps only the
-DIAGONAL of the closed form:
+WHAT THIS EXPOSED. `meep_torch/geometry/smoothing.py::blend_te` used to keep
+only the DIAGONAL of the closed form:
 
     eps_xx = nx^2 h + (1 - nx^2) a        eps_yy = ny^2 h + (1 - ny^2) a
 
-which is exactly `diag(h P + a (I - P))`. The off-diagonal it drops is
+which is exactly `diag(h P + a (I - P))`. The off-diagonal it dropped is
 
     eps_xy = (h - a) nx ny
 
-so the hand-written form is EXACT for an axis-aligned interface (`nx ny = 0`)
+so the hand-written form was EXACT for an axis-aligned interface (`nx ny = 0`)
 and worst at 45 degrees, where `nx ny = 1/2`. That is a statement about which
-geometries the current smoothing is right for, and it was not recoverable from
-the code -- the term is not commented out, it was never written.
+geometries that smoothing was right for, and it was not recoverable from the
+code -- the term was not commented out, it was never written. `blend_te`
+returns it now; `blend_te_supersampled` still projects it away for the mpb
+eigensolver, which carries a diagonal eps.
 
-Nothing here is wired into the engine. It is derived and gated so that when
-the smoothing layer needs the off-diagonal -- `stepper_fv2d` carries a full
-3x3 eps and gets no smoothing at all today -- the algebra is already proven.
+The derivation itself is not wired into the engine -- it is symbolic and
+independent, which is what makes it evidence when `test_kottke.py` gates the
+torch implementation against it. `blend_tensor_tau`, the general route below,
+is what `stepper_fv2d` calls under `eps_at_nodes=True`.
 """
 import sympy as sp
 
@@ -133,7 +136,7 @@ def prove_routes_agree():
 
 
 def blend_te_diagonal(n, cov, eps_in, eps_out):
-    """What `geometry/smoothing.py::blend_te` computes, as `(xx, yy)`."""
+    """The DIAGONAL of what `geometry/smoothing.py::blend_te` computes, `(xx, yy)`."""
     a = cov * eps_in + (1 - cov) * eps_out
     h = 1 / (cov / eps_in + (1 - cov) / eps_out)
     nx2, ny2 = n[0] ** 2, n[1] ** 2
@@ -143,6 +146,7 @@ def blend_te_diagonal(n, cov, eps_in, eps_out):
 
 def dropped_offdiagonal(n, cov, eps_in, eps_out):
     """The `eps_xy` term the diagonal-only implementation never had.
+    (`blend_te` ships it now; `blend_te_supersampled` still projects it away.)
 
     `(h - a) nx ny`: zero for an axis-aligned interface, maximal at 45 degrees.
     """

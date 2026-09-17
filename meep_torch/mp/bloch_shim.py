@@ -179,8 +179,8 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
     g = sim.grid
     ky = _bloch_ky(sim)
     if te:
-        # ponytail: cell-center eps Yee-averaged to the Bloch TE staggering
-        # (Ex at j+1/2 periodic, Ey at i+1/2); no TE tensor rasterization
+        # ponytail: cell-center eps Yee-averaged to the Bloch TE staggering;
+        # no TE tensor rasterization
         eps = sim._rm.eps_tm
         # Yee TE: Ex at (i+1/2, j) averages eps along x, Ey at (i, j+1/2)
         # along the periodic y. These were the other way round while the TE
