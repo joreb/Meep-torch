@@ -24,11 +24,11 @@ def _run(with_interface):
     eps = torch.ones(NX, NY, dtype=torch.float64, device=g.device)
     if with_interface:
         eps[240:, :] = N2 ** 2                    # half-space x > 12
-    eps_x = eps
-    eps_y = 0.5 * (eps[:-1, :] + eps[1:, :])
+    eps_x = 0.5 * (eps[:-1, :] + eps[1:, :])       # Ex at (i+1/2, j)
+    eps_y = 0.5 * (eps + torch.roll(eps, -1, dims=1))  # Ey at (i, j+1/2)
     st = init_bloch_te_state(g)
     ky = 2 * math.pi * FCEN * math.sin(THETA)
-    mask = g.zeros(NX, NY)
+    mask = g.zeros(NX - 1, NY)                     # magnetic current into Hz
     mask[NPML + 10, :] = 1.0
     omega = 2 * math.pi * FCEN
     t_ramp = 5.0 / FCEN

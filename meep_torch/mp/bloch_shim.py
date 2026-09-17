@@ -24,7 +24,6 @@ import torch
 
 from .run_control import (_eval_step_func, fire_per_step,
                           fire_scheduled, plan_hooks)
-import torch.nn.functional as F
 
 from ..core.stepper_bloch import (init_bloch_te_state, init_bloch_tm_state,
                                   step_bloch_te, step_bloch_tm)
@@ -183,8 +182,11 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
         # ponytail: cell-center eps Yee-averaged to the Bloch TE staggering
         # (Ex at j+1/2 periodic, Ey at i+1/2); no TE tensor rasterization
         eps = sim._rm.eps_tm
-        eps_x = 0.5 * (eps + torch.roll(eps, -1, dims=1))
-        eps_y = 0.5 * (eps[:-1, :] + eps[1:, :])
+        # Yee TE: Ex at (i+1/2, j) averages eps along x, Ey at (i, j+1/2)
+        # along the periodic y. These were the other way round while the TE
+        # half sat on the dual lattice.
+        eps_x = 0.5 * (eps[:-1, :] + eps[1:, :])
+        eps_y = 0.5 * (eps + torch.roll(eps, -1, dims=1))
         st = init_bloch_te_state(g)
     else:
         st = init_bloch_tm_state(g, n_poles=n_poles)
@@ -249,17 +251,23 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
                 inj_c = ic if inj_c is None else inj_c + ic
                 inj_s = s_ if inj_s is None else inj_s + s_
         if te:
+            # masks are built on the (nx, ny) Ez/Hz grid; Yee TE puts Hz at
+            # i+1/2, one row shorter in x.
+            src_c_mask = None if inj_c is None else inj_c[:-1, :]
+            src_s_mask = None if inj_s is None else inj_s[:-1, :]
             st = step_bloch_te(st, m, eps_x, eps_y, ky, src_c=1.0, src_s=0.0,
-                               src_mask=inj_c, src_mask_s=inj_s)
+                               src_mask=src_c_mask, src_mask_s=src_s_mask)
         else:
             st = step_bloch_tm(st, m, ky, src_c=1.0, src_s=0.0,
                                src_mask=inj_c, src_mask_s=inj_s)
         sim._bloch_state = st
         if te:
-            # FluxMonitorTE reads Ey[ix] collocated with avg(Hz[ix-1], Hz[ix]);
-            # the Bloch Ey is x-staggered, so shift it one node with a pad
-            view_c = SimpleNamespace(Hz=st.Hz_c, Ey=F.pad(st.Ey_c, (0, 0, 1, 0)))
-            view_s = SimpleNamespace(Hz=st.Hz_s, Ey=F.pad(st.Ey_s, (0, 0, 1, 0)))
+            # FluxMonitorTE reads Ey[ix] collocated with avg(Hz[ix-1], Hz[ix]),
+            # which is what the Yee lattice already gives. The pad that used to
+            # sit here shifted the dual lattice's x-staggered Ey onto the
+            # integer node; on Yee it is already there.
+            view_c = SimpleNamespace(Hz=st.Hz_c, Ey=st.Ey_c)
+            view_s = SimpleNamespace(Hz=st.Hz_s, Ey=st.Ey_s)
         else:
             view_c = SimpleNamespace(Ez=st.Ez_c, Hy=st.Hy_c, Hx=st.Hx_c)
             view_s = SimpleNamespace(Ez=st.Ez_s, Hy=st.Hy_s, Hx=st.Hx_s)

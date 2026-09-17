@@ -20,7 +20,8 @@ import pytest
 import torch
 
 from meep_torch.core.grid import Grid
-from meep_torch.core.symbolic import PERIODIC, WALL, cut_plane_row, field_shape
+from meep_torch.core.symbolic import (PERIODIC, WALL, cut_plane_row,
+                                     field_shape, psi_extent)
 
 NX, NY = 12, 10
 
@@ -95,17 +96,19 @@ def test_the_rule_is_not_vacuous():
     assert walled == (NX, NY - 1) and wrapped == (NX, NY)
 
 
-def test_this_package_has_two_te_lattices():
-    """`stepper_te` uses Yee; `stepper_bloch`'s TE half uses the dual lattice.
+def test_this_package_has_one_te_lattice():
+    """Both TE steppers are on Yee now, and the dual origin still exists.
 
-    Hz sits at (1/2, 1/2) in one and at the integer node in the other -- Yee
-    shifted by (1/2, 1/2, 0). Both are internally consistent and they disagree
-    about which fields are short by one. `stepper_bloch2` hides it because every
-    axis wraps there, so nothing is short at all.
+    `stepper_bloch`'s TE half used to put Hz on the integer node -- Yee shifted
+    by (1/2, 1/2, 0) -- inherited by transcribing step_bloch_tm position for
+    position, so the same problem gave different-shaped output depending on
+    which TE stepper ran it. That was found by the allocator rule failing on
+    bloch TE, which is the useful way to find a convention split that no
+    document recorded and nothing in the code named.
 
-    This was found by the allocator rule failing on bloch TE, which is the
-    useful way to find it: a convention split that no document recorded and that
-    nothing in the code names.
+    The split is closed; `LATTICE_DUAL` stays because the rule has to be able
+    to express it, and the last assertion keeps the two origins genuinely
+    different so a future stepper on the dual lattice is still describable.
     """
     from meep_torch.core.stepper_bloch import init_bloch_te_state
     from meep_torch.core.stepper_te import init_te_state
@@ -118,14 +121,35 @@ def test_this_package_has_two_te_lattices():
         assert field_shape(c, (NX, NY), (WALL, WALL),
                            origin=LATTICE_YEE) == tuple(getattr(yee, c).shape), c
 
-    dual = init_bloch_te_state(g)
+    bloch = init_bloch_te_state(g)
     for field, c in (("Hz_c", "Hz"), ("Ex_c", "Ex"), ("Ey_c", "Ey")):
         assert field_shape(c, (NX, NY), (WALL, PERIODIC),
-                           origin=LATTICE_DUAL) == tuple(getattr(dual, field).shape), c
+                           origin=LATTICE_YEE) == tuple(getattr(bloch, field).shape), c
 
-    # the two origins must actually disagree, or this proves nothing
+    # the two origins must still disagree, or LATTICE_DUAL means nothing
     assert (field_shape("Hz", (NX, NY), (WALL, WALL), origin=LATTICE_YEE)
             != field_shape("Hz", (NX, NY), (WALL, WALL), origin=LATTICE_DUAL))
+
+
+def test_the_bloch_te_psi_follows_the_unified_lattice():
+    """The two psi arrays swapped extents when the lattice did, and so did the
+    CPML profiles they use.
+
+    On the dual lattice the Ey update's memory took `b_hx` -- the H-family
+    profile -- because dHz/dx landed at the half offset. On Yee it lands on
+    Ey's pinned interior and takes `b_ex`. That the names now match what they
+    are is the check that the conversion went the right way rather than merely
+    producing consistent shapes.
+    """
+    from meep_torch.core.stepper_bloch import init_bloch_te_state
+
+    g = Grid(nx=NX, ny=NY, dx=0.05)
+    st = init_bloch_te_state(g)
+    b = (WALL, PERIODIC)
+    assert tuple(st.psi_Eyx_c.shape) == psi_extent("Hz", (NX, NY), b)
+    assert tuple(st.psi_Hzx_c.shape) == psi_extent("Ey", (NX, NY), b)
+    assert st.psi_Eyx_c.shape != st.psi_Hzx_c.shape, (
+        "the two psi must differ in x, or the lattice is not staggered there")
 
 
 _PSI_TARGET = {"psi_Ezy": "Hx", "psi_Ezx": "Hy", "psi_Hyx": "Ez", "psi_Hxy": "Ez",

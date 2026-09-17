@@ -66,6 +66,16 @@ def _dy_periodic(F: torch.Tensor, dx: float) -> torch.Tensor:
     return _FWD(F, torch.roll(F, -1, dims=1), dx)
 
 
+def _dy_periodic_bwd(F: torch.Tensor, dx: float) -> torch.Tensor:
+    """(F[:, j] - F[:, j-1]) / dx with wrap -- the result sits at F's own j.
+
+    The TE half needs this and the TM half does not, because on the Yee
+    lattice Hz sits at j+1/2 and Ex at j, so the derivative feeding Ex reads
+    DOWN from Hz. Before the lattices were unified Hz sat at j and the two
+    directions were the other way round."""
+    return _BWD(F, torch.roll(F, 1, dims=1), dx)
+
+
 def step_bloch_tm(state: BlochTMState, m: TMCoeffs, ky: float,
                   src_c=0.0, src_s=0.0, src_mask: torch.Tensor | None = None,
                   src_mask_s: torch.Tensor | None = None) -> BlochTMState:
@@ -208,24 +218,32 @@ def bloch_diffraction_orders(state: BlochTMState, ix: int, ky: float, G: float,
 
 
 class BlochTEState(NamedTuple):
-    Hz_c: torch.Tensor;  Hz_s: torch.Tensor     # (nx, ny) envelope H_z
-    Ex_c: torch.Tensor;  Ex_s: torch.Tensor     # (nx, ny)
-    Ey_c: torch.Tensor;  Ey_s: torch.Tensor     # (nx-1, ny)
-    Dx_c: torch.Tensor;  Dx_s: torch.Tensor     # (nx, ny)
-    Dy_c: torch.Tensor;  Dy_s: torch.Tensor     # (nx-1, ny)
-    psi_Hzx_c: torch.Tensor; psi_Hzx_s: torch.Tensor   # (nx-1, ny) Ey update
-    psi_Eyx_c: torch.Tensor; psi_Eyx_s: torch.Tensor   # (nx-2, ny) Hz update
+    """The Yee lattice, as `core.symbolic.field_shape` derives it: Hz at
+    (i+1/2, j+1/2), Ex at (i+1/2, j), Ey at (i, j+1/2), on an x that is walled
+    and a y that wraps. This used to be the DUAL of that -- Hz on the integer
+    node -- inherited by transcribing step_bloch_tm position for position, so
+    the same problem gave different-shaped output depending on which TE stepper
+    ran it."""
+    Hz_c: torch.Tensor;  Hz_s: torch.Tensor     # (nx-1, ny) envelope H_z
+    Ex_c: torch.Tensor;  Ex_s: torch.Tensor     # (nx-1, ny)
+    Ey_c: torch.Tensor;  Ey_s: torch.Tensor     # (nx, ny)
+    Dx_c: torch.Tensor;  Dx_s: torch.Tensor     # (nx-1, ny)
+    Dy_c: torch.Tensor;  Dy_s: torch.Tensor     # (nx, ny)
+    psi_Hzx_c: torch.Tensor; psi_Hzx_s: torch.Tensor   # (nx-2, ny) Ey update
+    psi_Eyx_c: torch.Tensor; psi_Eyx_s: torch.Tensor   # (nx-1, ny) Hz update
 
 
 def init_bloch_te_state(grid: Grid) -> BlochTEState:
     nx, ny = grid.nx, grid.ny
     z = lambda *s: grid.zeros(*s)
     return BlochTEState(
-        Hz_c=z(nx, ny), Hz_s=z(nx, ny), Ex_c=z(nx, ny), Ex_s=z(nx, ny),
-        Ey_c=z(nx - 1, ny), Ey_s=z(nx - 1, ny), Dx_c=z(nx, ny), Dx_s=z(nx, ny),
-        Dy_c=z(nx - 1, ny), Dy_s=z(nx - 1, ny),
-        psi_Hzx_c=z(nx - 1, ny), psi_Hzx_s=z(nx - 1, ny),
-        psi_Eyx_c=z(nx - 2, ny), psi_Eyx_s=z(nx - 2, ny),
+        Hz_c=z(nx - 1, ny), Hz_s=z(nx - 1, ny),
+        Ex_c=z(nx - 1, ny), Ex_s=z(nx - 1, ny),
+        Ey_c=z(nx, ny), Ey_s=z(nx, ny),
+        Dx_c=z(nx - 1, ny), Dx_s=z(nx - 1, ny),
+        Dy_c=z(nx, ny), Dy_s=z(nx, ny),
+        psi_Hzx_c=z(nx - 2, ny), psi_Hzx_s=z(nx - 2, ny),
+        psi_Eyx_c=z(nx - 1, ny), psi_Eyx_s=z(nx - 1, ny),
     )
 
 
@@ -238,48 +256,60 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
     with y_pmc=True); eps_x (nx, ny)/eps_y (nx-1, ny) at the E positions.
     Sources are magnetic currents into Hz (mask on the Hz grid).
 
-    Yee ordering mirrors step_te (E first from Hz(n), then Hz from E):
-    the Ex update takes the FORWARD periodic y-difference of Hz, so the
-    Hz y-curl must take the BACKWARD difference of Ex (W2 Wave-4 lesson).
+    Yee ordering mirrors step_te (E first from Hz(n), then Hz from E). On the
+    Yee lattice Hz is at (i+1/2, j+1/2), so the Ex update takes the BACKWARD
+    periodic y-difference of Hz and the Hz y-curl takes the FORWARD difference
+    of Ex. Both directions flipped when the lattice was unified; the pairing is
+    what matters (W2 Wave-4 lesson) and it still holds.
+
+    The x pad moved with them. dHz/dx now lands on Ey's INTERIOR -- tangential
+    E is pinned at both PEC walls -- so the Dy update pads, and the Hz update,
+    whose dEy/dx already lands on Hz's own grid, no longer does.
     """
     dt, dx = m.dt, m.dx
     if abs(ky) >= 1.0 / dt:
         raise ValueError(f"Bloch k_y={ky:.4f} violates |k_y| < 1/dt={1/dt:.2f}")
 
     # --- D/E update (from Hz at n) ---
-    dhc = _dy_periodic(state.Hz_c, dx)
-    dhs = _dy_periodic(state.Hz_s, dx)
-    # i k_y coupling evaluated AT Ex's stagger position (j+1/2): midpoint
-    # average of Hz -- without it the bands carry an O(k_y dx) bias
-    Hzm_c = 0.5 * (state.Hz_c + torch.roll(state.Hz_c, -1, dims=1))
-    Hzm_s = 0.5 * (state.Hz_s + torch.roll(state.Hz_s, -1, dims=1))
+    # Ex at (i+1/2, j) reads DOWN from Hz at j+1/2: backward, periodic.
+    dhc = _dy_periodic_bwd(state.Hz_c, dx)
+    dhs = _dy_periodic_bwd(state.Hz_s, dx)
+    # i k_y coupling evaluated AT Ex's stagger position (j): midpoint average
+    # of Hz -- without it the bands carry an O(k_y dx) bias
+    Hzm_c = 0.5 * (state.Hz_c + torch.roll(state.Hz_c, 1, dims=1))
+    Hzm_s = 0.5 * (state.Hz_s + torch.roll(state.Hz_s, 1, dims=1))
     Dx_c = state.Dx_c + dt * (dhc - ky * Hzm_s)
     Dx_s = state.Dx_s + dt * (dhs + ky * Hzm_c)
     Ex_c, Ex_s = Dx_c / eps_x, Dx_s / eps_x
 
-    dHz_dx_c = _FWD(state.Hz_c[:-1, :], state.Hz_c[1:, :], dx)
-    dHz_dx_s = _FWD(state.Hz_s[:-1, :], state.Hz_s[1:, :], dx)
-    psi_Hzx_c = m.b_hx * state.psi_Hzx_c + m.a_hx * dHz_dx_c
-    psi_Hzx_s = m.b_hx * state.psi_Hzx_s + m.a_hx * dHz_dx_s
-    Dy_c = state.Dy_c - dt * (dHz_dx_c / m.k_hx + psi_Hzx_c)
-    Dy_s = state.Dy_s - dt * (dHz_dx_s / m.k_hx + psi_Hzx_s)
+    # dHz/dx lands on Ey's interior (nx-2): Hz is at i+1/2, Ey at i, and the
+    # two PEC walls pin tangential E. The E-family CPML profile is the one that
+    # matches that extent -- on the old dual lattice this term took b_hx, the
+    # H profile, which was the tell that the lattice was accidental.
+    dHz_dx_c = _BWD(state.Hz_c[1:, :], state.Hz_c[:-1, :], dx)
+    dHz_dx_s = _BWD(state.Hz_s[1:, :], state.Hz_s[:-1, :], dx)
+    psi_Hzx_c = m.b_ex * state.psi_Hzx_c + m.a_ex * dHz_dx_c
+    psi_Hzx_s = m.b_ex * state.psi_Hzx_s + m.a_ex * dHz_dx_s
+    pad_x = (0, 0, 1, 1)
+    Dy_c = state.Dy_c - dt * F.pad(dHz_dx_c / m.k_ex + psi_Hzx_c, pad_x)
+    Dy_s = state.Dy_s - dt * F.pad(dHz_dx_s / m.k_ex + psi_Hzx_s, pad_x)
     Ey_c, Ey_s = Dy_c / eps_y, Dy_s / eps_y
 
     # --- Hz update (from E at n+1/2) ---
-    dexc_dy = _BWD(Ex_c, torch.roll(Ex_c, 1, dims=1), dx)   # backward, periodic
-    dexs_dy = _BWD(Ex_s, torch.roll(Ex_s, 1, dims=1), dx)
-    Exm_c = 0.5 * (Ex_c + torch.roll(Ex_c, 1, dims=1))    # at Hz's position (j)
-    Exm_s = 0.5 * (Ex_s + torch.roll(Ex_s, 1, dims=1))
+    dexc_dy = _dy_periodic(Ex_c, dx)                   # forward, periodic
+    dexs_dy = _dy_periodic(Ex_s, dx)
+    Exm_c = 0.5 * (Ex_c + torch.roll(Ex_c, -1, dims=1))  # at Hz's j+1/2
+    Exm_s = 0.5 * (Ex_s + torch.roll(Ex_s, -1, dims=1))
     curlY_c = dexc_dy - ky * Exm_s
     curlY_s = dexs_dy + ky * Exm_c
-    dEy_dx_c = _FWD(Ey_c[:-1, :], Ey_c[1:, :], dx)          # (nx-2, ny)
+    dEy_dx_c = _FWD(Ey_c[:-1, :], Ey_c[1:, :], dx)      # (nx-1, ny), Hz's grid
     dEy_dx_s = _FWD(Ey_s[:-1, :], Ey_s[1:, :], dx)
-    psi_Eyx_c = m.b_ex * state.psi_Eyx_c + m.a_ex * dEy_dx_c
-    psi_Eyx_s = m.b_ex * state.psi_Eyx_s + m.a_ex * dEy_dx_s
-    curl_c = dEy_dx_c / m.k_ex + psi_Eyx_c - curlY_c[1:-1, :]
-    curl_s = dEy_dx_s / m.k_ex + psi_Eyx_s - curlY_s[1:-1, :]
-    Hz_c = state.Hz_c - dt * F.pad(curl_c, (0, 0, 1, 1))
-    Hz_s = state.Hz_s - dt * F.pad(curl_s, (0, 0, 1, 1))
+    psi_Eyx_c = m.b_hx * state.psi_Eyx_c + m.a_hx * dEy_dx_c
+    psi_Eyx_s = m.b_hx * state.psi_Eyx_s + m.a_hx * dEy_dx_s
+    curl_c = dEy_dx_c / m.k_hx + psi_Eyx_c - curlY_c
+    curl_s = dEy_dx_s / m.k_hx + psi_Eyx_s - curlY_s
+    Hz_c = state.Hz_c - dt * curl_c
+    Hz_s = state.Hz_s - dt * curl_s
     if src_mask is not None:
         if src_mask_s is not None:
             # complex spatial mask, full complex product (mirrors step_bloch_tm)
@@ -296,7 +326,10 @@ def step_bloch_te(state: BlochTEState, m: TMCoeffs, eps_x: torch.Tensor,
 
 def bloch_te_xflux(state: BlochTEState, ix: int, dy: float) -> float:
     """Time-averaged +x flux for the TE envelope: <S_x> = +1/2 (Ey Hz)."""
+    # Hz sits at i+1/2, Ey at i, so averaging Hz[ix-1] and Hz[ix] lands on
+    # Ey[ix] exactly. On the old dual lattice the same average landed on
+    # Ey[ix-1] instead.
     Hz_c = 0.5 * (state.Hz_c[ix - 1, :] + state.Hz_c[ix, :])
     Hz_s = 0.5 * (state.Hz_s[ix - 1, :] + state.Hz_s[ix, :])
-    s = (state.Ey_c[ix - 1, :] * Hz_c + state.Ey_s[ix - 1, :] * Hz_s)
+    s = (state.Ey_c[ix, :] * Hz_c + state.Ey_s[ix, :] * Hz_s)
     return 0.5 * float(s.sum()) * dy

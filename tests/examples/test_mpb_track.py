@@ -27,7 +27,13 @@ def holey_bands_at(kx_meep, res=10):
     coeffs = build_tm_coeffs(grid, eps_inf=torch.ones(nx, ny, dtype=torch.float64, device=grid.device),
                              npml=npml, y_pmc=True)
     # 4x4-supersampled coverage eps (the ring-cyl edge-averaging lesson)
-    cx = nx // 2
+    # cx + 1/2, not cx: the waveguide's mirror plane has to sit ON the field
+    # lattice. Yee TE puts Hz at i+1/2, so a slab centred on the integer node
+    # straddles the samples -- measured, that costs 3.72% on the guided band
+    # against 0.62% when aligned. The old dual-lattice TE stepper had Hz on the
+    # integer node, so `cx` was aligned for it and this read as "the dual
+    # lattice is more accurate"; it was not, it was the placement.
+    cx = nx // 2 + 0.5
     ss = 4
     xi = (torch.arange(nx * ss, dtype=torch.float64, device=grid.device) + 0.5) / ss - 0.5
     yj = (torch.arange(ny * ss, dtype=torch.float64, device=grid.device) + 0.5) / ss - 0.5
@@ -38,18 +44,19 @@ def holey_bands_at(kx_meep, res=10):
     in_hole = ((II - cx) * dx) ** 2 + ((JJ - ny / 2) * dx) ** 2 < ref["r"] ** 2
     fine[in_hole] = 1.0
     eps = fine.reshape(nx, ss, ny, ss).mean(dim=(1, 3))
-    # eps at the Yee E positions: Ex sits at (i, j+1/2) (periodic y wrap),
-    # Ey at (i+1/2, j) -- cell-centered eps reused verbatim biases bands low
-    eps_x = 0.5 * (eps + torch.roll(eps, -1, dims=1))
-    eps_y = 0.5 * (eps[:-1, :] + eps[1:, :])
+    # eps at the Yee E positions: Ex sits at (i+1/2, j), Ey at (i, j+1/2)
+    # (periodic y wrap) -- cell-centered eps reused verbatim biases bands low
+    eps_x = 0.5 * (eps[:-1, :] + eps[1:, :])
+    eps_y = 0.5 * (eps + torch.roll(eps, -1, dims=1))
 
     st = init_bloch_te_state(grid)
     ky = 2 * math.pi * kx_meep
-    mask = grid.zeros(nx, ny)
-    mask[cx + 2, ny // 3] = 1.0                    # low-symmetry point source
+    ic = nx // 2                                   # integer index for probes
+    mask = grid.zeros(nx - 1, ny)                  # Hz grid, Yee TE
+    mask[ic + 2, ny // 3] = 1.0                    # low-symmetry point source
     pulse = GaussianPulse(ref["fcen"], ref["df"])
     n_steps = int(round(360.0 / grid.dt))
-    probes = [(cx + 2, ny // 3), (cx - 3, 2 * ny // 3), (cx + 1, ny // 5)]
+    probes = [(ic + 2, ny // 3), (ic - 3, 2 * ny // 3), (ic + 1, ny // 5)]
     series = np.empty((len(probes), n_steps), dtype=complex)
     for t in range(n_steps):
         a = pulse.amplitude((t + 0.5) * grid.dt)
