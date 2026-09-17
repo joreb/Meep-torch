@@ -66,6 +66,8 @@ details carry it, and both are load-bearing:
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import sympy as sp
 from sympy.calculus.finite_diff import finite_diff_weights
 from sympy.vector import CoordSys3D, curl as _vector_curl
@@ -637,8 +639,14 @@ def psi_extent(target: str, extents, boundaries, origin=None) -> tuple:
     off = YEE[target]
     if origin is not None:
         off = tuple((o + d) % 1 for o, d in zip(off, origin))
+    # An axis with two PEC walls loses both rows; a FOLD has replaced one of
+    # them with a symmetry cut, where the field is live (or carried separately
+    # as the cut-plane row), so only the far wall is removed. A periodic axis
+    # has no wall and loses nothing. Found by the rule disagreeing with
+    # init_tm_state under y_mirror: it allocates psi at ny-1, not ny-2.
     pinned = target[0] in ("E", "D")          # a PEC wall pins tangential E
-    return tuple(n - 2 if (pinned and off[a] != HALF and bc == WALL) else n
+    trim = {WALL: 2, FOLD: 1, PERIODIC: 0}
+    return tuple(n - trim[bc] if (pinned and off[a] != HALF) else n
                  for a, (n, bc) in enumerate(zip(shape, boundaries)))
 
 
@@ -696,6 +704,97 @@ def cut_plane_row(component: str, axis: str, phase: int) -> bool:
     if YEE[component][a] != HALF:
         return False
     return phase * component_sign(f"mirror_{axis}", component) == 1
+
+
+class BlockSpec(NamedTuple):
+    """What a stepper needs to allocate its state, as data.
+
+    One object instead of the arguments the four allocator rules take
+    separately. It carries only what those rules consume -- adding fields for
+    things nothing reads would make the spec look more complete than it is.
+
+    KNOWN GAPS, from surveying all thirteen ``init_*`` functions, none of them
+    represented here because no rule uses them yet: the representation (real,
+    complex, or the two real quadratures the Bloch steppers carry), which
+    family sits on integer time (a convention, and every monitor's time
+    centring depends on it), the constitutive coupling graph (a gyrotropic bias
+    couples Ey and Ez through the ADE, which is why ``stepper_1d`` exists and
+    why a vacuum-operator block decomposition over-splits), source injection
+    targets, metric coefficients at staggered nodes for cylindrical, and
+    non-field state such as the multilevel populations.
+
+    ``folds`` is ``((axis, phase), ...)``; an axis carrying a fold should also
+    be marked ``FOLD`` in ``boundaries``, since a cut ends the kept half the
+    way a wall does.
+    """
+
+    components: tuple
+    extents: tuple
+    boundaries: tuple
+    origin: tuple = None
+    n_poles: int = 0
+    n_mpoles: int = 0
+    folds: tuple = ()
+
+    def shape(self, component: str) -> tuple:
+        return field_shape(component, self.extents, self.boundaries,
+                           origin=self.origin)
+
+    def state_shapes(self) -> dict:
+        """Every array the block allocates, as ``{name: shape}``.
+
+        Names follow the steppers' own convention, which is not uniform: the
+        flux always takes the component's axis (``Dz``, ``Dx``, ``Dy``) while
+        the pole pair takes it only when the block has more than one E
+        component (``P_cur`` alone in TM, ``Px_cur``/``Py_cur`` in TE).
+        """
+        out = {c: self.shape(c) for c in self.components}
+
+        for name, psi in self.psi_shapes().items():
+            out[name] = psi
+
+        e_comps = [c for c in self.components if c[0] == "E"]
+        suffix = len(e_comps) > 1
+        for (role, comp), shape in companion_arrays(
+                self.components, self.extents, self.boundaries,
+                self.n_poles, self.n_mpoles, origin=self.origin).items():
+            axis = comp[-1]
+            if role == "D":
+                out[f"D{axis}"] = shape
+            elif role.startswith("P"):
+                out[(f"P{axis}_" if suffix else "P_") + role.split("_")[1]] = shape
+            elif role == "B":
+                out[f"B{axis}"] = shape
+            else:
+                out[f"M{axis}_" + role.split("_")[1]] = shape
+
+        for axis, phase in self.folds:
+            for c in self.components:
+                if c[0] == "H" and cut_plane_row(c, axis, phase):
+                    perp = [a for a in range(len(self.extents))
+                            if a != AXES.index(axis)][0]
+                    out[f"{c}0"] = (self.extents[perp],)
+        return out
+
+    def psi_shapes(self) -> dict:
+        """CPML memory, one per (target, derivative axis) the curl needs.
+
+        Named the way the steppers name them: ``psi_<source><axis>``, where the
+        source is the component being differentiated and the axis is the
+        direction. Two per target in 2D.
+        """
+        out = {}
+        for target in self.components:
+            extent = psi_extent(target, self.extents, self.boundaries,
+                                origin=self.origin)
+            for src in self.components:
+                if src == target or src[0] == target[0]:
+                    continue
+                for axis in AXES[:len(self.extents)]:
+                    if YEE[src][AXES.index(axis)] == YEE[target][AXES.index(axis)]:
+                        continue
+                    out[f"psi_{src}{axis}"] = extent
+        return out
 
 
 def ordered_sum(terms):

@@ -225,3 +225,74 @@ def test_te_companions_are_derived(n_poles):
         assert want[("P_prev", c)] == tuple(getattr(s, pp).shape), pp
     # Hz carries no companions at all without magnetic poles
     assert not any(k[1] == "Hz" for k in want)
+
+
+# --- the spec: every array a block allocates, from one object ---------------
+
+def _allocated(state):
+    return {n: tuple(getattr(state, n).shape) for n in state._fields
+            if isinstance(getattr(state, n), torch.Tensor)}
+
+
+_TM = ("Ez", "Hx", "Hy")
+_TM_CASES = [
+    ("plain", {}, dict(boundaries=(WALL, WALL))),
+    ("poles", dict(n_poles=2), dict(boundaries=(WALL, WALL), n_poles=2)),
+    ("mpoles", dict(n_mpoles=3), dict(boundaries=(WALL, WALL), n_mpoles=3)),
+    ("both", dict(n_poles=2, n_mpoles=3),
+     dict(boundaries=(WALL, WALL), n_poles=2, n_mpoles=3)),
+    ("y_mirror_odd", dict(y_mirror=-1),
+     dict(boundaries=(WALL, "fold"), folds=(("y", -1),))),
+    ("y_mirror_even", dict(y_mirror=+1),
+     dict(boundaries=(WALL, "fold"), folds=(("y", +1),))),
+    ("x_mirror_odd", dict(x_mirror=-1),
+     dict(boundaries=("fold", WALL), folds=(("x", -1),))),
+]
+
+
+@pytest.mark.parametrize("label,init_kw,spec_kw", _TM_CASES,
+                         ids=[c[0] for c in _TM_CASES])
+def test_the_spec_reproduces_the_tm_allocation(label, init_kw, spec_kw):
+    """Every array stepper_tm allocates, derived from one BlockSpec.
+
+    Names and shapes both, across materials and folds. The fold cases are the
+    ones that found a missing rule: a cut replaces ONE of the two PEC walls, so
+    psi loses one row there and not two, and `init_tm_state` allocates ny-1
+    where a two-wall axis gives ny-2.
+    """
+    from meep_torch.core.symbolic import BlockSpec
+    from meep_torch.core.stepper_tm import init_tm_state
+
+    spec = BlockSpec(_TM, (NX, NY), **spec_kw)
+    assert spec.state_shapes() == _allocated(init_tm_state(
+        Grid(nx=NX, ny=NY, dx=0.05), **init_kw))
+
+
+@pytest.mark.parametrize("n_poles", [0, 2])
+def test_the_spec_reproduces_the_te_allocation(n_poles):
+    from meep_torch.core.symbolic import BlockSpec
+    from meep_torch.core.stepper_te import init_te_state
+
+    spec = BlockSpec(("Hz", "Ex", "Ey"), (NX, NY), (WALL, WALL), n_poles=n_poles)
+    assert spec.state_shapes() == _allocated(init_te_state(
+        Grid(nx=NX, ny=NY, dx=0.05), n_poles=n_poles))
+
+
+def test_the_spec_can_be_wrong():
+    """The comparison above is only evidence if a wrong spec fails it.
+
+    Two blocks that differ only in a boundary must allocate differently; if
+    they did not, every case above would pass for any spec at all.
+    """
+    from meep_torch.core.symbolic import BlockSpec
+
+    walled = BlockSpec(_TM, (NX, NY), (WALL, WALL)).state_shapes()
+    wrapped = BlockSpec(_TM, (NX, NY), (WALL, PERIODIC)).state_shapes()
+    assert walled != wrapped
+    assert walled["Hx"] != wrapped["Hx"]      # the fencepost
+    assert walled["psi_Hyx"] != wrapped["psi_Hyx"]   # and the psi trim
+
+    # a fold trims one row where a wall trims two -- the rule the fold cases found
+    folded = BlockSpec(_TM, (NX, NY), (WALL, "fold"),
+                       folds=(("y", -1),)).state_shapes()
+    assert folded["psi_Hyx"][1] == walled["psi_Hyx"][1] + 1
