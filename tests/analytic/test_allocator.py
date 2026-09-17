@@ -498,3 +498,73 @@ def test_3d_psi_trim_changed_no_number(label, kw, want):
     got = {f: float(getattr(st, f).sum()).hex() for f in want}
     assert got == want
     assert float(st.Ez.abs().max()) > 1e-6, "a dead field would match anything"
+
+
+# ---------------------------------------------------------------------------
+# The allocator rule is frame-independent: it is about walls and half offsets,
+# not about x and y. stepper_bor is the test of that, because it was written by
+# hand from the physics and never saw this rule.
+# ---------------------------------------------------------------------------
+
+_BOR_SHAPES = {                       # meep_torch/core/stepper_bor.py:39-45
+    "Er": (-1, 0), "Etheta": (0, 0), "Ez": (0, -1),
+    "Hr": (0, -1), "Htheta": (-1, -1), "Hz": (-1, 0),
+}
+
+
+def test_the_rule_predicts_stepper_bor_allocations():
+    """Six shapes, from the cylindrical Yee table and the same wall rule.
+
+    `init_bor_state` allocates `Er (nr-1, nz)`, `Ephi (nr, nz)`,
+    `Ez (nr, nz-1)`, `Hr (nr, nz-1)`, `Hphi (nr-1, nz-1)`, `Hz (nr-1, nz)`,
+    chosen from the physics of a body of revolution months before
+    `field_shape` existed. If the rule reproduces them, "short by one on a
+    walled axis IFF half-offset" is not a cartesian fact.
+
+    `axes=("r", "z")` is the load-bearing argument: a BOR reduces THETA, the
+    MIDDLE axis, so its two extents are frame indices 0 and 2. Positional
+    slicing of the offset tuple would silently take r and theta.
+    """
+    from meep_torch.core.stepper_bor import init_bor_state
+
+    nr, nz = 12, 10
+    st = init_bor_state(nr, nz)
+    actual = {"Er": st.Er, "Etheta": st.Ephi, "Ez": st.Ez,
+              "Hr": st.Hr, "Htheta": st.Hphi, "Hz": st.Hz}
+    for name, tensor in actual.items():
+        got = field_shape(name, (nr, nz), (WALL, WALL),
+                          system="cylindrical", axes=("r", "z"))
+        assert got == tuple(tensor.shape), f"{name}: {got} vs {tuple(tensor.shape)}"
+
+
+def test_naming_the_axes_matters():
+    """Reducing theta is not the same as reducing z, and the rule must show it.
+
+    Without this, `axes` could be ignored and every test above would still
+    pass, because `("r", "theta")` and `("r", "z")` agree for four of the six
+    components. Hz is one that separates them.
+    """
+    rz = field_shape("Hz", (12, 10), (WALL, WALL),
+                     system="cylindrical", axes=("r", "z"))
+    rt = field_shape("Hz", (12, 10), (WALL, WALL),
+                     system="cylindrical", axes=("r", "theta"))
+    assert rz != rt, "theta and z reductions gave the same shape"
+
+
+def test_the_cartesian_path_is_untouched():
+    """Default arguments must reproduce exactly what the 2D steppers get."""
+    from meep_torch.core.grid import Grid
+    from meep_torch.core.stepper_tm import init_tm_state
+
+    s = init_tm_state(Grid(nx=NX, ny=NY, dx=0.05))
+    for c in ("Ez", "Hx", "Hy"):
+        assert field_shape(c, (NX, NY), (WALL, WALL)) == tuple(getattr(s, c).shape)
+        assert field_shape(c, (NX, NY), (WALL, WALL), system="cartesian",
+                           axes=("x", "y")) == tuple(getattr(s, c).shape)
+
+
+def test_an_unknown_component_names_the_frame():
+    """`Ex` is not a cylindrical component, and the error should say so."""
+    with pytest.raises(KeyError, match="cylindrical"):
+        field_shape("Ex", (12, 10), (WALL, WALL),
+                    system="cylindrical", axes=("r", "z"))

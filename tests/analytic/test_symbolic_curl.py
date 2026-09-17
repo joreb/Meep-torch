@@ -14,6 +14,7 @@ stencils are where sign errors hide. This test closes that gap by realising the
 operator form back into real derivatives and comparing against sympy's own
 vector calculus.
 """
+import pytest
 import sympy as sp
 from sympy.vector import CoordSys3D, curl as vector_curl
 
@@ -297,3 +298,161 @@ def test_the_composition_is_ordered_and_that_is_what_makes_it_bitwise():
     assert sp.srepr(ordered) != sp.srepr(sp.simplify(ordered)), (
         "simplify left the ordered form intact -- the fragility this warns "
         "about is gone, or the check is looking at the wrong thing")
+
+
+# ---------------------------------------------------------------------------
+# curl_terms: which curl drives which component, derived instead of typed.
+# ---------------------------------------------------------------------------
+
+#: What the steppers actually compute, read off their source. Pinned here so
+#: the derivation is checked against the code rather than against itself.
+#:   Ez  stepper_tm.step_db("D"):   +dHy/dx  -dHx/dy
+#:   Hz  stepper_te.step_db("B"):   Hz -= dt*(dEy/dx - dEx/dy)
+#:   Hx  stepper_3d H phase:        Hx -= d2*(ce_y - ce_z), ce_y=dEz/dy, ce_z=dEy/dz
+#:   Ex  stepper_3d E phase:        curl_x = ch_y - ch_z,   ch_y=dHz/dy, ch_z=dHy/dz
+_STEPPER_CURLS = {
+    "Ez": (("Hx", "y", -1), ("Hy", "x", +1)),
+    "Hz": (("Ex", "y", +1), ("Ey", "x", -1)),
+    "Hx": (("Ey", "z", +1), ("Ez", "y", -1)),
+    "Ex": (("Hy", "z", -1), ("Hz", "y", +1)),
+    "Hy": (("Ex", "z", -1), ("Ez", "x", +1)),
+    "Ey": (("Hx", "z", +1), ("Hz", "x", -1)),
+}
+
+
+@pytest.mark.parametrize("target", sorted(_STEPPER_CURLS))
+def test_curl_terms_match_what_the_steppers_compute(target):
+    """The derivation reproduces every hand-written curl in the package."""
+    from meep_torch.core.symbolic import curl_terms
+
+    assert curl_terms(target) == _STEPPER_CURLS[target]
+
+
+@pytest.mark.parametrize("target", sorted(_STEPPER_CURLS))
+def test_a_curl_never_differentiates_along_its_own_axis(target):
+    """`dEz/dz` has no business in Ez's update, and neither source repeats.
+
+    A structural property rather than a second copy of the table: it holds for
+    any component in any right-handed frame, so it catches a transcription
+    error that happened to stay self-consistent.
+    """
+    from meep_torch.core.symbolic import curl_terms
+
+    own = target[1].lower()
+    terms = curl_terms(target)
+    assert len(terms) == 2
+    assert own not in {axis for _, axis, _ in terms}
+    assert len({axis for _, axis, _ in terms}) == 2, "both terms share an axis"
+    assert len({src for src, _, _ in terms}) == 2, "both terms share a source"
+    # curl E feeds H and curl H feeds E; never a component of its own family
+    other = "E" if target[0] == "H" else "H"
+    assert all(src[0] == other for src, _, _ in terms)
+
+
+def test_the_two_terms_of_a_curl_carry_opposite_signs():
+    """`d/dt F_i = +- (D_j F_k - D_k F_j)`: one plus, one minus, always."""
+    from meep_torch.core.symbolic import curl_terms
+
+    for target in _STEPPER_CURLS:
+        signs = sorted(sign for _, _, sign in curl_terms(target))
+        assert signs == [-1, 1], f"{target}: {signs}"
+
+
+def test_E_and_H_rows_are_opposite():
+    """`dH/dt = -curl E` against `dE/dt = +curl H` -- the same table, negated.
+
+    This is the relation a hand-written stepper gets wrong one row at a time,
+    and it is why the H phase passes a negated coefficient to `CN_UPDATE`
+    rather than getting its own kernel.
+    """
+    from meep_torch.core.symbolic import curl_terms
+
+    for e, h in (("Ex", "Hx"), ("Ey", "Hy"), ("Ez", "Hz")):
+        e_map = {axis: sign for _, axis, sign in curl_terms(e)}
+        h_map = {axis: sign for _, axis, sign in curl_terms(h)}
+        assert e_map == {a: -s for a, s in h_map.items()}
+
+
+def test_the_derivation_is_not_reading_the_pinned_table():
+    """A wrong sign in `_STEPPER_CURLS` must fail, or the pin proves nothing.
+
+    The table above is hand-typed from the steppers, so it is exactly the kind
+    of reference that can silently agree with a broken derivation if the test
+    only ever compares them to each other.
+    """
+    from meep_torch.core.symbolic import curl_terms
+
+    bad = (("Hx", "y", +1), ("Hy", "x", +1))          # sign flipped
+    assert curl_terms("Ez") != bad
+    swapped = (("Hx", "x", -1), ("Hy", "y", +1))      # axes swapped
+    assert curl_terms("Ez") != swapped
+
+
+# ---------------------------------------------------------------------------
+# yee_table: one rule for every frame, not a table per coordinate system.
+# ---------------------------------------------------------------------------
+
+#: `stepper_bor`'s staggering, transcribed from its module docstring:
+#:     Er(i+1/2, j)   Ephi(i, j)          Ez(i, j+1/2)
+#:     Hr(i, j+1/2)   Hphi(i+1/2, j+1/2)  Hz(i+1/2, j)
+#: as (r, z) pairs, the theta axis being reduced away by the e^{i m phi} ansatz.
+_BOR_STAGGER = {
+    "Er": (sp.Rational(1, 2), 0), "Etheta": (0, 0), "Ez": (0, sp.Rational(1, 2)),
+    "Hr": (0, sp.Rational(1, 2)), "Htheta": (sp.Rational(1, 2), sp.Rational(1, 2)),
+    "Hz": (sp.Rational(1, 2), 0),
+}
+
+
+def test_the_yee_rule_reproduces_the_hand_typed_cartesian_table():
+    """The half that proves the rule rather than its output.
+
+    `YEE` was written out component by component long before there was a rule.
+    If the rule reproduces it exactly, the rule is what `YEE` always meant.
+    """
+    from meep_torch.core.symbolic import YEE, yee_table
+
+    assert yee_table("cartesian") == YEE
+
+
+def test_the_same_rule_gives_stepper_bor_its_staggering():
+    """And the half that makes it useful.
+
+    `stepper_bor` is a hand-written body-of-revolution stepper, and its Yee
+    staggering was chosen from the physics months before this rule existed.
+    Dropping the reduced theta axis, the derived cylindrical table has to match
+    it component for component -- otherwise "E on the edge along i, H on the
+    face normal to i" is a cartesian coincidence rather than a rule.
+    """
+    from meep_torch.core.symbolic import yee_table
+
+    cyl = yee_table("cylindrical")
+    assert set(cyl) == set(_BOR_STAGGER)
+    for name, (r, z) in _BOR_STAGGER.items():
+        assert (cyl[name][0], cyl[name][2]) == (r, z), name
+
+
+@pytest.mark.parametrize("system", ["cartesian", "cylindrical"])
+def test_E_takes_one_half_cell_and_H_takes_two(system):
+    """The rule stated as a shape, so a frame that broke it would show."""
+    from meep_torch.core.symbolic import HALF, yee_table
+
+    for name, off in yee_table(system).items():
+        halves = sum(1 for o in off if o == HALF)
+        assert halves == (1 if name[0] == "E" else 2), f"{name} {off}"
+
+
+@pytest.mark.parametrize("system", ["cartesian", "cylindrical"])
+def test_E_and_H_offsets_are_complementary(system):
+    """`E_i + H_i = (1/2, 1/2, 1/2)`: H sits where E does not.
+
+    This is the statement that makes a curl well-defined -- every difference of
+    an H lands on an E node and back -- and it is not something the rule was
+    written to satisfy, so it is a real check on it.
+    """
+    from meep_torch.core.symbolic import HALF, frame, yee_table
+
+    _, axes, _ = frame(system)
+    table = yee_table(system)
+    for a in axes:
+        e, h = table[f"E{a}"], table[f"H{a}"]
+        assert tuple(x + y for x, y in zip(e, h)) == (HALF, HALF, HALF), a

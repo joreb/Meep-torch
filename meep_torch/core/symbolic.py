@@ -85,6 +85,41 @@ YEE: dict[str, tuple] = {
     "Hz": (HALF, HALF, 0),
 }
 
+def yee_table(system: str = "cartesian") -> dict[str, tuple]:
+    """Yee offsets for a frame, from the rule rather than a second table.
+
+    One statement covers every orthogonal frame: **E_i sits on the edge ALONG
+    axis i, H_i on the face NORMAL to it**. So E gets a half-cell on its own
+    axis and nothing else; H gets a half-cell on the other two.
+
+    That is why `YEE` above is not a convention to be re-typed per coordinate
+    system. Generated for ``"cartesian"`` this reproduces `YEE` exactly, and
+    generated for ``"cylindrical"`` it reproduces the staggering
+    ``stepper_bor`` documents and allocates --
+
+        Er(i+1/2, j)   Ephi(i, j)          Ez(i, j+1/2)
+        Hr(i, j+1/2)   Hphi(i+1/2, j+1/2)  Hz(i+1/2, j)
+
+    -- which was written by hand, months earlier, from the physics. Both are
+    asserted in `tests/analytic/test_symbolic_curl.py`; the cartesian half is
+    the one that proves the rule rather than the rule's output.
+
+    Component names take the frame's own axis names, so cylindrical gives
+    ``Etheta``/``Htheta`` where `stepper_bor` writes ``Ephi``. Same component,
+    and the name here follows `frame()` rather than the stepper.
+    """
+    _, axes, _ = frame(system)
+    out: dict[str, tuple] = {}
+    for i, a in enumerate(axes):
+        e = [0, 0, 0]
+        e[i] = HALF                      # on the edge along its own axis
+        h = [HALF, HALF, HALF]
+        h[i] = 0                         # on the face normal to it
+        out[f"E{a}"] = tuple(e)
+        out[f"H{a}"] = tuple(h)
+    return out
+
+
 E_COMPONENTS = ("Ex", "Ey", "Ez")
 H_COMPONENTS = ("Hx", "Hy", "Hz")
 COMPONENTS = E_COMPONENTS + H_COMPONENTS
@@ -492,6 +527,46 @@ def discrete_curl(vec, target: str, h, sym, system: str = "cartesian",
 _DIFF_CACHE: dict[tuple, object] = {}
 
 
+def curl_terms(target: str, system: str = "cartesian") -> tuple:
+    """Which curl terms drive ``target``, as ``((source, axis, sign), ...)``.
+
+    Every stepper writes this out by hand -- ``stepper_tm``'s D phase pairs
+    ``+dHy/dx`` with ``-dHx/dy``, ``stepper_3d`` repeats the pattern six times
+    under a cyclic rule, and each one is a place to get a sign or an axis
+    wrong. It is not a choice: it is the Jacobian of :func:`maxwell_rhs` with
+    respect to each field symbol, and the coefficient that comes back is
+    exactly ``sign * D[axis]``.
+
+    The DIRECTION of each difference is not here, because it is already
+    derivable elsewhere: :func:`compiled_difference` fixes which neighbour is
+    the +1 sample from the Yee offsets of ``field`` and ``target``. So a
+    stepper needs (source, axis, sign) from this and nothing else to assemble
+    a curl.
+
+    ``eps`` is divided out of the E rows so the result is the bare curl; the
+    constitutive division is the stepper's business and lives in
+    :mod:`meep_torch.core.kernels`.
+    """
+    rhs, F = maxwell_rhs(system)
+    expr = sp.expand(rhs[target] * (EPS if target in E_COMPONENTS else 1))
+    out = []
+    for src in COMPONENTS:
+        coeff = sp.simplify(sp.diff(expr, F[src]))
+        if coeff == 0:
+            continue
+        for axis in AXES:
+            ratio = sp.simplify(coeff / D[axis])
+            if ratio.is_number:
+                out.append((src, axis, int(ratio)))
+                break
+        else:                                    # pragma: no cover - guard
+            raise ValueError(
+                f"curl term for {target} <- {src} is {coeff}, not a signed "
+                "single derivative; a metric factor would land here (see "
+                "frame('cylindrical'))")
+    return tuple(out)
+
+
 def compiled_difference(field: str, axis: str, target: str):
     """``f(centre, neighbour, h)`` in torch for the derived difference.
 
@@ -573,7 +648,30 @@ PSI_NEW, STRETCHED = _compile_pml()
 WALL, PERIODIC, FOLD = "wall", "periodic", "fold"
 
 
-def field_shape(component: str, extents, boundaries, origin=None) -> tuple:
+def _projected_offsets(component: str, n: int, system: str, axes):
+    """``component``'s Yee offsets along the axes a block actually carries.
+
+    A 2D cartesian block carries the frame's first two axes, so positional
+    indexing works. A body of revolution does NOT: it reduces THETA, the
+    middle axis, and carries ``(r, z)`` -- frame indices 0 and 2. Naming the
+    axes is the only way to say that, which is why this takes them rather than
+    slicing the offset tuple.
+    """
+    _, frame_axes, _ = frame(system)
+    axes = tuple(axes) if axes is not None else frame_axes[:n]
+    if len(axes) != n:
+        raise ValueError(f"{n} extents but {len(axes)} axes: {axes}")
+    table = yee_table(system)
+    if component not in table:
+        raise KeyError(
+            f"{component!r} is not a component of the {system} frame; "
+            f"have {sorted(table)}")
+    full = table[component]
+    return tuple(full[frame_axes.index(a)] for a in axes)
+
+
+def field_shape(component: str, extents, boundaries, origin=None,
+                system: str = "cartesian", axes=None) -> tuple:
     """Shape of ``component`` on a grid of ``extents`` with these boundaries.
 
     A half-offset component is short by one along an axis IFF that axis has a
@@ -600,10 +698,15 @@ def field_shape(component: str, extents, boundaries, origin=None) -> tuple:
     only so the rule can still express one (tests/analytic/test_allocator.py).
 
     The offsets are taken mod 1, so a half shift swaps integer and half nodes.
+
+    ``system`` and ``axes`` name the frame and which of its axes the extents
+    carry. The rule itself is frame-independent -- it is about walls and half
+    offsets, not about x and y -- so the cylindrical table predicts
+    ``stepper_bor``'s six allocations exactly (tests/analytic/test_allocator.py).
     """
     if len(extents) != len(boundaries):
         raise ValueError(f"{len(extents)} extents, {len(boundaries)} boundaries")
-    off = YEE[component]
+    off = _projected_offsets(component, len(extents), system, axes)
     if origin is not None:
         off = tuple((o + d) % 1 for o, d in zip(off, origin))
     return tuple(n - 1 if (off[a] == HALF and bc in (WALL, FOLD)) else n
@@ -617,7 +720,8 @@ LATTICE_YEE = (0, 0, 0)
 LATTICE_DUAL = (HALF, HALF, 0)
 
 
-def psi_extent(target: str, extents, boundaries, origin=None) -> tuple:
+def psi_extent(target: str, extents, boundaries, origin=None,
+               system: str = "cartesian", axes=None) -> tuple:
     """Shape of a CPML memory array for the field updating ``target``.
 
     A psi lives on its target's grid with the rows the stepper never writes
@@ -647,8 +751,9 @@ def psi_extent(target: str, extents, boundaries, origin=None) -> tuple:
     difference. Under PEC, PERIODIC and FOLD the two coincide, because H is
     short by one on an E-integer axis and differencing costs the second row.
     """
-    shape = field_shape(target, extents, boundaries, origin=origin)
-    off = YEE[target]
+    shape = field_shape(target, extents, boundaries, origin=origin,
+                        system=system, axes=axes)
+    off = _projected_offsets(target, len(extents), system, axes)
     if origin is not None:
         off = tuple((o + d) % 1 for o, d in zip(off, origin))
     # An axis with two PEC walls loses both rows; a FOLD has replaced one of
