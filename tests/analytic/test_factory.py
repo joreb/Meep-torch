@@ -27,7 +27,7 @@ from meep_torch.core.factory import curl_recipe, make_curl
 from meep_torch.core.grid import Grid
 from meep_torch.core.kernels import CN_UPDATE
 from meep_torch.core.stepper_tm import init_tm_state, step_db
-from meep_torch.core.symbolic import WALL
+from meep_torch.core.symbolic import FOLD, WALL
 
 NX, NY = 24, 20
 
@@ -154,3 +154,76 @@ def test_a_curl_with_no_live_terms_is_refused():
     """A 1D block removes both of Ez's sources; building half a curl would run."""
     with pytest.raises(ValueError, match="no live curl terms"):
         curl_recipe("Hx", (NX,), (WALL,), ndim=1)
+
+
+# ---------------------------------------------------------------------------
+# Folds. A symmetry cut replaces ONE of the two walls, so the trim goes
+# asymmetric and the differenced axis gains a row at the cut.
+# ---------------------------------------------------------------------------
+
+_FOLDS = [
+    ("y_odd",   dict(y_mirror=-1), (WALL, FOLD), (0, 1, 1, 1), False),
+    ("y_even",  dict(y_mirror=+1), (WALL, FOLD), (0, 1, 1, 1), False),
+    ("x_odd",   dict(x_mirror=-1), (FOLD, WALL), (1, 1, 0, 1), False),
+    ("x_even",  dict(x_mirror=+1), (FOLD, WALL), (1, 1, 0, 1), False),
+    ("y_rot2",  dict(y_rot2=1),    (WALL, FOLD), (0, 1, 1, 1), True),
+    ("rot4",    dict(rot4=1),      (FOLD, FOLD), (0, 1, 0, 1), True),
+]
+
+
+def _ghosts(st, kw, bnd):
+    """The cut-plane row each folded axis needs, as stepper_tm builds it.
+
+    Even mirror: H is zero beyond the cut, so a zero row. Odd mirror, C2, C4:
+    the plane node is LIVE and carried separately as Hx0/Hy0. Constructing it
+    is symmetry algebra and deliberately stays outside the factory -- see
+    `make_curl`. This mirrors it only to drive the comparison.
+    """
+    out = {}
+    if bnd[1] is FOLD:
+        out["Hx"] = (F.pad(st.Hx, (1, 0)) if kw.get("y_mirror") == 1
+                     else torch.cat([st.Hx0[:, None], st.Hx], dim=1))
+    if bnd[0] is FOLD:
+        out["Hy"] = (F.pad(st.Hy, (0, 0, 1, 0)) if kw.get("x_mirror") == 1
+                     else torch.cat([st.Hy0[None, :], st.Hy], dim=0))
+    return out
+
+
+@pytest.mark.parametrize("label,kw,bnd,pad,square", _FOLDS,
+                         ids=[c[0] for c in _FOLDS])
+def test_the_built_curl_is_bitwise_under_a_fold(label, kw, bnd, pad, square):
+    n = (24, 24) if square else (NX, NY)          # rot4 needs a square grid
+    g = Grid(nx=n[0], ny=n[1], dx=0.05)
+    m = build_tm_coeffs(g, npml=6, **kw)
+    st = init_tm_state(g, **kw)
+    torch.manual_seed(0)
+    st = type(st)._make([(torch.randn_like(v) if torch.is_tensor(v) else v)
+                         for v in st])
+    ref = step_db(st, m, "D")
+
+    curl, psis = make_curl("Ez", n, bnd, ndim=2)(
+        st, m, m.dx, fields=_ghosts(st, kw, bnd))
+    assert torch.equal(st.Dz + m.dt * F.pad(curl, pad), ref.Dz)
+    for k, v in psis.items():
+        assert torch.equal(v, getattr(ref, k)), k
+
+
+def test_a_fold_trims_one_end_and_a_wall_trims_two():
+    """The rule a cut changes, stated as slices rather than as a shape.
+
+    Two walls remove a row at each end; a cut replaces one of them and leaves
+    that end live. Getting this symmetric would be silent -- the shapes still
+    broadcast, the fields just come from the wrong rows.
+    """
+    walled, _ = curl_recipe("Ez", (NX, NY), (WALL, WALL), ndim=2)
+    folded, _ = curl_recipe("Ez", (NX, NY), (WALL, FOLD), ndim=2)
+    by_src = lambda ts: {t.source: t for t in ts}
+
+    # dHy/dx is trimmed on y, which is the axis whose boundary changed
+    assert by_src(walled)["Hy"].centre[1] == slice(1, -1)
+    assert by_src(folded)["Hy"].centre[1] == slice(None, -1)
+    # dHx/dy is differenced along the folded axis, so it needs the cut row
+    assert by_src(walled)["Hx"].ghost == ""
+    assert by_src(folded)["Hx"].ghost == "y"
+    # and the untouched axis keeps its symmetric trim
+    assert by_src(folded)["Hx"].centre[0] == slice(1, -1)

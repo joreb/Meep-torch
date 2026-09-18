@@ -41,7 +41,7 @@ from typing import NamedTuple
 import torch
 
 from .kernels import PSI_NEW, STRETCHED
-from .symbolic import (AXES, compiled_curl_composition,
+from .symbolic import (AXES, FOLD, compiled_curl_composition,
                        compiled_difference, curl_terms, field_shape,
                        psi_extent, stencil_offsets, yee_table)
 
@@ -58,6 +58,8 @@ class CurlTerm(NamedTuple):
     neighbour: tuple             # slice for the other sample
     psi: str                     # state field holding this term's CPML memory
     coeff: str                   # coefficient suffix, e.g. "ex" -> m.b_ex
+    ghost: str                   # axis needing a cut-plane row before the
+                                 # difference, or "" -- see make_curl
 
 
 def _family(component: str) -> str:
@@ -94,7 +96,9 @@ def curl_recipe(target: str, extents, boundaries, ndim: int = None) -> tuple:
                 # the differenced axis: the difference itself removes the row,
                 # and `stencil_offsets` has already fixed which one
                 lo[b], hi[b] = slice(None, -1), slice(1, None)
-                have = src_shape[b] - 1
+                # a fold hands the difference an extra row at the cut, so the
+                # source is one longer there than its own allocation
+                have = src_shape[b] - 1 + (1 if boundaries[b] is FOLD else 0)
             else:
                 have = src_shape[b]
             trim = have - want[b]
@@ -105,16 +109,21 @@ def curl_recipe(target: str, extents, boundaries, ndim: int = None) -> tuple:
                         f"{have}, psi extent wants {want[b]}")
                 continue
             if trim:
-                # trim to the target's own extent. Symmetric because the two
-                # ends are the same kind of boundary; an odd trim would mean
-                # they are not, and that is a fold, which this does not do yet.
-                if trim % 2:
-                    raise ValueError(
-                        f"d{source}/d{axis} at {target}: axis {AXES[b]} needs "
-                        f"an odd trim of {trim}; a fold cuts one end only and "
-                        "is not supported here")
-                k = trim // 2
-                lo[b] = hi[b] = slice(k, -k)
+                if boundaries[b] is FOLD:
+                    # A cut replaces ONE of the two walls, so the trim is
+                    # asymmetric: the cut end stays live and the far wall is
+                    # trimmed. Every fold in this package sits at the LOW end
+                    # (`y_mirror_lo`, `y_rot2_lo`, `rot4_lo`), which is what
+                    # lets the far end be the high one.
+                    lo[b] = hi[b] = slice(None, -trim)
+                else:
+                    # symmetric: both ends are the same kind of boundary
+                    if trim % 2:
+                        raise ValueError(
+                            f"d{source}/d{axis} at {target}: axis {AXES[b]} "
+                            f"needs an odd trim of {trim} without a fold")
+                    k = trim // 2
+                    lo[b] = hi[b] = slice(k, -k)
         # WHICH slice is the field's own node is not a choice either.
         # `compiled_difference` takes (centre, neighbour) where centre is the
         # sample at relative index 0, and `stencil_offsets` says where that
@@ -131,6 +140,7 @@ def curl_recipe(target: str, extents, boundaries, ndim: int = None) -> tuple:
             source=source, axis=axis, sign=sign,
             diff=compiled_difference(source, axis, target),
             centre=tuple(c_sl), neighbour=tuple(n_sl),
+            ghost=(axis if boundaries[a] is FOLD else ""),
             psi=f"psi_{source}{axis}",
             coeff=f"{_family(target)}{axis}",
         ))
@@ -151,8 +161,8 @@ def make_curl(target: str, extents, boundaries, ndim: int = None):
     """
     terms, want = curl_recipe(target, extents, boundaries, ndim=ndim)
 
-    def _one(state, coeffs, dx, t, psis):
-        f = getattr(state, t.source)
+    def _one(state, coeffs, dx, t, psis, fields):
+        f = fields[t.source] if fields and t.source in fields else getattr(state, t.source)
         d = t.diff(f[t.centre], f[t.neighbour], dx)
         p = PSI_NEW(d, getattr(state, t.psi),
                     getattr(coeffs, f"b_{t.coeff}"),
@@ -168,9 +178,9 @@ def make_curl(target: str, extents, boundaries, ndim: int = None):
         (t,) = terms
         sign = t.sign
 
-        def curl(state, coeffs, dx):
+        def curl(state, coeffs, dx, fields=None):
             psis = {}
-            d, p, k = _one(state, coeffs, dx, t, psis)
+            d, p, k = _one(state, coeffs, dx, t, psis, fields)
             out = STRETCHED(d, p, k)
             return (out if sign > 0 else -out), psis
     else:
@@ -178,10 +188,10 @@ def make_curl(target: str, extents, boundaries, ndim: int = None):
         (t_pos,), (t_neg,) = ([t for t in terms if t.sign > 0],
                               [t for t in terms if t.sign < 0])
 
-        def curl(state, coeffs, dx):
+        def curl(state, coeffs, dx, fields=None):
             psis = {}
-            dp, pp, kp = _one(state, coeffs, dx, t_pos, psis)
-            dn, pn, kn = _one(state, coeffs, dx, t_neg, psis)
+            dp, pp, kp = _one(state, coeffs, dx, t_pos, psis, fields)
+            dn, pn, kn = _one(state, coeffs, dx, t_neg, psis, fields)
             # meep's association, emitted by the derivation: the positive term
             # is stretched and the negative one enters as (d/k) and psi apart.
             return compose(STRETCHED(dp, pp, kp), dn, kn, pn), psis
