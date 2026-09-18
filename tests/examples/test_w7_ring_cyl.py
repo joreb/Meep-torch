@@ -56,3 +56,48 @@ def test_ring_cyl_m3():
 
 def test_ring_cyl_m4():
     _gate(4, "m4")
+
+
+def test_the_azimuthal_coupling_carries_the_sign_of_m():
+    """`dBr/dt = -(i m / r) Ez`, including the sign, which the oracle cannot see.
+
+    WHY THIS EXISTS. `test_ring_cyl_m3`/`m4` gate resonance frequency and Q
+    against a meep oracle, and both are INVARIANT under `m -> -m`: those are
+    the two counter-propagating members of a degenerate pair. Flipping the sign
+    of the `i m / r` coupling leaves them passing -- verified by injecting
+    exactly that defect. meep's own examples share the blind spot, because they
+    report the same invariant observables, so no oracle closes it.
+
+    Energy has to circulate the way `m` says. A travelling wave is awkward to
+    set up here (a REAL drive gives `Re(F e^{i m phi}) = F cos(m phi)`, a
+    standing wave in phi that carries no net azimuthal flux -- measured as
+    identically zero), so this probes the coupling itself: seed a known Ez,
+    take one step, and read the Hr it induces. The value is predicted by the
+    equation in the module docstring, not measured from a run.
+    """
+    import torch
+    from meep_torch.core.stepper_cyl import (build_cyl_coeffs, init_cyl_state,
+                                             step_cyl)
+
+    nr, dr, ir = 60, 1.0 / 20, 30
+    r = ir * dr
+
+    def induced(m):
+        c = build_cyl_coeffs(nr, dr, m, eps=1.0, n_absorber=0)
+        st = init_cyl_state(nr)
+        ez = torch.zeros(nr, dtype=torch.complex128)
+        ez[ir] = 1.0
+        st = st._replace(Ez=ez, Dz=ez.clone())
+        return complex(step_cyl(st, c, 0.0, None).Hr[ir]), c.dt
+
+    for m in (1, 3):
+        got, dt = induced(m)
+        want = -1j * m * dt / r                      # -(i m / r) Ez * dt
+        assert abs(got - want) < 1e-12, f"m={m}: {got} vs {want}"
+        neg, _ = induced(-m)
+        assert abs(neg + want) < 1e-12, f"m={-m} did not flip the sign"
+
+    # linear in m, so a coupling that dropped or squared it is caught too
+    one, _ = induced(1)
+    three, _ = induced(3)
+    assert abs(three - 3 * one) < 1e-12

@@ -70,3 +70,40 @@ def test_kz_fresnel_p_cpml_grazing():
         assert abs(R - R_an) <= 0.02, (
             f"CPML {deg} deg R={R:.4f} vs Fresnel p {R_an:.4f} "
             f"(d={abs(R - R_an):.4f})")
+
+
+def test_the_kz_coupling_carries_the_sign_of_kz():
+    """`dDx/dt = -i k_z Hy`, including the sign, which Fresnel cannot see.
+
+    WHY THIS EXISTS. The two tests above gate |R| against analytic Fresnel,
+    including near grazing -- a real gate, and blind to this. `k_z -> -k_z` is
+    the opposite propagation direction and |R| is invariant under it, so
+    flipping the sign of the `i k_z` coupling leaves both passing; verified by
+    injecting exactly that defect.
+
+    Seed a known Hy, take one step, read the Ex it induces, and compare with
+    the equation in the module docstring rather than with a recorded number.
+    """
+    import torch
+    from meep_torch.core.stepper_kz import (build_kz_coeffs, init_kz_state,
+                                            step_kz)
+
+    nx, dx, ix = 60, 1.0 / 20, 30
+
+    def induced(kz):
+        c = build_kz_coeffs(nx, dx, kz, eps=None, n_abs=0)
+        st = init_kz_state(nx)
+        hy = torch.zeros(nx - 1, dtype=torch.complex128)
+        hy[ix] = 1.0
+        return complex(step_kz(st._replace(Hy=hy), c, 0.0, None).Ex[ix]), c.dt
+
+    for kz in (0.5, 2.0):
+        got, dt = induced(kz)
+        want = -1j * kz * dt                         # -i k_z Hy * dt, eps = 1
+        assert abs(got - want) < 1e-12, f"kz={kz}: {got} vs {want}"
+        neg, _ = induced(-kz)
+        assert abs(neg + want) < 1e-12, f"kz={-kz} did not flip the sign"
+
+    half, _ = induced(0.5)
+    two, _ = induced(2.0)
+    assert abs(two - 4 * half) < 1e-12, "not linear in k_z"
