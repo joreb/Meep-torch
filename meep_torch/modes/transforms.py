@@ -50,6 +50,17 @@ def bend_dwdz(Nx: int, Ny: int, dx: float, radius: float, center_x: float) -> np
     i = np.arange(Nx)
     x_cc = (i + 0.5) * dx
     u = radius + (x_cc - center_x)
+    if not np.all(u > 0):
+        # u <= 0 means the cross-section reaches the bend AXIS or past it, which
+        # has no arc length and therefore no bend mode. Deriving the scale factor
+        # from a column norm gives R/|u|, and taking that Abs would let the
+        # solver run on the degenerate geometry and return modes of a medium with
+        # eps_xx < 0. Refusing is the honest option; the typed R/u silently
+        # flipped sign here.
+        worst = float(np.max(np.abs(x_cc - center_x)))
+        raise ValueError(
+            f"bend radius {radius} reaches the bend axis: the cross-section "
+            f"extends {worst} from the bend centre, so radius must exceed that")
     dwdz = radius / u
     return np.broadcast_to(dwdz[:, None], (Nx, Ny)).copy()
 
