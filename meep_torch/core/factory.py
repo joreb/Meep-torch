@@ -362,24 +362,34 @@ def _pad_spec(spec, target):
 def make_step(spec: BlockSpec):
     """Compose meep's phase order around :func:`make_curl`.
 
-    ``step(state, coeffs, dx, src_amp=0.0, src_mask=None, fields=None)``.
+    ``step(state, coeffs, dx, currents=None, fields=None)``, where ``currents``
+    maps a component name to ``(amplitude, mask)``.
 
-    The order is meep's `fields::step`, and it is NOT an implementation detail:
-    ``step_db(B) -> update_eh(H) -> step_db(D) -> step_source -> update_pols
-    -> update_eh(E)``. H is advanced from the OLD E and E from the NEW H, which
-    is the leapfrog; running the phases in any other order changes the answer
+    THE CYCLE IS TWO HALVES and the order is not an implementation detail. The
+    B half advances H from the current E; the D half advances D from the
+    current H and then solves E. H from the OLD E and E from the NEW H is the
+    leapfrog, and running the phases in any other order changes the answer
     while still converging, which is the worst kind of wrong.
 
-    Everything conventional comes off the spec: `damping_names` for the CN
-    coefficient pair and `pole_name` for where a component's polarisation sum
-    lives. Both were TM constants hard-typed here, and both are wrong for TE --
-    `Px_cur`/`Py_cur` rather than one shared `P_cur`, which no TM gate can see.
+    WHICH HALF STARTS is the ninth BlockSpec gap and is not derivable.
+    ``stepper_tm`` enters at B; ``stepper_te`` enters at D, and says why: the
+    TM-TE duality (``Hz <-> Ez``, ``(Ex, Ey) <-> (-Hx, -Hy)``) staggers Hz on
+    integer steps, so entering at D is what keeps TE's discrete Hz update graph
+    isomorphic to TM's Ez graph and every TE monitor convention intact. A
+    rotation of the same cycle, and it changes which fields are old at each
+    phase -- so it changes the bits.
 
-    Scope: no poles beyond the sum, no Kerr, no magnetic poles yet. Those are
-    `kernels.ADE_POLE` and the fixed point, and they are composition rather
-    than derivation -- see the task page. Source injection hits every E
-    component with the same mask, which is the FOURTH BlockSpec gap and holds
-    only while one E component exists; TE is where it breaks.
+    Everything else conventional comes off the spec too, each one a gap that
+    was a TM constant hard-typed here until a second polarisation arrived:
+    ``damping_names`` for the CN pair, ``pole_name`` for the polarisation sum,
+    ``eps_name`` for the permittivity at each E node, and ``driven`` for which
+    components a current may be injected into -- TE drives ``Dy`` ALONE and
+    puts a magnetic current into ``Hz``.
+
+    Scope: no ADE poles and no Kerr. The polarisation sum is read, so a block
+    with ``n_poles = 0`` is exact, and one with poles needs ``update_pols``
+    between the source and the E solve -- `kernels.ADE_POLE`, composition
+    rather than derivation.
     """
     components = spec.components
     h_comps = [c for c in components if c[0] == "H"]
@@ -388,6 +398,13 @@ def make_step(spec: BlockSpec):
     pads = {c: _pad_spec(spec, c) for c in components}
     damp = {c: spec.damping_names(c) for c in components}
     poles = {c: spec.pole_name(c) for c in e_comps}
+    eps_of = {c: spec.eps_name(c) for c in e_comps}
+    if spec.entry not in ("B", "D"):
+        raise ValueError(f"entry must be 'B' or 'D', got {spec.entry!r}")
+    unknown = [c for c in spec.sources if c not in components]
+    if unknown:
+        raise ValueError(
+            f"spec.sources names {unknown}, which this block does not carry")
 
     def _advance(state, coeffs, dx, name, base, upd, fields):
         rhs, psis = curls[name](state, coeffs, dx, fields=fields)
@@ -404,36 +421,59 @@ def make_step(spec: BlockSpec):
         c1, c2 = (getattr(coeffs, n) for n in names)
         return base + coeffs.dt * padded if c1 is None else c1 * base + c2 * padded
 
-    def step(state, coeffs, dx, src_amp=0.0, src_mask=None, fields=None):
-        upd = {}
-        # step_db(B): H from the OLD E
-        for name in h_comps:
-            upd[name] = _advance(state, coeffs, dx, name,
-                                 getattr(state, name), upd, fields)
-        mid = type(state)._make([upd.get(f, getattr(state, f))
-                                 for f in state._fields])
-        # step_db(D): D from the NEW H
-        for name in e_comps:
-            dname = "D" + name[1]
-            upd[dname] = _advance(mid, coeffs, dx, name,
-                                  getattr(mid, dname), upd, fields)
-        # step_source(D): the current is SUBTRACTED, and scaled by the damping
-        # pair's second coefficient under sigma_d exactly as the fused kernel
-        # does.
-        if src_mask is not None and src_amp:
-            for name in e_comps:
-                dname = "D" + name[1]
-                names = damp[name]
-                scale = None if names is None else getattr(coeffs, names[1])
-                scale = coeffs.dt if scale is None else scale
-                upd[dname] = upd[dname] - scale * src_amp * src_mask
-        # update_eh(E)
-        for name in e_comps:
-            upd[name] = EH_FROM_D(upd["D" + name[1]],
-                                  getattr(mid, poles[name]).sum(0),
-                                  coeffs.eps_inf)
+    def _snapshot(state, upd):
         return type(state)._make([upd.get(f, getattr(state, f))
                                   for f in state._fields])
 
+    def _b_half(state, coeffs, dx, upd, currents, fields):
+        """step_db(B) then step_source(B): H from the current E."""
+        for name in h_comps:
+            upd[name] = _advance(state, coeffs, dx, name,
+                                 getattr(state, name), upd, fields)
+        for name in h_comps:
+            drive = currents.get(name)
+            if drive and spec.driven(name):
+                amp, mask = drive
+                # the magnetic current takes plain dt -- sigma_b lives in the
+                # CN pair that already ran, not in the injection
+                upd[name] = upd[name] - coeffs.dt * amp * mask
+
+    def _d_half(state, coeffs, dx, upd, currents, fields):
+        """step_db(D), step_source(D), update_eh(E): D from the current H."""
+        for name in e_comps:
+            dname = "D" + name[1]
+            upd[dname] = _advance(state, coeffs, dx, name,
+                                  getattr(state, dname), upd, fields)
+        for name in e_comps:
+            drive = currents.get(name)
+            if drive and spec.driven(name):
+                amp, mask = drive
+                dname = "D" + name[1]
+                # the current is SUBTRACTED, and scaled by the damping pair's
+                # second coefficient under sigma_d exactly as the fused kernel
+                # does
+                names = damp[name]
+                scale = None if names is None else getattr(coeffs, names[1])
+                scale = coeffs.dt if scale is None else scale
+                upd[dname] = upd[dname] - scale * amp * mask
+        for name in e_comps:
+            upd[name] = EH_FROM_D(upd["D" + name[1]],
+                                  getattr(state, poles[name]).sum(0),
+                                  getattr(coeffs, eps_of[name]))
+
+    halves = ((_d_half, _b_half) if spec.entry == "D" else (_b_half, _d_half))
+
+    def step(state, coeffs, dx, currents=None, fields=None):
+        currents = currents or {}
+        unknown = [c for c in currents if c not in components]
+        if unknown:
+            raise ValueError(f"currents name {unknown}, not in this block")
+        upd = {}
+        first, second = halves
+        first(state, coeffs, dx, upd, currents, fields)
+        second(_snapshot(state, upd), coeffs, dx, upd, currents, fields)
+        return _snapshot(state, upd)
+
     step.curls = curls
+    step.entry = spec.entry
     return step

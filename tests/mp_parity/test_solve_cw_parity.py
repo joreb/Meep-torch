@@ -35,7 +35,10 @@ def _sim(force_complex=True, symmetries=None, src_x=-2.0):
 # BiCGSTAB(2)'s residual floor just the wrong side of 1e-10. The derived form is
 # now the ORACLE rather than the executable -- an expression tree cannot carry
 # an association, so it cannot be the thing that runs -- and the stepper is
-# bitwise with meep again, which restores the tolerance with it.
+# bitwise with STEPPER_TM again, which restores the tolerance with it. Not with
+# meep: meep's curl is a flat four-term sum scaled once by the Courant number
+# and it carries no CPML at all, so the association this is about is ours. See
+# symbolic.compiled_curl_composition.
 CW_TOL = 1e-10
 
 

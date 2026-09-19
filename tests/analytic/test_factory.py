@@ -39,6 +39,9 @@ _TM = ("Ez", "Hx", "Hy")
 def _spec(n=(NX, NY), bnd=(WALL, WALL), **kw):
     from meep_torch.core.factory import TM_DAMPING
     kw.setdefault("damping", TM_DAMPING)
+    kw.setdefault("entry", "B")                       # TM enters at the B half
+    kw.setdefault("sources", ("Ez",))
+    kw.setdefault("constitutive", (("Ez", "eps_inf"),))
     return BlockSpec(_TM, n, bnd, **kw)
 
 _CASES = [("vacuum_pml", dict(npml=6)),
@@ -269,8 +272,7 @@ def test_a_composed_step_is_bitwise_with_step_tm(label, kw, amp):
     mask = torch.zeros(NX, NY, dtype=torch.float64)
     mask[12, 10] = 1.0
     ref = step_tm(st, m, amp, mask)
-    got = make_step(_spec())(
-        st, m, m.dx, src_amp=amp, src_mask=mask)
+    got = make_step(_spec())(st, m, m.dx, currents={"Ez": (amp, mask)})
 
     for f, a, b in zip(st._fields, got, ref):
         if torch.is_tensor(a):
@@ -493,10 +495,13 @@ def _te_seeded(**kw):
     return g, m, st
 
 
-def _te_spec():
-    return BlockSpec(_TE, (NX, NY), (WALL, WALL),
-                     damping=(("Ex", "d1x", "d2x"), ("Ey", "d1y", "d2y"),
+def _te_spec(**kw):
+    kw.setdefault("damping", (("Ex", "d1x", "d2x"), ("Ey", "d1y", "d2y"),
                               ("Hz", "hz1", "hz2")))
+    kw.setdefault("entry", "D")                  # TE enters at the D half
+    kw.setdefault("sources", ("Ey", "Hz"))       # Dy alone, plus magnetic Hz
+    kw.setdefault("constitutive", (("Ex", "eps_x"), ("Ey", "eps_y")))
+    return BlockSpec(_TE, (NX, NY), (WALL, WALL), **kw)
 
 
 @pytest.mark.parametrize("label,kw", _CASES, ids=[c[0] for c in _CASES])
@@ -572,3 +577,82 @@ def test_te_and_tm_share_every_derived_name():
     ey, = curl_recipe(_te_spec(), "Ey")[0]
     assert (ex.coeff, ex.psi) == ("ey", "psi_Hzy")
     assert (ey.coeff, ey.psi) == ("ex", "psi_Hzx")
+
+
+_TE_STEP = [("vacuum_pml", dict(npml=6), 0.7, 0.0),
+            ("sigma_d", dict(npml=6, sigma_d=0.3), 0.7, 0.0),
+            ("sigma_b", dict(npml=6, sigma_b=0.2), 0.7, 0.0),
+            ("both_sigmas", dict(npml=6, sigma_d=0.3, sigma_b=0.2), 0.7, 0.0),
+            ("no_pml", dict(npml=0), 0.7, 0.0),
+            ("magnetic_src", dict(npml=6), 0.0, 0.45),
+            ("both_srcs", dict(npml=6), 0.7, 0.45),
+            ("no_source", dict(npml=6), 0.0, 0.0)]
+
+
+@pytest.mark.parametrize("label,kw,amp,hamp", _TE_STEP,
+                         ids=[c[0] for c in _TE_STEP])
+def test_a_composed_te_step_is_bitwise_with_step_te(label, kw, amp, hamp):
+    """The whole TE step, in TE's own phase order.
+
+    Three gaps close here at once and each was a TM constant until now: TE
+    enters meep's cycle at the D HALF (TM enters at B), it injects the electric
+    current into `Dy` ALONE, and it puts a MAGNETIC current into Hz -- which
+    `make_step` had no concept of. Plus `eps_x`/`eps_y` per component where TM
+    has one `eps_inf`.
+    """
+    from meep_torch.core.factory import make_step
+    from meep_torch.core.stepper_te import step_te
+
+    _, m, st = _te_seeded(**kw)
+    ey_mask = torch.zeros(NX, NY - 1, dtype=torch.float64)
+    ey_mask[12, 10] = 1.0
+    hz_mask = torch.zeros(NX - 1, NY - 1, dtype=torch.float64)
+    hz_mask[11, 9] = 1.0
+
+    ref = step_te(st, m, amp, ey_mask if amp else None,
+                  src_h_amp=hamp, src_hz_mask=hz_mask if hamp else None)
+    got = make_step(_te_spec())(st, m, m.dx, currents={
+        "Ey": (amp, ey_mask), "Hz": (hamp, hz_mask)})
+
+    for f, a, b in zip(st._fields, got, ref):
+        if torch.is_tensor(a):
+            assert torch.equal(a, b), f
+
+
+def test_the_entry_half_is_a_spec_field_and_it_changes_the_answer():
+    """TM enters at B, TE at D. A rotation of one cycle, and not derivable.
+
+    It decides which fields are old at each phase, so it decides the bits. The
+    check that it is load-bearing: run TE's own spec from the wrong half and
+    the result must differ -- otherwise this state cannot tell the two apart
+    and the gate is vacuous.
+    """
+    from meep_torch.core.factory import make_step
+
+    _, m, st = _te_seeded(npml=6)
+    right = make_step(_te_spec())(st, m, m.dx)
+    wrong = make_step(_te_spec(entry="B"))(st, m, m.dx)
+    assert not torch.equal(right.Hz, wrong.Hz)
+    with pytest.raises(ValueError, match="entry must be"):
+        make_step(_te_spec(entry="E"))
+
+
+def test_a_source_only_drives_the_components_the_spec_declares():
+    """TE injects into Dy ALONE; driving every E component is a TM assumption.
+
+    `stepper_te` has one electric source target and it is Ey. A builder that
+    fanned the same mask across Ex and Ey would be wrong for TE and invisible
+    to every TM gate, since TM has exactly one E component.
+    """
+    from meep_torch.core.factory import make_step
+
+    _, m, st = _te_seeded(npml=6)
+    mask_x = torch.ones(NX - 1, NY, dtype=torch.float64)
+    step = make_step(_te_spec())
+
+    # Ex is not a declared source, so a current aimed at it does nothing
+    assert torch.equal(step(st, m, m.dx, currents={"Ex": (1.0, mask_x)}).Ex,
+                       step(st, m, m.dx).Ex)
+    # and a component this block does not carry raises rather than passing
+    with pytest.raises(ValueError, match="not in this block"):
+        step(st, m, m.dx, currents={"Ez": (1.0, mask_x)})

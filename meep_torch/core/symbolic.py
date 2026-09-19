@@ -27,9 +27,19 @@ Forward-vs-backward is then a consequence of the two offsets:
 **The PML split.** ``d/du -> (1/s_u) d/du`` with
 ``s_u = k_u + sigma_u/(a_u + i w)`` separates into an unstretched part scaled
 by ``1/k_u`` plus a recursive-convolution memory. The closed forms of ``b`` and
-``a`` are NOT derived here: they come from the caller's coefficient table, so
-the steppers keep meep's own discrete PML coefficients and stay comparable with
-meep bit for bit rather than approximately.
+``a`` are NOT derived here: they come from the caller's coefficient table.
+
+That table is NOT meep's, and this docstring used to say it was. This engine
+runs CFS-CPML (Roden-Gedney): ``psi' = b psi + a d``, ``curl = d/k + psi'``.
+meep has no CPML at all -- ``grep -ril cpml`` over its source returns nothing,
+and there is no psi anywhere in its update path. Its PML is the
+stretched-coordinate auxiliary-field form, ``f = ((kap - sig) f - dtdx (...))
+* siginv`` with a second-stage ``fu`` for the second PML direction
+(``step_generic.cpp``). Two discretisations of the same continuum PML, so
+inside an absorber the two engines agree to the absorbers' discretisation
+error, not bit for bit -- and "bitwise with meep" there is not merely
+unachieved, it is undefined. If the sigma PROFILE was taken from meep's
+``pml.cpp`` that is a true and narrower statement; the recursion is ours.
 
 The compiled stencils are backend-agnostic despite the ``"torch"`` argument to
 ``lambdify``. These expressions are pure arithmetic, so sympy emits plain
@@ -482,9 +492,10 @@ def pml_split(diff_expr, psi, b, a, k):
         psi_new   = b*psi + a*(d/du)
         stretched = (d/du)/k + psi_new
 
-    ``b``, ``a`` and ``k`` are supplied by the caller rather than derived: they
-    are meep's own discrete PML coefficients, so the result matches meep's
-    recursion exactly instead of approximately.
+    ``b``, ``a`` and ``k`` are supplied by the caller rather than derived. They
+    are THIS ENGINE's CFS-CPML coefficients, not meep's -- meep carries no
+    ``b`` or ``a`` because it does not use a recursive convolution. See the
+    module docstring.
     """
     psi_new = b * psi + a * diff_expr
     return psi_new, diff_expr / k + psi_new
@@ -995,6 +1006,9 @@ class BlockSpec(NamedTuple):
     folds: tuple = ()
     damping: tuple = ()
     phases: tuple = ()
+    entry: str = "B"
+    sources: tuple = ()
+    constitutive: tuple = ()
 
     def shape(self, component: str) -> tuple:
         return field_shape(component, self.extents, self.boundaries,
@@ -1018,6 +1032,34 @@ class BlockSpec(NamedTuple):
             if entry[0] == component:
                 return tuple(entry[1:])
         return None
+
+    def eps_name(self, component: str) -> str:
+        """Which coefficient holds the permittivity at ``component``'s node.
+
+        A naming convention, like :meth:`damping_names`, and not derivable:
+        ``stepper_tm`` carries one ``eps_inf`` for its single E component while
+        ``stepper_te`` carries ``eps_x`` and ``eps_y``, one per component at
+        that component's own Yee node. Raises rather than defaulting -- a
+        block whose E components are not declared here cannot be stepped, and
+        guessing ``eps_inf`` would silently divide TE's Ey by TM's array.
+        """
+        for entry in self.constitutive:
+            if entry[0] == component:
+                return entry[1]
+        raise ValueError(
+            f"{component}: no permittivity coefficient declared in "
+            f"spec.constitutive (have {[e[0] for e in self.constitutive]})")
+
+    def driven(self, component: str) -> bool:
+        """Whether ``component`` may carry an injected current.
+
+        The FOURTH gap, as data. ``stepper_te`` injects the electric current
+        into ``Dy`` ALONE and a magnetic TFSF current into ``Hz``; a builder
+        that drove every E component with the same mask would be wrong for it
+        in a way no TM gate can see. Declaring the targets also makes a
+        misspelled component name raise instead of injecting nothing.
+        """
+        return component in self.sources
 
     def pole_name(self, component: str) -> str:
         """Where ``component``'s polarisation sum lives in the state.
@@ -1130,10 +1172,32 @@ def compiled_curl_composition(n_terms: int = 2):
         (d0/k0 + psi0) - d1/k1 - psi1        for two terms
 
     The first term keeps its psi as a stretched unit; the rest contribute their
-    difference and their psi separately. That grouping is meep's and is the one
-    irreducibly conventional thing here -- but it is now stated ONCE, as a term
-    list handed to :func:`ordered_sum`, instead of once per stepper as a line
-    of arithmetic that nothing checks.
+    difference and their psi separately.
+
+    THE GROUPING IS OURS, NOT MEEP'S, and this docstring claimed otherwise for
+    a long time. meep's curl is one flat four-term sum scaled once
+    (``step_generic.cpp``):
+
+        f[i] -= dtdx * (g1[i+s1] - g1[i] + g2[i] - g2[i+s2])
+
+    where ``dtdx`` is the Courant number as a single constant. It never divides
+    a difference by ``dx``, never divides by ``kappa`` per difference, and never
+    adds a psi, because it has no CPML. So the association preserved here is
+    ``stepper_tm``'s convention, and the only thing it has ever been bitwise
+    against is ``stepper_tm``.
+
+    That claim is still worth having; it is just a different claim. This
+    project has TWO parity properties and they should not be conflated:
+
+    * parity with pymeep is a TOLERANCE property, measured in
+      ``tests/mp_parity`` with ``assert_allclose``. It was never in doubt.
+    * bitwise agreement between the derived kernels and the hand-written
+      steppers is an ASSOCIATION property, and it is what the whole-curl saga
+      was about -- the canonical ``Add`` was a different float sequence from
+      ``stepper_tm``'s, not from meep's.
+
+    Still the one irreducibly conventional thing here, and still better stated
+    ONCE as a term list than once per stepper as arithmetic nothing checks.
 
     Returns ``f(stretched_0, d_1, k_1, psi_1, ...)``: the caller computes the
     differences and psi recursions (they are state) and passes them in.
