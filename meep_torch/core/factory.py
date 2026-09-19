@@ -42,8 +42,11 @@ import torch
 
 from .kernels import EH_FROM_D, PSI_NEW, STRETCHED
 from .symbolic import (AXES, FOLD, BlockSpec, compiled_curl_composition,
-                       compiled_difference, curl_terms, field_shape,
-                       psi_extent, stencil_offsets, yee_table)
+                       compiled_difference, compiled_phase_factor, curl_terms,
+                       field_shape, psi_extent, stencil_offsets, yee_table)
+
+#: ``f, k -> i k f``, derived once. See :func:`compiled_phase_factor`.
+PHASE = compiled_phase_factor()
 
 __all__ = ["CurlTerm", "curl_recipe", "make_curl", "make_step", "TM_DAMPING"]
 
@@ -60,6 +63,11 @@ class CurlTerm(NamedTuple):
     coeff: str                   # coefficient suffix, e.g. "ex" -> m.b_ex
     ghost: str                   # axis needing a cut-plane row before the
                                  # difference, or "" -- see make_curl
+    phase: str = ""              # coefficient holding this axis's wavenumber
+                                 # when the axis is PHASED rather than
+                                 # differenced; "" for an ordinary term. A
+                                 # phased term has no diff, no psi and no
+                                 # CPML -- see BlockSpec.phases.
 
 
 def _family(component: str) -> str:
@@ -71,6 +79,35 @@ def _family(component: str) -> str:
     rewritten per stepper.
     """
     return component[0].lower()
+
+
+def _phased_term(spec, target, source, axis, sign, coeff, want, ndim):
+    """A curl term on an axis the block carries as a phase rather than a grid.
+
+    There is no difference, so there is no neighbour, no CPML memory and no
+    stretch -- the whole term is ``sign * i k * source`` at the source's own
+    nodes. What DOES survive is the trim: the value still has to land on the
+    target's psi extent, and a phased source that does not already sit there is
+    a staggering error rather than something to pad around.
+    """
+    src_shape = field_shape(source, spec.extents, spec.boundaries,
+                            origin=spec.origin)
+    sl = [slice(None)] * ndim
+    for b in range(ndim):
+        trim = src_shape[b] - want[b]
+        if not trim:
+            continue
+        if spec.boundaries[b] is FOLD:
+            sl[b] = slice(None, -trim)
+        elif trim % 2:
+            raise ValueError(
+                f"i*{coeff}*{source} at {target}: axis {AXES[b]} needs an odd "
+                f"trim of {trim} without a fold")
+        else:
+            sl[b] = slice(trim // 2, -(trim // 2))
+    return CurlTerm(source=source, axis=axis, sign=sign, diff=None,
+                    centre=tuple(sl), neighbour=tuple(sl), psi="", coeff="",
+                    ghost="", phase=coeff)
 
 
 def curl_recipe(spec: BlockSpec, target: str) -> tuple:
@@ -90,11 +127,32 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
     """
     extents, boundaries = spec.extents, spec.boundaries
     ndim = len(extents)
+    phases = dict(spec.phases)
+    on_grid = [a for a in phases if AXES.index(a) < ndim]
+    if on_grid:
+        # A phase only applies to an axis the block does NOT carry. Naming an
+        # axis that is on the grid would be silently ignored -- it gets
+        # differenced, the phase never fires, and the run converges on the
+        # wrong physics. Same shape of lie as a misspelled damping name.
+        raise ValueError(
+            f"{target}: phases name {on_grid}, which this block carries as "
+            f"grid axes ({AXES[:ndim]}); an axis is differenced or phased, "
+            "never both")
     want = psi_extent(target, extents, boundaries, origin=spec.origin)
     out = []
     for source, axis, sign in curl_terms(target):
         a = AXES.index(axis)
-        if a >= ndim:                       # reduced away, e.g. z in a 2D block
+        if a >= ndim:
+            # The axis is not on this block. WHICH WAY it left decides whether
+            # the term goes with it: a 2D reduction assumes nothing varies
+            # along it, so the derivative is zero; a phased reduction assumes
+            # `e^{i k q}`, so the derivative survives as `i k f` with no
+            # difference to attach to. Silently dropping the second kind is the
+            # eighth BlockSpec gap.
+            if axis not in phases:
+                continue
+            out.append(_phased_term(spec, target, source, axis, sign,
+                                    phases[axis], want, ndim))
             continue
         src_shape = field_shape(source, extents, boundaries,
                                 origin=spec.origin)
@@ -158,6 +216,14 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
             "is differenced along an axis the reduction removed")
     if len(out) > 2:
         raise ValueError(f"{target} has {len(out)} curl terms, expected 1 or 2")
+    if len([t for t in out if t.phase]) > 1:
+        # Two phased terms would need a composition that does not exist here --
+        # `make_curl`'s mixed branch unpacks exactly one of each. No cartesian
+        # block reaches it: a curl component has two terms on two DIFFERENT
+        # axes, so both being phased means a block with no grid axes left.
+        raise ValueError(
+            f"{target} has two phased terms, which would leave the block with "
+            "no differenced axis at all")
     return tuple(out), want
 
 
@@ -178,7 +244,39 @@ def make_curl(spec: BlockSpec, target: str):
         psis[t.psi] = p
         return d, p, getattr(coeffs, f"k_{t.coeff}")
 
-    if len(terms) == 1:
+    def _phase(state, coeffs, t, fields):
+        f = fields[t.source] if fields and t.source in fields else getattr(state, t.source)
+        return PHASE(f[t.centre], getattr(coeffs, t.phase))
+
+    phased = [t for t in terms if t.phase]
+    if phased and len(terms) == 1:
+        # The whole curl is a phase: `stepper_kz`'s Ex sees only -i k_z Hy,
+        # since its other driver is differenced along the axis the block does
+        # not carry. No difference, no psi, nothing to stretch.
+        (t,) = terms
+        sign = t.sign
+
+        def curl(state, coeffs, dx, fields=None):
+            v = _phase(state, coeffs, t, fields)
+            return (v if sign > 0 else -v), {}
+    elif phased:
+        # One phased, one differenced -- `stepper_kz`'s Hy. Only the
+        # x-derivative is PML-stretched (z is the propagation axis and k_z is
+        # fixed), so the phased term joins the stretched one as a plain add.
+        # The two terms commute exactly in IEEE, so the hand-written
+        # `-i k_z Ex + ce_x` and this `ce_x -+ i k_z Ex` are the same bits;
+        # association, not order, is what parity depends on.
+        (t_p,), (t_d,) = phased, [t for t in terms if not t.phase]
+
+        def curl(state, coeffs, dx, fields=None):
+            psis = {}
+            d, p, k = _one(state, coeffs, dx, t_d, psis, fields)
+            out = STRETCHED(d, p, k)
+            if t_d.sign < 0:
+                out = -out
+            v = _phase(state, coeffs, t_p, fields)
+            return (out + v if t_p.sign > 0 else out - v), psis
+    elif len(terms) == 1:
         # A reduced block's H phase: one term, so there is no association to
         # preserve and no composition to derive. `dF/dt = sign * stretched`,
         # and a caller writing `F - dt*stretched` gets the same floats as

@@ -567,6 +567,31 @@ def curl_terms(target: str, system: str = "cartesian") -> tuple:
     return tuple(out)
 
 
+def compiled_phase_factor():
+    """The Fourier symbol of a derivative along a PHASED axis: ``f -> i k f``.
+
+    A block can lose an axis two different ways, and the difference is the
+    EIGHTH BlockSpec gap. The 2D reductions lose it by assuming nothing varies
+    along it, so every derivative along that axis is zero and its curl terms
+    genuinely vanish. ``stepper_kz`` and ``stepper_bor`` lose it by assuming a
+    known variation instead -- ``f(x) e^{i k_z z}``, ``f(r, z) e^{i m phi}`` --
+    so the derivative SURVIVES with no difference to attach to.
+
+    Derived rather than typed, and the derivation is the one line that says
+    which of the two a block is doing:
+
+        d/dq [ f e^{i k q} ] / e^{i k q}  =  i k f
+
+    Returns ``g(f, k)``. Cartesian only: ``stepper_bor``'s ``d/dphi`` picks up
+    the metric factor ``1/r`` on top of this, which needs the cylindrical Yee
+    table the factory does not have yet.
+    """
+    f, k, q = sp.symbols("f k q")
+    carrier = sp.exp(sp.I * k * q)
+    return sp.lambdify((f, k), sp.simplify(sp.diff(f * carrier, q) / carrier),
+                       "torch")
+
+
 def compiled_difference(field: str, axis: str, target: str):
     """``f(centre, neighbour, h)`` in torch for the derived difference.
 
@@ -842,14 +867,16 @@ class BlockSpec(NamedTuple):
     targets, metric coefficients at staggered nodes for cylindrical, and
     non-field state such as the multilevel populations.
 
-    A further one, found while the factory dropped its ``ndim`` argument: THE
-    REDUCTION RULE. ``len(extents)`` says how many axes the block has, and the
-    factory drops every curl term differenced along an axis beyond that. For
-    the 2D reductions that is right -- ``d/dz = 0``. For ``stepper_kz`` it is
-    wrong: the z derivative becomes ``i k_z f``, a term that survives without a
-    difference to attach to, and for ``stepper_bor`` ``d/dphi`` becomes
-    ``i m f``. Those two blocks reduce a dimension by PHASING it, not by
-    deleting it, and nothing in this spec distinguishes the two.
+    ``phases`` is THE REDUCTION RULE, which was the eighth gap. ``len(extents)``
+    says how many axes the block has, and a curl term differenced along an axis
+    beyond that is dropped -- right for the 2D reductions, where nothing varies
+    along the lost axis and ``d/dz = 0``. ``stepper_kz`` and ``stepper_bor``
+    lose their axis by assuming a KNOWN variation instead, so the derivative
+    survives as ``i k f`` with no difference to attach to. An entry
+    ``(axis, name)`` says that axis is phased and ``coeffs.<name>`` carries its
+    wavenumber; an axis absent from ``phases`` is dropped. Cartesian only:
+    ``stepper_bor``'s ``d/dphi`` also picks up ``1/r``, which needs the
+    cylindrical Yee table.
 
     ``folds`` is ``((axis, phase), ...)``; an axis carrying a fold should also
     be marked ``FOLD`` in ``boundaries``, since a cut ends the kept half the
@@ -864,6 +891,7 @@ class BlockSpec(NamedTuple):
     n_mpoles: int = 0
     folds: tuple = ()
     damping: tuple = ()
+    phases: tuple = ()
 
     def shape(self, component: str) -> tuple:
         return field_shape(component, self.extents, self.boundaries,

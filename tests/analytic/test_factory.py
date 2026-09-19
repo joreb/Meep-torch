@@ -18,6 +18,8 @@ Bitwise and not merely close: the composition is meep's association, and this
 is exactly the property that a canonical `Add` sort would break at 1e-14 while
 every tolerance-based check still passed.
 """
+from typing import NamedTuple
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -345,3 +347,127 @@ def test_the_allocator_and_the_curl_name_the_same_psi_arrays():
     _, m, st = _seeded(npml=6)
     for name, shape in spec.psi_shapes().items():
         assert getattr(st, name).shape == torch.Size(shape), name
+
+
+# ---------------------------------------------------------------------------
+# The reduction rule: an axis a block drops, against one it carries as a phase.
+# ---------------------------------------------------------------------------
+
+_KZ = ("Ex", "Ez", "Hy")
+
+
+class _KzShim(NamedTuple):
+    """`stepper_kz`'s state under the factory's own names.
+
+    The names are the gap, not the physics: kz calls its CPML memory `psi_dEz`
+    and `psi_dHy` while the factory derives `psi_Ezx` and `psi_Hyx` from
+    (source, axis). Renaming eleven steppers to suit a builder is the tail
+    wagging the dog, so the shim carries the translation and the gate stays
+    about the REDUCTION RULE.
+    """
+    Ex: torch.Tensor
+    Ez: torch.Tensor
+    Hy: torch.Tensor
+    psi_Ezx: torch.Tensor
+    psi_Hyx: torch.Tensor
+
+
+class _KzCoeffShim(NamedTuple):
+    dt: float
+    kz: float
+    b_hx: torch.Tensor
+    a_hx: torch.Tensor
+    k_hx: torch.Tensor
+    b_ex: torch.Tensor
+    a_ex: torch.Tensor
+    k_ex: torch.Tensor
+
+
+def _kz_seeded(nx=24, npml=6):
+    from meep_torch.core.stepper_kz import build_kz_coeffs, init_kz_state
+
+    c = build_kz_coeffs(nx=nx, dx=0.05, eps=1.0, kz=0.8, npml=npml)
+    st = init_kz_state(nx, npml=npml)
+    torch.manual_seed(0)
+    rand = lambda v: torch.randn_like(v.real) + 1j * torch.randn_like(v.real)
+    st = type(st)._make([(rand(v) if torch.is_tensor(v) else v) for v in st])
+    bH, aH, kH, bE, aE, kE = c.cpml
+    shim = _KzShim(st.Ex, st.Ez, st.Hy, st.psi_dEz, st.psi_dHy)
+    cs = _KzCoeffShim(dt=c.dt, kz=c.kz, b_hx=bH, a_hx=aH, k_hx=kH,
+                      b_ex=bE, a_ex=aE, k_ex=kE)
+    return c, st, shim, cs
+
+
+def _kz_spec(nx=24):
+    return BlockSpec(_KZ, (nx,), (WALL,), phases=(("z", "kz"),))
+
+
+def test_a_phased_axis_survives_the_reduction_bitwise():
+    """`stepper_kz` carries z as `e^{i k_z z}`, so d/dz is `i k_z`, not zero.
+
+    Three components, each a different shape of the same rule: Hy mixes a
+    phased term with a PML-stretched difference, Ex is phased ALONE (its other
+    driver is differenced along the missing axis and really does vanish), and
+    Ez has no phased term at all. If all three are bitwise then the factory
+    tells the two kinds of reduction apart.
+    """
+    from meep_torch.core.factory import make_curl
+    from meep_torch.core.stepper_kz import step_kz
+
+    c, st, shim, cs = _kz_seeded()
+    ref = step_kz(st, c)
+    spec = _kz_spec()
+
+    # Hy: one phased term (-i k_z Ex) and one stretched difference (dEz/dx)
+    curl, psis = make_curl(spec, "Hy")(shim, cs, c.dx)
+    assert torch.equal(c.h1 * st.Hy + c.h2 * curl, ref.Hy)
+    assert torch.equal(psis["psi_Ezx"], ref.psi_dEz)
+
+    # Ex: phased alone, from the NEW Hy, and no CPML memory at all
+    mid = shim._replace(Hy=ref.Hy)
+    curl, psis = make_curl(spec, "Ex")(mid, cs, c.dx)
+    assert psis == {}
+    assert torch.equal((c.dx1 * st.Ex * c.eps_x + c.dx2 * curl) / c.eps_x,
+                       ref.Ex)
+
+    # Ez: the dHx/dy term is differenced along the DROPPED axis and vanishes
+    curl, psis = make_curl(spec, "Ez")(mid, cs, c.dx)
+    assert torch.equal((c.de1 * st.Ez * c.eps_z
+                        + c.de2 * F.pad(curl, (1, 1))) / c.eps_z, ref.Ez)
+    assert torch.equal(psis["psi_Hyx"], ref.psi_dHy)
+
+
+def test_dropping_and_phasing_are_different_answers():
+    """The gap was real: without the rule the phased term is silently gone.
+
+    A block that omits `phases` still builds, still runs and still converges --
+    it is solving `k_z = 0` instead. That is the failure the eighth gap named,
+    and it has no symptom other than the answer.
+    """
+    from meep_torch.core.factory import curl_recipe, make_curl
+
+    _, _, shim, cs = _kz_seeded()
+    dropped = BlockSpec(_KZ, (24,), (WALL,))
+
+    assert len(curl_recipe(_kz_spec(), "Hy")[0]) == 2
+    assert len(curl_recipe(dropped, "Hy")[0]) == 1        # the phase is gone
+    assert not torch.equal(make_curl(_kz_spec(), "Hy")(shim, cs, 0.05)[0],
+                           make_curl(dropped, "Hy")(shim, cs, 0.05)[0])
+
+    # and Ex loses its ONLY term, which at least raises rather than running
+    with pytest.raises(ValueError, match="no live curl terms"):
+        curl_recipe(dropped, "Ex")
+
+
+def test_an_axis_is_differenced_or_phased_but_never_both():
+    """A phase on an axis the block CARRIES would be silently ignored.
+
+    `a >= ndim` is false for such an axis, so it is differenced and the phase
+    never fires: the spec says one thing, the step does another, and the run
+    converges on whichever physics the grid happened to give. That is the same
+    lie a misspelled damping name used to tell.
+    """
+    from meep_torch.core.factory import curl_recipe
+
+    with pytest.raises(ValueError, match="never both"):
+        curl_recipe(BlockSpec(_KZ, (24,), (WALL,), phases=(("x", "kz"),)), "Hy")
