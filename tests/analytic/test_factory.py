@@ -471,3 +471,104 @@ def test_an_axis_is_differenced_or_phased_but_never_both():
 
     with pytest.raises(ValueError, match="never both"):
         curl_recipe(BlockSpec(_KZ, (24,), (WALL,), phases=(("x", "kz"),)), "Hy")
+
+
+# ---------------------------------------------------------------------------
+# TE through the same factory: the genericity claim, tested rather than argued.
+# ---------------------------------------------------------------------------
+
+_TE = ("Hz", "Ex", "Ey")
+
+
+def _te_seeded(**kw):
+    from meep_torch.core.coeffs import build_te_coeffs
+    from meep_torch.core.stepper_te import init_te_state
+
+    g = Grid(nx=NX, ny=NY, dx=0.05)
+    m = build_te_coeffs(g, **kw)
+    st = init_te_state(g)
+    torch.manual_seed(0)
+    st = type(st)._make([(torch.randn_like(v) if torch.is_tensor(v) else v)
+                         for v in st])
+    return g, m, st
+
+
+def _te_spec():
+    return BlockSpec(_TE, (NX, NY), (WALL, WALL),
+                     damping=(("Ex", "d1x", "d2x"), ("Ey", "d1y", "d2y"),
+                              ("Hz", "hz1", "hz2")))
+
+
+@pytest.mark.parametrize("label,kw", _CASES, ids=[c[0] for c in _CASES])
+def test_the_built_curl_is_bitwise_with_stepper_te(label, kw):
+    """A different polarisation, a different lattice, the same factory.
+
+    TM and TE are the two blocks of one 6x6 system, but they are NOT the same
+    discrete problem: TE's Hz sits on the dual lattice at `(nx-1, ny-1)`, its
+    psi arrays are named for different sources, and its coefficients are
+    `b_ey`/`b_ex` where TM reads `b_ex`/`b_ey`. Nothing in `curl_recipe` was
+    changed for any of that -- the names come out of `_family(target) + axis`
+    and the shapes out of `psi_extent`, which is the claim.
+    """
+    from meep_torch.core.stepper_te import step_db
+
+    _, m, st = _te_seeded(**kw)
+    spec = _te_spec()
+    refD, refB = step_db(st, m, "D"), step_db(st, m, "B")
+
+    for tgt, ref, base, pad, fld, damp in (
+            ("Ex", refD, st.Dx, (1, 1), "Dx", ("d1x", "d2x")),
+            ("Ey", refD, st.Dy, (0, 0, 1, 1), "Dy", ("d1y", "d2y")),
+            ("Hz", refB, st.Hz, (0, 0, 0, 0), "Hz", ("hz1", "hz2"))):
+        curl, psis = make_curl(spec, tgt)(st, m, m.dx)
+        padded = F.pad(curl, pad)
+        c1, c2 = (getattr(m, n) for n in damp)
+        got = CN_UPDATE(base, padded, c1, c2) if c1 is not None \
+            else base + m.dt * padded
+        assert torch.equal(got, getattr(ref, fld)), tgt
+        for k, v in psis.items():
+            assert torch.equal(v, getattr(ref, k)), (tgt, k)
+
+
+def test_the_curl_is_composed_in_the_curls_own_sign_order():
+    """Which term is stretched first comes from the CURL, not the rhs.
+
+    `curl_terms` folds the minus of `dB/dt = -curl E` into its signs; meep does
+    not -- it composes `curl_z = dEy/dx - dEx/dy` and applies the minus at the
+    field update. Same four numbers, different grouping, and grouping is what
+    bitwise parity is. Ordering an H target by the rhs sign was measured one
+    ulp out (8.882e-16 on TE's Hz) with both psi arrays already exact, which is
+    the failure this ordering exists to prevent.
+    """
+    from meep_torch.core.symbolic import curl_signs, curl_terms, family_sign
+
+    spec = _te_spec()
+    terms, _ = curl_recipe(spec, "Hz")
+    by_src = {t.source: t for t in terms}
+
+    # the rhs and the curl disagree on BOTH terms, by exactly the family sign
+    assert family_sign("Hz") == -1 and family_sign("Ez") == +1
+    for t in terms:
+        assert t.curl_sign == -t.sign, t.source
+    # and the stretched-first term is dEy/dx, which is what stepper_te composes
+    assert by_src["Ey"].curl_sign > 0 and by_src["Ex"].curl_sign < 0
+
+    # an E target has nothing to distinguish: rhs and curl agree
+    assert curl_signs("Ez") == curl_terms("Ez")
+
+
+def test_te_and_tm_share_every_derived_name():
+    """The coefficient and psi names are derived, and TE is the proof.
+
+    TM reads `b_ex` for the Ez update differenced along x; TE reads `b_ex` for
+    the Ey update differenced along x. Same rule -- family of the TARGET, letter
+    of the DIFFERENCE AXIS -- and it was written against TM alone.
+    """
+    te = {t.source: t for t in curl_recipe(_te_spec(), "Hz")[0]}
+    assert (te["Ex"].coeff, te["Ex"].psi) == ("hy", "psi_Exy")
+    assert (te["Ey"].coeff, te["Ey"].psi) == ("hx", "psi_Eyx")
+
+    ex, = curl_recipe(_te_spec(), "Ex")[0]
+    ey, = curl_recipe(_te_spec(), "Ey")[0]
+    assert (ex.coeff, ex.psi) == ("ey", "psi_Hzy")
+    assert (ey.coeff, ey.psi) == ("ex", "psi_Hzx")

@@ -42,8 +42,9 @@ import torch
 
 from .kernels import EH_FROM_D, PSI_NEW, STRETCHED
 from .symbolic import (AXES, FOLD, BlockSpec, compiled_curl_composition,
-                       compiled_difference, compiled_phase_factor, curl_terms,
-                       field_shape, psi_extent, stencil_offsets, yee_table)
+                       compiled_difference, compiled_phase_factor, curl_signs,
+                       curl_terms, family_sign, field_shape, psi_extent,
+                       stencil_offsets, yee_table)
 
 #: ``f, k -> i k f``, derived once. See :func:`compiled_phase_factor`.
 PHASE = compiled_phase_factor()
@@ -55,7 +56,8 @@ class CurlTerm(NamedTuple):
     """One difference of a curl, fully resolved at build time."""
     source: str                  # component being differenced
     axis: str                    # axis it is differenced along
-    sign: int                    # +1 or -1, from curl_terms
+    sign: int                    # +1 or -1, from curl_terms: the RHS sign,
+                                 # which is what a one-term update applies
     diff: object                 # compiled_difference(source, axis, target)
     centre: tuple                # slice for the field's OWN node (k = 0)
     neighbour: tuple             # slice for the other sample
@@ -63,6 +65,13 @@ class CurlTerm(NamedTuple):
     coeff: str                   # coefficient suffix, e.g. "ex" -> m.b_ex
     ghost: str                   # axis needing a cut-plane row before the
                                  # difference, or "" -- see make_curl
+    curl_sign: int = 0           # the INTRINSIC curl's sign for this term,
+                                 # from curl_signs. Differs from `sign` by the
+                                 # family sign on an H target, and it is the
+                                 # one that fixes WHICH term is stretched first
+                                 # -- meep composes the curl and negates at the
+                                 # update, so ordering by `sign` there is one
+                                 # ulp out. See make_curl.
     phase: str = ""              # coefficient holding this axis's wavenumber
                                  # when the axis is PHASED rather than
                                  # differenced; "" for an ordinary term. A
@@ -106,8 +115,8 @@ def _phased_term(spec, target, source, axis, sign, coeff, want, ndim):
         else:
             sl[b] = slice(trim // 2, -(trim // 2))
     return CurlTerm(source=source, axis=axis, sign=sign, diff=None,
-                    centre=tuple(sl), neighbour=tuple(sl), psi="", coeff="",
-                    ghost="", phase=coeff)
+                    curl_sign=sign, centre=tuple(sl), neighbour=tuple(sl),
+                    psi="", coeff="", ghost="", phase=coeff)
 
 
 def curl_recipe(spec: BlockSpec, target: str) -> tuple:
@@ -128,6 +137,7 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
     extents, boundaries = spec.extents, spec.boundaries
     ndim = len(extents)
     phases = dict(spec.phases)
+    curl_of = {(src, ax): g for src, ax, g in curl_signs(target)}
     on_grid = [a for a in phases if AXES.index(a) < ndim]
     if on_grid:
         # A phase only applies to an axis the block does NOT carry. Naming an
@@ -204,6 +214,7 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
         c_sl, n_sl = ((hi, lo) if centre_is_upper else (lo, hi))
         out.append(CurlTerm(
             source=source, axis=axis, sign=sign,
+            curl_sign=curl_of[(source, axis)],
             diff=compiled_difference(source, axis, target),
             centre=tuple(c_sl), neighbour=tuple(n_sl),
             ghost=(axis if boundaries[a] is FOLD else ""),
@@ -291,16 +302,26 @@ def make_curl(spec: BlockSpec, target: str):
             return (out if sign > 0 else -out), psis
     else:
         compose = compiled_curl_composition(n_terms=2)
-        (t_pos,), (t_neg,) = ([t for t in terms if t.sign > 0],
-                              [t for t in terms if t.sign < 0])
+        # Ordered by the INTRINSIC CURL's sign, not the rhs's. meep composes
+        # the curl and applies the family minus at the field update -- for an H
+        # target those differ, and the difference is an association rather than
+        # an algebra: `stepper_te` builds `(dEy/dx/k + psi) - dEx/dy/k - psi`
+        # and negates it, while ordering by the rhs sign builds the same four
+        # numbers grouped the other way. Measured at 8.882e-16 on Hz before this
+        # was derived, with both psi arrays already bitwise.
+        (t_pos,), (t_neg,) = ([t for t in terms if t.curl_sign > 0],
+                              [t for t in terms if t.curl_sign < 0])
+        fam = family_sign(target)
 
         def curl(state, coeffs, dx, fields=None):
             psis = {}
             dp, pp, kp = _one(state, coeffs, dx, t_pos, psis, fields)
             dn, pn, kn = _one(state, coeffs, dx, t_neg, psis, fields)
-            # meep's association, emitted by the derivation: the positive term
-            # is stretched and the negative one enters as (d/k) and psi apart.
-            return compose(STRETCHED(dp, pp, kp), dn, kn, pn), psis
+            out = compose(STRETCHED(dp, pp, kp), dn, kn, pn)
+            # the family minus, applied AFTER the composition exactly where
+            # meep applies it. IEEE negation is exact, so `c1*F + c2*(-curl)`
+            # and `c1*F - c2*curl` are the same bits.
+            return (out if fam > 0 else -out), psis
 
     curl.terms = terms
     curl.shape = want

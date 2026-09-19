@@ -611,6 +611,65 @@ def curl_terms(target: str, system: str = "cartesian") -> tuple:
     return tuple(out)
 
 
+def curl_signs(target: str, system: str = "cartesian") -> tuple:
+    """The INTRINSIC curl's ``((source, axis, sign), ...)``, not the rhs's.
+
+    :func:`curl_terms` gives the signs of ``d(target)/dt``, which already fold
+    in the minus of ``dB/dt = -curl E``. meep does not: it composes the CURL
+    and applies that minus at the field update, so ``stepper_te`` builds
+    ``curl_z = dEy/dx - dEx/dy`` and then writes ``Hz = hz1 Hz - hz2 curl_z``.
+
+    Algebraically the two are the same. They are NOT the same association, and
+    association is what bitwise parity is. With ``a = dEy/dx/k``,
+    ``b = psi_Eyx``, ``c = dEx/dy/k``, ``d = psi_Exy``, meep computes
+    ``((a + b) - c) - d`` and negates it; composing the rhs directly gives
+    ``((c + d) - a) - b``, which is one ulp away and was measured at 8.882e-16
+    against `stepper_te`'s Hz.
+
+    So a builder needs BOTH: the rhs signs to know the physics, and the curl
+    signs to know the grouping. Derived here from :func:`curl` on the opposite
+    family rather than typed as a per-target table.
+    """
+    driving = E_COMPONENTS if target in H_COMPONENTS else H_COMPONENTS
+    F = {c: sp.Symbol(c) for c in COMPONENTS}
+    comps = curl(tuple(F[c] for c in driving), system)
+    axis_of = (H_COMPONENTS if target in H_COMPONENTS else E_COMPONENTS)
+    expr = sp.expand(comps[axis_of.index(target)])
+    out = []
+    for src in driving:
+        coeff = sp.simplify(sp.diff(expr, F[src]))
+        if coeff == 0:
+            continue
+        for axis in AXES:
+            ratio = sp.simplify(coeff / D[axis])
+            if ratio.is_number:
+                out.append((src, axis, int(ratio)))
+                break
+        else:                                    # pragma: no cover - guard
+            raise ValueError(
+                f"curl term for {target} <- {src} is {coeff}, not a signed "
+                "single derivative")
+    return tuple(out)
+
+
+def family_sign(target: str, system: str = "cartesian") -> int:
+    """``+1`` for an E target, ``-1`` for an H one -- the minus meep applies
+    at the field update rather than inside the curl.
+
+    Derived as the ratio of the rhs sign to the curl sign, and asserted CONSTANT
+    across the terms: if the two disagreed term by term there would be no single
+    sign to pull out and the composition could not be written this way at all.
+    """
+    rhs = {(s, a): g for s, a, g in curl_terms(target, system)}
+    ratios = {g * rhs[(s, a)] for s, a, g in curl_signs(target, system)
+              if (s, a) in rhs}
+    if len(ratios) != 1:
+        raise ValueError(
+            f"{target}: rhs and curl signs differ term by term ({ratios}), so "
+            "no single family sign can be factored out of the composition")
+    return ratios.pop()
+
+
 def compiled_phase_factor():
     """The Fourier symbol of a derivative along a PHASED axis: ``f -> i k f``.
 
