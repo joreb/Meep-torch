@@ -491,37 +491,51 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
 
 
 def _inject_src(state, c, src_amp, src, eps_x, eps_y, eps_z):
+    """meep's ``step_source``, in the three shapes this stepper accepts.
+
+    THE SIGN IS DERIVED, not chosen. ``symbolic.source_coefficient`` reads it
+    off Ampere's law -- ``dD/dt = curl H - J`` gives ``-1/eps`` -- and it is
+    meep's single ``f[c][i] -= real(A)`` in `fields_chunk::step_source`. Two of
+    these three branches used to ADD, which is a dipole radiating with the
+    opposite phase: it runs, it converges, and the only gate that can see it is
+    the LDOS, which comes out negative.
+
+    THE CELL MEASURE IS DERIVED TOO, from the source's extent. A current
+    density concentrated to zero extent along an axis carries one factor of
+    ``1/dx`` for that axis, so a point (three delta directions) carries
+    ``1/dx^3`` and an x-indexed plane (one) carries ``1/dx``. meep applies the
+    identical rule one factor at a time, ``data.amp *= gv.a`` per zero-extent
+    direction (`src/sources.cpp`), and `sources.LineSource` derives the 2D case
+    the same way. Without it the field a dipole produces moves with resolution.
+
+    The MASK form is left alone deliberately: an array cannot say which of its
+    axes the source is a delta in -- `test_w9_wave2` passes a z-slab of ones,
+    which is a plane, while another caller may pass a filled volume -- so the
+    measure stays with the caller who knows the extent.
+
+    The indexed forms write IN PLACE, which is safe for a reason that is worth
+    stating rather than rediscovering: both call sites hand this function a
+    `State3D` whose E components were just built by the update, so the tensor
+    being written is never the one the caller still holds. Cloning it would
+    cost a full-field allocation every step to guard a hazard the call sites
+    already rule out -- and `test_a_3d_step_does_not_mutate_its_input` is what
+    keeps that true.
+    """
     if src is None or src_amp == 0.0:
         return state
     comp = src[0]
+    eps = {"Ex": eps_x, "Ey": eps_y, "Ez": eps_z}[comp]
     if isinstance(src[1], torch.Tensor):           # area/plane soft source
-        mask = src[1]
-        if comp == "Ez":
-            Ez = state.Ez - c.dt * src_amp * mask / eps_z
-            return state._replace(Ez=Ez)
-        if comp == "Ex":
-            Ex = state.Ex - c.dt * src_amp * mask / eps_x
-            return state._replace(Ex=Ex)
-        Ey = state.Ey - c.dt * src_amp * mask / eps_y
-        return state._replace(Ey=Ey)
+        mask = src[1]                              # caller owns the measure
+        f = getattr(state, comp) - c.dt * src_amp * mask / eps
+        return state._replace(**{comp: f})
     if len(src) == 3:                              # plane-indexed (comp, ix,
-        ix, plane = src[1], src[2]                 # plane) -- lean-stepper
-        if comp == "Ez":                           # form, no full-volume mask
-            Ez = state.Ez.clone()
-            Ez[ix] = Ez[ix] + c.dt * src_amp * plane / eps_z[ix]
-            return state._replace(Ez=Ez)
-        if comp == "Ex":
-            Ex = state.Ex.clone()
-            Ex[ix] = Ex[ix] + c.dt * src_amp * plane / eps_x[ix]
-            return state._replace(Ex=Ex)
-        Ey = state.Ey.clone()
-        Ey[ix] = Ey[ix] + c.dt * src_amp * plane / eps_y[ix]
-        return state._replace(Ey=Ey)
-    i, j, k = src[1], src[2], src[3]               # soft point source
-    if comp == "Ez":
-        state.Ez[i, j, k] = state.Ez[i, j, k] + c.dt * src_amp / eps_z[i, j, k]
-    elif comp == "Ex":
-        state.Ex[i, j, k] = state.Ex[i, j, k] + c.dt * src_amp / eps_x[i, j, k]
-    else:
-        state.Ey[i, j, k] = state.Ey[i, j, k] + c.dt * src_amp / eps_y[i, j, k]
-    return state
+        ix, plane = src[1], src[2]                 # plane), delta in x only
+        f = getattr(state, comp)
+        f[ix] = f[ix] - c.dt * src_amp * plane / (c.dx * eps[ix])
+        return state._replace(**{comp: f})
+    i, j, k = src[1], src[2], src[3]               # soft point, delta in three
+    f = getattr(state, comp)                       # freshly built above, so
+    f[i, j, k] = (f[i, j, k]                       # writing it is not the
+                  - c.dt * src_amp / (c.dx ** 3 * eps[i, j, k]))
+    return state._replace(**{comp: f})

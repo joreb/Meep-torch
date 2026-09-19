@@ -439,26 +439,34 @@ def test_3d_psi_matches_psi_extent():
     assert got["psi_Hy_x"] == got["psi_Hx_y"]
 
 
-# Field sums after 30 steps, captured at 7df3716 -- BEFORE the E-update psi
-# arrays were trimmed to what step_3d writes. Hex floats, so the comparison is
-# exact rather than "close".
+# Field sums after 30 steps. Hex floats, so the comparison is exact rather
+# than "close". Originally captured at 7df3716, BEFORE the E-update psi arrays
+# were trimmed to what step_3d writes -- that is the property this gate exists
+# for and it has not moved.
+#
+# REBASELINED once, deliberately, when the point source was corrected: it had
+# been injecting with the wrong SIGN (meep subtracts, `dD/dt = curl H - J`) and
+# without its CELL MEASURE (a point is a delta in three directions, so `1/dx^3`).
+# Both show up here rather than hiding: every sum flipped sign and grew by
+# ~8000, which is `1/dx^3` at `dx = 0.05` to the digit. A pin that moves for a
+# reason you can read off the numbers is the pin working.
 _PSI3D_BITWISE = [
     ("plain", dict(nx=16, ny=15, nz=14),
-     {"Ex": "-0x1.f84a5eeb3be7ep-11", "Ey": "-0x1.4000000000000p-59",
-      "Ez": "-0x1.e75e62858fcaap-5", "Hx": "-0x1.0000000000000p-61",
-      "Hy": "0x1.4209c28a3f57dp-8", "Hz": "-0x1.0000000000000p-110"}),
+     {"Ex": "0x1.ec78a0b1b882cp+2", "Ey": "-0x1.0000000000000p-48",
+      "Ez": "0x1.dbf22c366e6bcp+8", "Hx": "-0x1.0000000000000p-46",
+      "Hy": "-0x1.3a7d87fb01dbep+5", "Hz": "-0x1.0000000000000p-97"}),
     ("pmc01", dict(nx=10, ny=10, nz=18, pmc=(0, 1)),
-     {"Ex": "-0x1.5000000000000p-59", "Ey": "-0x1.0000000000000p-62",
-      "Ez": "-0x1.6c84c29ae1af2p-4", "Hx": "-0x1.d000000000000p-57",
-      "Hy": "0x1.1000000000000p-57", "Hz": "0x1.f800000000000p-113"}),
+     {"Ex": "-0x1.b000000000000p-46", "Ey": "-0x1.8800000000000p-45",
+      "Ez": "0x1.63f9a60b4064ep+9", "Hx": "0x0.0p+0",
+      "Hy": "0x1.0000000000000p-46", "Hz": "-0x1.6000000000000p-103"}),
     ("poles", dict(nx=14, ny=13, nz=12, n_poles=1),
-     {"Ex": "-0x1.4bad14cc7d68cp-11", "Ey": "0x1.4000000000000p-62",
-      "Ez": "-0x1.0ceec9035202ep-6", "Hx": "0x1.0000000000000p-60",
-      "Hy": "-0x1.49f1737b521f5p-7", "Hz": "-0x1.2000000000000p-111"}),
+     {"Ex": "0x1.43e7064fb26f4p+2", "Ey": "0x1.8000000000000p-47",
+      "Ez": "0x1.06a1304d3e177p+7", "Hx": "0x1.0000000000000p-46",
+      "Hy": "0x1.4235cac66e32ap+6", "Hz": "0x1.4000000000000p-98"}),
     ("mixed", dict(nx=12, ny=12, nz=16, n_abs=4, absorber_axes=(2,)),
-     {"Ex": "-0x1.2441d2957125ap-10", "Ey": "-0x1.2441d29571258p-10",
-      "Ez": "0x1.9f87562e049e0p-8", "Hx": "0x1.cfb26dee73648p-7",
-      "Hy": "-0x1.cfb26dee73649p-7", "Hz": "-0x1.0209880000000p-112"}),
+     {"Ex": "0x1.1d6847a5f07d6p+3", "Ey": "0x1.1d6847a5f07dap+3",
+      "Ez": "-0x1.95ca2a28f0828p+5", "Hx": "-0x1.c4d43f5adcb02p+6",
+      "Hy": "0x1.c4d43f5adcb04p+6", "Hz": "0x1.1c343c8000000p-98"}),
 ]
 
 

@@ -222,18 +222,62 @@ def curl(vec, system: str = "cartesian"):
                  for b in C.base_vectors())
 
 
-def maxwell_rhs(system: str = "cartesian"):
-    """The six right-hand sides of ``dH/dt = -curl E``, ``dE/dt = curl H/eps``.
+#: The current driving each component: electric ``J`` for the E family,
+#: magnetic ``K`` for the H family. Named per component so
+#: :func:`source_coefficient` can differentiate with respect to one of them.
+CURRENT = {**{c: sp.Symbol("J" + c[1:]) for c in E_COMPONENTS},
+           **{c: sp.Symbol("K" + c[1:]) for c in H_COMPONENTS}}
 
-    Returns ``(rhs, F)`` where ``rhs`` maps component name -> expression and
-    ``F`` maps component name -> its symbol.
+
+def maxwell_rhs(system: str = "cartesian"):
+    """The six right-hand sides, WITH the currents.
+
+    ``dD/dt = curl H - J`` and ``dB/dt = -curl E - K``. The current term used
+    to be missing here and typed into every stepper instead, which is why the
+    injection sign was a per-file convention rather than a consequence: twelve
+    steppers wrote it out and `stepper_3d` wrote it the other way round in two
+    of its three branches, with nothing to contradict.
+
+    Returns ``(rhs, F)``. The currents are module-level symbols in
+    :data:`CURRENT` rather than a third return value, so every existing caller
+    keeps its two-tuple unpack. :func:`curl_terms` and :func:`system_matrix`
+    are unaffected by construction: both differentiate with respect to FIELD
+    symbols, and a current term is independent of those.
     """
     F = {c: sp.Symbol(c) for c in COMPONENTS}
     cE = curl((F["Ex"], F["Ey"], F["Ez"]), system)
     cH = curl((F["Hx"], F["Hy"], F["Hz"]), system)
-    rhs = {c: cH[i] / EPS for i, c in enumerate(E_COMPONENTS)}
-    rhs.update({c: -cE[i] for i, c in enumerate(H_COMPONENTS)})
+    rhs = {c: (cH[i] - CURRENT[c]) / EPS for i, c in enumerate(E_COMPONENTS)}
+    rhs.update({c: -cE[i] - CURRENT[c] for i, c in enumerate(H_COMPONENTS)})
     return rhs, F
+
+
+def source_coefficient(target: str, system: str = "cartesian"):
+    """How ``target``'s own current enters its update: ``d(target)/dt / dJ``.
+
+    ``-1/eps`` for an E component, ``-1`` for an H one. The MINUS is the whole
+    point -- it is meep's ``f -= A`` (``fields_chunk::step_source``), and it is
+    a consequence of Ampere's law rather than a convention someone chose. A
+    stepper that adds instead still runs and still converges; what it solves is
+    a dipole radiating with the opposite phase, which shows up as a NEGATIVE
+    LDOS and in almost nothing else.
+
+    The ``1/eps`` is the constitutive half: steppers that carry D apply it in
+    `update_eh` and inject into D, steppers that carry only E divide here.
+    """
+    rhs, _ = maxwell_rhs(system)
+    return sp.simplify(sp.diff(rhs[target], CURRENT[target]))
+
+
+def source_sign(target: str, system: str = "cartesian") -> int:
+    """The sign alone, as an int, for a gate to compare a stepper against."""
+    coeff = source_coefficient(target, system)
+    scaled = sp.simplify(coeff * (EPS if target in E_COMPONENTS else 1))
+    if not scaled.is_number:
+        raise ValueError(
+            f"{target}: source coefficient {coeff} is not a signed constant "
+            "once eps is divided out")
+    return int(scaled)
 
 
 def system_matrix(reduce_axes: tuple = ()):

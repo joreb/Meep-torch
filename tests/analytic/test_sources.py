@@ -48,3 +48,137 @@ def test_cw_ramp():
     p = CWRamp(fcen=0.5, t_ramp=10.0)
     assert abs(p.amplitude(5.0)) <= 0.5 + 1e-12          # still ramping
     assert p.amplitude(20.25) == math.sin(2 * math.pi * 0.5 * 20.25) * 1.0
+
+
+# ---------------------------------------------------------------------------
+# The injection sign is a consequence of Ampere's law, not a per-file choice.
+# ---------------------------------------------------------------------------
+
+def test_the_source_sign_is_derived_from_maxwell():
+    """`dD/dt = curl H - J`, so a current ENTERS NEGATIVE. meep's `f -= A`.
+
+    It used to live nowhere: `maxwell_rhs` had no current term, so twelve
+    steppers each typed the sign by hand and nothing could contradict a wrong
+    one. `stepper_3d` wrote it the other way round in two of its three
+    branches, and its own lean variant disagreed with it.
+    """
+    from meep_torch.core.symbolic import (COMPONENTS, EPS, source_coefficient,
+                                          source_sign)
+
+    for c in COMPONENTS:
+        assert source_sign(c) == -1, c
+    assert source_coefficient("Ez") == -1 / EPS      # the constitutive half
+    assert source_coefficient("Hz") == -1
+
+
+def _one_step_response(step, state, coeffs, comp, **kw):
+    """One step from rest with a POSITIVE amplitude; return the driven field."""
+    out = step(state, coeffs, 1.0, **kw)
+    return float(getattr(out, comp).flatten()[getattr(out, comp).abs().argmax()])
+
+
+def test_every_stepper_injects_with_the_derived_sign():
+    """Drive each stepper from rest and check which way the field moves.
+
+    A stepper that adds where it should subtract still runs and still
+    converges; it radiates with the opposite phase, and the only gate that sees
+    it is the LDOS. This is the gate that would have caught `stepper_3d`.
+    """
+    import torch
+
+    from meep_torch.core.coeffs import build_tm_coeffs
+    from meep_torch.core.grid import Grid
+    from meep_torch.core.stepper_3d import (build_3d_coeffs, init_3d_state,
+                                            step_3d)
+    from meep_torch.core.stepper_tm import init_tm_state, step_tm
+    from meep_torch.core.symbolic import source_sign
+
+    want = source_sign("Ez")                          # -1, derived above
+
+    # 2D TM, mask form
+    g = Grid(nx=24, ny=20, dx=0.05)
+    m = build_tm_coeffs(g, npml=4)
+    mask = torch.zeros(24, 20, dtype=torch.float64)
+    mask[12, 10] = 1.0
+    got = _one_step_response(step_tm, init_tm_state(g), m, "Ez", src_mask=mask)
+    assert got != 0.0 and (1 if got > 0 else -1) == want, ("TM", got)
+
+    # 3D, all three source forms
+    n = 12
+    c = build_3d_coeffs(n, n, n, 0.1, n_abs=2)
+    st = init_3d_state(n, n, n)
+    vol = torch.zeros_like(st.Ez)                  # Ez is (nx, ny, nz-1)
+    vol[n // 2, n // 2, n // 2] = 1.0
+    forms = {
+        "point": ("Ez", n // 2, n // 2, n // 2),
+        "plane": ("Ez", n // 2, torch.ones_like(st.Ez[n // 2])),
+        "mask": ("Ez", vol),
+    }
+    for name, src in forms.items():
+        got = _one_step_response(step_3d, st, c, "Ez", src=src)
+        assert got != 0.0, (name, "no response at all")
+        assert (1 if got > 0 else -1) == want, (name, got)
+
+
+def test_a_3d_step_does_not_mutate_its_input():
+    """`_inject_src` writes its indexed forms in place, and that has to stay safe.
+
+    It is safe today because both call sites build a fresh `State3D` from the
+    update before handing it over, so the tensor written is never the one the
+    caller holds. That is an invariant of the CALL SITES, not of the writing
+    code, which is exactly the kind of thing that stops being true quietly --
+    hand `_inject_src` the incoming state and every caller's array changes
+    underneath. Pinned here rather than defended with a per-step clone of a
+    full field.
+    """
+    from meep_torch.core.stepper_3d import (build_3d_coeffs, init_3d_state,
+                                            step_3d)
+
+    n, mid = 10, 5
+    c = build_3d_coeffs(n, n, n, 0.1, n_abs=2)
+    st = init_3d_state(n, n, n)
+    before = {f: getattr(st, f).clone() for f in st._fields
+              if hasattr(getattr(st, f), "clone")}
+    step_3d(st, c, 1.0, ("Ez", mid, mid, mid))
+    for f, v in before.items():
+        assert torch.equal(getattr(st, f), v), f
+
+
+def test_a_3d_point_dipole_is_resolution_independent():
+    """The `1/dx^3` measure, gated by the property it exists for.
+
+    A source is a current DENSITY, so a point dipole of a given amplitude has
+    to produce the same field at the same PHYSICAL distance whichever grid it
+    is on. Without the measure the amplitude carries a factor of `dx^3` and the
+    field moves with resolution -- the same defect
+    `source-normalization-extent` fixed in 2D, never applied to the 3D point
+    path.
+    """
+    import numpy as np
+
+    from meep_torch.core.sources import GaussianPulse
+    from meep_torch.core.stepper_3d import (build_3d_coeffs, init_3d_state,
+                                            step_3d)
+
+    def peak_at(res, size=2.4, offset=0.6):
+        n = int(round(size * res))
+        dx = 1.0 / res
+        c = build_3d_coeffs(n, n, n, dx, n_abs=max(2, res // 4))
+        st = init_3d_state(n, n, n)
+        pulse = GaussianPulse(1.0, 0.5)
+        mid = n // 2
+        probe = mid + int(round(offset * res))
+        n_steps = int(round(3.0 / c.dt))
+        peak = 0.0
+        for t in range(n_steps):
+            st = step_3d(st, c, pulse.amplitude((t + 0.5) * c.dt),
+                         ("Ez", mid, mid, mid))
+            peak = max(peak, abs(float(st.Ez[probe, mid, mid])))
+        return peak
+
+    lo, hi = peak_at(8), peak_at(16)
+    assert lo > 0 and hi > 0, (lo, hi)
+    ratio = hi / lo
+    # doubling the resolution must not move the field by anything like the
+    # factor of 8 a missing dx^3 would produce
+    assert 0.5 < ratio < 2.0, f"peak moved {ratio:.3f}x with resolution"
