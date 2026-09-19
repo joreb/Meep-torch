@@ -829,6 +829,8 @@ class BlockSpec(NamedTuple):
     One object instead of the arguments the four allocator rules take
     separately. It carries only what those rules consume -- adding fields for
     things nothing reads would make the spec look more complete than it is.
+    ``damping`` earned its place when ``core.factory.make_step`` started
+    reading it; ``sources`` has not, and is still a gap below.
 
     KNOWN GAPS, from surveying all thirteen ``init_*`` functions, none of them
     represented here because no rule uses them yet: the representation (real,
@@ -839,6 +841,15 @@ class BlockSpec(NamedTuple):
     why a vacuum-operator block decomposition over-splits), source injection
     targets, metric coefficients at staggered nodes for cylindrical, and
     non-field state such as the multilevel populations.
+
+    A further one, found while the factory dropped its ``ndim`` argument: THE
+    REDUCTION RULE. ``len(extents)`` says how many axes the block has, and the
+    factory drops every curl term differenced along an axis beyond that. For
+    the 2D reductions that is right -- ``d/dz = 0``. For ``stepper_kz`` it is
+    wrong: the z derivative becomes ``i k_z f``, a term that survives without a
+    difference to attach to, and for ``stepper_bor`` ``d/dphi`` becomes
+    ``i m f``. Those two blocks reduce a dimension by PHASING it, not by
+    deleting it, and nothing in this spec distinguishes the two.
 
     ``folds`` is ``((axis, phase), ...)``; an axis carrying a fold should also
     be marked ``FOLD`` in ``boundaries``, since a cut ends the kept half the
@@ -852,10 +863,40 @@ class BlockSpec(NamedTuple):
     n_poles: int = 0
     n_mpoles: int = 0
     folds: tuple = ()
+    damping: tuple = ()
 
     def shape(self, component: str) -> tuple:
         return field_shape(component, self.extents, self.boundaries,
                            origin=self.origin)
+
+    def damping_names(self, component: str):
+        """``(c1, c2)`` coefficient names for ``component``, or ``None``.
+
+        ``None`` means UNDAMPED -- the plain ``F + dt*curl`` update -- and is
+        the only way to reach that path. A component listed here with a name
+        the coefficients do not carry must raise rather than fall back, since
+        the undamped update runs, converges, and is wrong only once a
+        conductivity is switched on.
+
+        The names themselves are a per-stepper convention and not derivable:
+        ``stepper_tm`` has ``d1``/``d2`` for Ez with no component letter but
+        ``h1x``/``h2x`` for Hx, while ``stepper_te`` has ``d1x``/``d2x`` and
+        ``hz1``/``hz2`` -- ``hz1``, not ``h1z``.
+        """
+        for entry in self.damping:
+            if entry[0] == component:
+                return tuple(entry[1:])
+        return None
+
+    def pole_name(self, component: str) -> str:
+        """Where ``component``'s polarisation sum lives in the state.
+
+        The same rule ``state_shapes`` files the pole pair under: the axis
+        letter appears only when the block has more than one E component, so
+        TM carries ``P_cur`` and TE carries ``Px_cur``/``Py_cur``.
+        """
+        suffix = len([c for c in self.components if c[0] == "E"]) > 1
+        return (f"P{component[-1]}_cur" if suffix else "P_cur")
 
     def state_shapes(self) -> dict:
         """Every array the block allocates, as ``{name: shape}``.

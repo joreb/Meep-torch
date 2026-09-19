@@ -568,3 +568,25 @@ def test_an_unknown_component_names_the_frame():
     with pytest.raises(KeyError, match="cylindrical"):
         field_shape("Ex", (12, 10), (WALL, WALL),
                     system="cylindrical", axes=("r", "z"))
+
+
+def test_the_pole_name_follows_the_same_suffix_rule_as_the_shapes():
+    """One rule, read twice: by `state_shapes` and by the step that sums poles.
+
+    The axis letter appears only when the block has more than one E component,
+    so TM carries `P_cur` and TE carries `Px_cur`/`Py_cur`. `make_step` used to
+    hard-type `P_cur`, which is right for TM, wrong for TE, and invisible to
+    every TM gate -- one sum shared across two components instead of one each.
+    """
+    from meep_torch.core.symbolic import BlockSpec
+
+    tm = BlockSpec(_TM, (NX, NY), (WALL, WALL), n_poles=1)
+    te = BlockSpec(("Hz", "Ex", "Ey"), (NX, NY), (WALL, WALL), n_poles=1)
+
+    assert tm.pole_name("Ez") == "P_cur"
+    assert (te.pole_name("Ex"), te.pole_name("Ey")) == ("Px_cur", "Py_cur")
+    # and the names the allocator actually files them under agree
+    for spec, names in ((tm, ["Ez"]), (te, ["Ex", "Ey"])):
+        shapes = spec.state_shapes()
+        for c in names:
+            assert spec.pole_name(c) in shapes, (c, sorted(shapes))

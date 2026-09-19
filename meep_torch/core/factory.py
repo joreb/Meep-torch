@@ -41,7 +41,7 @@ from typing import NamedTuple
 import torch
 
 from .kernels import EH_FROM_D, PSI_NEW, STRETCHED
-from .symbolic import (AXES, FOLD, compiled_curl_composition,
+from .symbolic import (AXES, FOLD, BlockSpec, compiled_curl_composition,
                        compiled_difference, curl_terms, field_shape,
                        psi_extent, stencil_offsets, yee_table)
 
@@ -73,23 +73,31 @@ def _family(component: str) -> str:
     return component[0].lower()
 
 
-def curl_recipe(target: str, extents, boundaries, ndim: int = None) -> tuple:
-    """Resolve every term of ``target``'s curl against this grid.
+def curl_recipe(spec: BlockSpec, target: str) -> tuple:
+    """Resolve every term of ``target``'s curl against ``spec``'s grid.
 
     Returned terms carry slices, not indices, so the step does no arithmetic on
     shapes. The trim is the part worth stating: a term is differenced along its
     own axis and trimmed on the OTHERS, because the result has to land on the
     target's psi extent -- which is what makes one rule cover both terms of a
     curl instead of two hand-written slicings.
+
+    The spec comes FIRST for a reason that is not style: every call site of the
+    old signature passed ``ndim == len(extents)``, so the argument was
+    redundant, and a transposed ``(target, spec)`` now dies on the spot instead
+    of silently indexing a string. Three separate argument-order mistakes in
+    this file were caught by a bitwise gate rather than by a type.
     """
-    ndim = ndim if ndim is not None else len(extents)
-    want = psi_extent(target, extents, boundaries)
+    extents, boundaries = spec.extents, spec.boundaries
+    ndim = len(extents)
+    want = psi_extent(target, extents, boundaries, origin=spec.origin)
     out = []
     for source, axis, sign in curl_terms(target):
         a = AXES.index(axis)
         if a >= ndim:                       # reduced away, e.g. z in a 2D block
             continue
-        src_shape = field_shape(source, extents, boundaries)
+        src_shape = field_shape(source, extents, boundaries,
+                                origin=spec.origin)
         lo, hi = [slice(None)] * ndim, [slice(None)] * ndim
         for b in range(ndim):
             if b == a:
@@ -153,13 +161,13 @@ def curl_recipe(target: str, extents, boundaries, ndim: int = None) -> tuple:
     return tuple(out), want
 
 
-def make_curl(target: str, extents, boundaries, ndim: int = None):
+def make_curl(spec: BlockSpec, target: str):
     """``f(state, coeffs, dx) -> (curl, {psi_name: new_psi})``.
 
     The spec work happens HERE, once. The returned closure touches tensors and
     slice objects only.
     """
-    terms, want = curl_recipe(target, extents, boundaries, ndim=ndim)
+    terms, want = curl_recipe(spec, target)
 
     def _one(state, coeffs, dx, t, psis, fields):
         f = fields[t.source] if fields and t.source in fields else getattr(state, t.source)
@@ -201,16 +209,15 @@ def make_curl(target: str, extents, boundaries, ndim: int = None):
     return curl
 
 
-#: How a stepper names its damping pair for a component. NOT derivable: it is a
-#: per-stepper convention. `stepper_tm` has `d1`/`d2` for Ez with no component
-#: letter but `h1x`/`h2x` for Hx; `stepper_te` has `d1x`/`d2x` and `hz1`/`hz2`
-#: -- note `hz1`, not `h1z`. Renaming eleven steppers to suit a builder is the
-#: wrong direction, so the builder is told instead. Recorded as the seventh
-#: BlockSpec gap in tasks/fdtd_sympy-stepper-kernels.
-TM_DAMPING = {"Ez": ("d1", "d2"), "Hx": ("h1x", "h2x"), "Hy": ("h1y", "h2y")}
+#: The TM block's damping pair per component, as `BlockSpec.damping` wants it.
+#: NOT derivable and not a default: it is `stepper_tm`'s own convention, which
+#: `stepper_te` does not share (`d1x`/`d2x`, `hz1`/`hz2` -- note `hz1`, not
+#: `h1z`). Recorded as the seventh BlockSpec gap in
+#: tasks/fdtd_sympy-stepper-kernels, and closed by carrying it as data.
+TM_DAMPING = (("Ez", "d1", "d2"), ("Hx", "h1x", "h2x"), ("Hy", "h1y", "h2y"))
 
 
-def _pad_spec(target, extents, boundaries, ndim):
+def _pad_spec(spec, target):
     """Zero-pad that puts a curl back on its target's own grid.
 
     Derived, not typed: the curl lands on `psi_extent` and the field lives on
@@ -218,20 +225,22 @@ def _pad_spec(target, extents, boundaries, ndim):
     takes its row at the far end only, because the cut end stayed live.
     Returned in torch's reversed pairwise order.
     """
-    full = field_shape(target, extents, boundaries)
-    want = psi_extent(target, extents, boundaries)
+    full = field_shape(target, spec.extents, spec.boundaries,
+                       origin=spec.origin)
+    want = psi_extent(target, spec.extents, spec.boundaries,
+                      origin=spec.origin)
     pads = []
-    for b in range(ndim):
+    for b in range(len(spec.extents)):
         total = full[b] - want[b]
-        lo = 0 if boundaries[b] is FOLD else total // 2
+        lo = 0 if spec.boundaries[b] is FOLD else total // 2
         pads.append((lo, total - lo))
     out = []
-    for b in reversed(range(ndim)):
+    for b in reversed(range(len(spec.extents))):
         out.extend(pads[b])
     return tuple(out)
 
 
-def make_step(components, extents, boundaries, damping=TM_DAMPING, ndim=None):
+def make_step(spec: BlockSpec):
     """Compose meep's phase order around :func:`make_curl`.
 
     ``step(state, coeffs, dx, src_amp=0.0, src_mask=None, fields=None)``.
@@ -242,25 +251,39 @@ def make_step(components, extents, boundaries, damping=TM_DAMPING, ndim=None):
     is the leapfrog; running the phases in any other order changes the answer
     while still converging, which is the worst kind of wrong.
 
-    Scope: no poles, no Kerr, no magnetic poles yet. Those are
+    Everything conventional comes off the spec: `damping_names` for the CN
+    coefficient pair and `pole_name` for where a component's polarisation sum
+    lives. Both were TM constants hard-typed here, and both are wrong for TE --
+    `Px_cur`/`Py_cur` rather than one shared `P_cur`, which no TM gate can see.
+
+    Scope: no poles beyond the sum, no Kerr, no magnetic poles yet. Those are
     `kernels.ADE_POLE` and the fixed point, and they are composition rather
-    than derivation -- see the task page.
+    than derivation -- see the task page. Source injection hits every E
+    component with the same mask, which is the FOURTH BlockSpec gap and holds
+    only while one E component exists; TE is where it breaks.
     """
-    ndim = ndim if ndim is not None else len(extents)
+    components = spec.components
     h_comps = [c for c in components if c[0] == "H"]
     e_comps = [c for c in components if c[0] == "E"]
-    curls = {c: make_curl(c, extents, boundaries, ndim=ndim)
-             for c in components}
-    pads = {c: _pad_spec(c, extents, boundaries, ndim) for c in components}
-    d_name = {c: damping[c] for c in components}
+    curls = {c: make_curl(spec, c) for c in components}
+    pads = {c: _pad_spec(spec, c) for c in components}
+    damp = {c: spec.damping_names(c) for c in components}
+    poles = {c: spec.pole_name(c) for c in e_comps}
 
     def _advance(state, coeffs, dx, name, base, upd, fields):
         rhs, psis = curls[name](state, coeffs, dx, fields=fields)
         upd.update(psis)
         padded = torch.nn.functional.pad(rhs, pads[name])
-        c1, c2 = (getattr(coeffs, n, None) for n in d_name[name])
-        return (c1 * base + c2 * padded if c1 is not None
-                else base + coeffs.dt * padded)
+        names = damp[name]
+        if names is None:               # the block has no damping pair at all
+            return base + coeffs.dt * padded
+        # no getattr DEFAULT, which is the distinction: a name the coefficients
+        # do not carry is a typo and raises, while a name they carry as None is
+        # a conductivity that is switched off. Collapsing the two let a
+        # misspelled name run the undamped update -- a field that converges and
+        # is wrong only once sigma is on.
+        c1, c2 = (getattr(coeffs, n) for n in names)
+        return base + coeffs.dt * padded if c1 is None else c1 * base + c2 * padded
 
     def step(state, coeffs, dx, src_amp=0.0, src_mask=None, fields=None):
         upd = {}
@@ -275,19 +298,21 @@ def make_step(components, extents, boundaries, damping=TM_DAMPING, ndim=None):
             dname = "D" + name[1]
             upd[dname] = _advance(mid, coeffs, dx, name,
                                   getattr(mid, dname), upd, fields)
-        # step_source(D): the current is SUBTRACTED, and scaled by d2 under
-        # sigma_d exactly as the fused kernel does.
+        # step_source(D): the current is SUBTRACTED, and scaled by the damping
+        # pair's second coefficient under sigma_d exactly as the fused kernel
+        # does.
         if src_mask is not None and src_amp:
             for name in e_comps:
                 dname = "D" + name[1]
-                scale = getattr(coeffs, d_name[name][1], None)
+                names = damp[name]
+                scale = None if names is None else getattr(coeffs, names[1])
                 scale = coeffs.dt if scale is None else scale
                 upd[dname] = upd[dname] - scale * src_amp * src_mask
         # update_eh(E)
         for name in e_comps:
-            dname = "D" + name[1]
-            p_sum = mid.P_cur.sum(0)
-            upd[name] = EH_FROM_D(upd[dname], p_sum, coeffs.eps_inf)
+            upd[name] = EH_FROM_D(upd["D" + name[1]],
+                                  getattr(mid, poles[name]).sum(0),
+                                  coeffs.eps_inf)
         return type(state)._make([upd.get(f, getattr(state, f))
                                   for f in state._fields])
 

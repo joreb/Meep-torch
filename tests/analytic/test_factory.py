@@ -27,9 +27,17 @@ from meep_torch.core.factory import curl_recipe, make_curl
 from meep_torch.core.grid import Grid
 from meep_torch.core.kernels import CN_UPDATE
 from meep_torch.core.stepper_tm import init_tm_state, step_db
-from meep_torch.core.symbolic import FOLD, WALL
+from meep_torch.core.symbolic import FOLD, WALL, BlockSpec
 
 NX, NY = 24, 20
+
+_TM = ("Ez", "Hx", "Hy")
+
+
+def _spec(n=(NX, NY), bnd=(WALL, WALL), **kw):
+    from meep_torch.core.factory import TM_DAMPING
+    kw.setdefault("damping", TM_DAMPING)
+    return BlockSpec(_TM, n, bnd, **kw)
 
 _CASES = [("vacuum_pml", dict(npml=6)),
           ("sigma_d", dict(npml=6, sigma_d=0.3)),
@@ -56,7 +64,7 @@ def _seeded(**kw):
 def test_the_built_curl_is_bitwise_with_stepper_tm(label, kw):
     _, m, st = _seeded(**kw)
     ref = step_db(st, m, "D")
-    curl, psis = make_curl("Ez", (NX, NY), (WALL, WALL), ndim=2)(st, m, m.dx)
+    curl, psis = make_curl(_spec(), "Ez")(st, m, m.dx)
 
     padded = F.pad(curl, (1, 1, 1, 1))
     Dz = (CN_UPDATE(st.Dz, padded, m.d1, m.d2) if m.d1 is not None
@@ -73,7 +81,7 @@ def test_the_recipe_lands_on_the_psi_extent():
     row to the difference, the others are trimmed to the target's own extent.
     A per-term hand slicing is what this replaces.
     """
-    terms, want = curl_recipe("Ez", (NX, NY), (WALL, WALL), ndim=2)
+    terms, want = curl_recipe(_spec(), "Ez")
     assert want == (NX - 2, NY - 2)
     _, m, st = _seeded(npml=6)
     for t in terms:
@@ -89,7 +97,7 @@ def test_the_terms_match_what_stepper_tm_pairs():
     DIFFERENCE AXIS. Getting that pairing backwards is silent -- both arrays
     exist and broadcast.
     """
-    terms, _ = curl_recipe("Ez", (NX, NY), (WALL, WALL), ndim=2)
+    terms, _ = curl_recipe(_spec(), "Ez")
     got = {t.psi: (t.coeff, t.sign) for t in terms}
     assert got == {"psi_Hyx": ("ex", +1), "psi_Hxy": ("ey", -1)}
 
@@ -104,7 +112,7 @@ def test_swapping_centre_and_neighbour_is_caught():
     was consulted.
     """
     _, m, st = _seeded(npml=6)
-    terms, _ = curl_recipe("Ez", (NX, NY), (WALL, WALL), ndim=2)
+    terms, _ = curl_recipe(_spec(), "Ez")
     for t in terms:
         f = getattr(st, t.source)
         right = t.diff(f[t.centre], f[t.neighbour], m.dx)
@@ -126,7 +134,7 @@ def test_the_built_B_phase_is_bitwise_with_stepper_tm(label, kw):
     _, m, st = _seeded(**kw)
     ref = step_db(st, m, "B")
     for tgt, h1n, h2n in (("Hx", "h1x", "h2x"), ("Hy", "h1y", "h2y")):
-        rhs, psis = make_curl(tgt, (NX, NY), (WALL, WALL), ndim=2)(st, m, m.dx)
+        rhs, psis = make_curl(_spec(), tgt)(st, m, m.dx)
         h1, h2 = getattr(m, h1n), getattr(m, h2n)
         new = (h1 * getattr(st, tgt) + h2 * rhs if h1 is not None
                else getattr(st, tgt) + m.dt * rhs)
@@ -142,18 +150,18 @@ def test_a_reduced_H_curl_has_exactly_one_term():
     here at first and a 2D H phase quietly has one.
     """
     for tgt, src, axis, sign in (("Hx", "Ez", "y", -1), ("Hy", "Ez", "x", +1)):
-        terms, want = curl_recipe(tgt, (NX, NY), (WALL, WALL), ndim=2)
+        terms, want = curl_recipe(_spec(), tgt)
         assert len(terms) == 1
         t = terms[0]
         assert (t.source, t.axis, t.sign) == (src, axis, sign)
     # and in 3D both terms survive, same rule
-    assert len(curl_recipe("Hx", (8, 8, 8), (WALL,) * 3, ndim=3)[0]) == 2
+    assert len(curl_recipe(BlockSpec(("Hx",), (8, 8, 8), (WALL,) * 3), "Hx")[0]) == 2
 
 
 def test_a_curl_with_no_live_terms_is_refused():
     """A 1D block removes both of Ez's sources; building half a curl would run."""
     with pytest.raises(ValueError, match="no live curl terms"):
-        curl_recipe("Hx", (NX,), (WALL,), ndim=1)
+        curl_recipe(BlockSpec(("Hx",), (NX,), (WALL,)), "Hx")
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +209,7 @@ def test_the_built_curl_is_bitwise_under_a_fold(label, kw, bnd, pad, square):
                          for v in st])
     ref = step_db(st, m, "D")
 
-    curl, psis = make_curl("Ez", n, bnd, ndim=2)(
+    curl, psis = make_curl(_spec(n=n, bnd=bnd), "Ez")(
         st, m, m.dx, fields=_ghosts(st, kw, bnd))
     assert torch.equal(st.Dz + m.dt * F.pad(curl, pad), ref.Dz)
     for k, v in psis.items():
@@ -215,8 +223,8 @@ def test_a_fold_trims_one_end_and_a_wall_trims_two():
     that end live. Getting this symmetric would be silent -- the shapes still
     broadcast, the fields just come from the wrong rows.
     """
-    walled, _ = curl_recipe("Ez", (NX, NY), (WALL, WALL), ndim=2)
-    folded, _ = curl_recipe("Ez", (NX, NY), (WALL, FOLD), ndim=2)
+    walled, _ = curl_recipe(_spec(), "Ez")
+    folded, _ = curl_recipe(_spec(bnd=(WALL, FOLD)), "Ez")
     by_src = lambda ts: {t.source: t for t in ts}
 
     # dHy/dx is trimmed on y, which is the axis whose boundary changed
@@ -259,7 +267,7 @@ def test_a_composed_step_is_bitwise_with_step_tm(label, kw, amp):
     mask = torch.zeros(NX, NY, dtype=torch.float64)
     mask[12, 10] = 1.0
     ref = step_tm(st, m, amp, mask)
-    got = make_step(("Ez", "Hx", "Hy"), (NX, NY), (WALL, WALL))(
+    got = make_step(_spec())(
         st, m, m.dx, src_amp=amp, src_mask=mask)
 
     for f, a, b in zip(st._fields, got, ref):
@@ -279,7 +287,7 @@ def test_the_phase_order_is_load_bearing():
     from meep_torch.core.stepper_tm import step_db, update_eh
 
     _, m, st = _seeded(npml=6)
-    step = make_step(("Ez", "Hx", "Hy"), (NX, NY), (WALL, WALL))
+    step = make_step(_spec())
     right = step(st, m, m.dx)
 
     # E advanced from the OLD H: run the D phase before the B phase
@@ -289,17 +297,51 @@ def test_the_phase_order_is_load_bearing():
         "tell the orders apart and the test is vacuous")
 
 
-def test_the_damping_names_have_to_be_supplied():
-    """They are a per-stepper convention, and the builder says so.
+def test_a_damping_name_is_supplied_or_the_component_is_undamped():
+    """Two cases, and the builder must not confuse them.
 
-    TM reads `d1`/`d2` for Ez but `h1x`/`h2x` for Hx; TE reads `d1x`/`d2x` and
-    `hz1`/`hz2`. A builder that guessed would silently read `None` and fall
-    back to the undamped branch, which is a plausible field and the wrong one.
+    The names are a per-stepper convention -- TM reads `d1`/`d2` for Ez but
+    `h1x`/`h2x` for Hx, TE reads `d1x`/`d2x` and `hz1`/`hz2`. OMITTING a
+    component means undamped on purpose. MISSPELLING one used to mean the same
+    thing, because a `getattr(..., None)` fallback swallowed it: the step then
+    ran, converged, and was wrong only once a conductivity was on.
     """
     from meep_torch.core.factory import TM_DAMPING, make_step
 
-    assert TM_DAMPING["Ez"] == ("d1", "d2")
-    assert TM_DAMPING["Hx"] == ("h1x", "h2x")
-    with pytest.raises(KeyError):
-        make_step(("Ez", "Hx", "Hy"), (NX, NY), (WALL, WALL),
-                  damping={"Ez": ("d1", "d2")})       # Hx/Hy missing
+    assert dict((e[0], e[1:]) for e in TM_DAMPING)["Ez"] == ("d1", "d2")
+    _, m, st = _seeded(npml=6, sigma_d=0.3)
+    mask = torch.zeros(NX, NY, dtype=torch.float64)
+
+    # a name the coefficients do not carry raises, rather than running undamped
+    typo = make_step(_spec(damping=(("Ez", "d1", "d2_"),
+                                    ("Hx", "h1x", "h2x"),
+                                    ("Hy", "h1y", "h2y"))))
+    with pytest.raises(AttributeError):
+        typo(st, m, m.dx)
+
+    # and omission really is the undamped branch, visibly different under sigma
+    undamped = make_step(_spec(damping=(("Hx", "h1x", "h2x"),
+                                        ("Hy", "h1y", "h2y"))))
+    assert not torch.equal(undamped(st, m, m.dx).Ez,
+                           make_step(_spec())(st, m, m.dx).Ez)
+
+
+def test_the_allocator_and_the_curl_name_the_same_psi_arrays():
+    """Two independent derivations of one name set, compared as SETS.
+
+    `BlockSpec.psi_shapes` gets them from Yee-offset inequality; the built
+    curl gets them from `curl_terms`. Comparing shapes on the keys they share
+    would pass while one side allocated an array nothing writes -- which is
+    exactly the `stepper_3d_lean` over-allocation the parity gate could not
+    see, because a psi that is never read is never wrong.
+    """
+    from meep_torch.core.factory import make_step
+
+    spec = _spec()
+    step = make_step(spec)
+    built = {t.psi for c in spec.components for t in step.curls[c].terms}
+    assert set(spec.psi_shapes()) == built
+
+    _, m, st = _seeded(npml=6)
+    for name, shape in spec.psi_shapes().items():
+        assert getattr(st, name).shape == torch.Size(shape), name
