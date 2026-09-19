@@ -40,12 +40,12 @@ from typing import NamedTuple
 
 import torch
 
-from .kernels import PSI_NEW, STRETCHED
+from .kernels import EH_FROM_D, PSI_NEW, STRETCHED
 from .symbolic import (AXES, FOLD, compiled_curl_composition,
                        compiled_difference, curl_terms, field_shape,
                        psi_extent, stencil_offsets, yee_table)
 
-__all__ = ["CurlTerm", "curl_recipe", "make_curl"]
+__all__ = ["CurlTerm", "curl_recipe", "make_curl", "make_step", "TM_DAMPING"]
 
 
 class CurlTerm(NamedTuple):
@@ -199,3 +199,97 @@ def make_curl(target: str, extents, boundaries, ndim: int = None):
     curl.terms = terms
     curl.shape = want
     return curl
+
+
+#: How a stepper names its damping pair for a component. NOT derivable: it is a
+#: per-stepper convention. `stepper_tm` has `d1`/`d2` for Ez with no component
+#: letter but `h1x`/`h2x` for Hx; `stepper_te` has `d1x`/`d2x` and `hz1`/`hz2`
+#: -- note `hz1`, not `h1z`. Renaming eleven steppers to suit a builder is the
+#: wrong direction, so the builder is told instead. Recorded as the seventh
+#: BlockSpec gap in tasks/fdtd_sympy-stepper-kernels.
+TM_DAMPING = {"Ez": ("d1", "d2"), "Hx": ("h1x", "h2x"), "Hy": ("h1y", "h2y")}
+
+
+def _pad_spec(target, extents, boundaries, ndim):
+    """Zero-pad that puts a curl back on its target's own grid.
+
+    Derived, not typed: the curl lands on `psi_extent` and the field lives on
+    `field_shape`, so the difference is what has to be padded -- and a FOLD
+    takes its row at the far end only, because the cut end stayed live.
+    Returned in torch's reversed pairwise order.
+    """
+    full = field_shape(target, extents, boundaries)
+    want = psi_extent(target, extents, boundaries)
+    pads = []
+    for b in range(ndim):
+        total = full[b] - want[b]
+        lo = 0 if boundaries[b] is FOLD else total // 2
+        pads.append((lo, total - lo))
+    out = []
+    for b in reversed(range(ndim)):
+        out.extend(pads[b])
+    return tuple(out)
+
+
+def make_step(components, extents, boundaries, damping=TM_DAMPING, ndim=None):
+    """Compose meep's phase order around :func:`make_curl`.
+
+    ``step(state, coeffs, dx, src_amp=0.0, src_mask=None, fields=None)``.
+
+    The order is meep's `fields::step`, and it is NOT an implementation detail:
+    ``step_db(B) -> update_eh(H) -> step_db(D) -> step_source -> update_pols
+    -> update_eh(E)``. H is advanced from the OLD E and E from the NEW H, which
+    is the leapfrog; running the phases in any other order changes the answer
+    while still converging, which is the worst kind of wrong.
+
+    Scope: no poles, no Kerr, no magnetic poles yet. Those are
+    `kernels.ADE_POLE` and the fixed point, and they are composition rather
+    than derivation -- see the task page.
+    """
+    ndim = ndim if ndim is not None else len(extents)
+    h_comps = [c for c in components if c[0] == "H"]
+    e_comps = [c for c in components if c[0] == "E"]
+    curls = {c: make_curl(c, extents, boundaries, ndim=ndim)
+             for c in components}
+    pads = {c: _pad_spec(c, extents, boundaries, ndim) for c in components}
+    d_name = {c: damping[c] for c in components}
+
+    def _advance(state, coeffs, dx, name, base, upd, fields):
+        rhs, psis = curls[name](state, coeffs, dx, fields=fields)
+        upd.update(psis)
+        padded = torch.nn.functional.pad(rhs, pads[name])
+        c1, c2 = (getattr(coeffs, n, None) for n in d_name[name])
+        return (c1 * base + c2 * padded if c1 is not None
+                else base + coeffs.dt * padded)
+
+    def step(state, coeffs, dx, src_amp=0.0, src_mask=None, fields=None):
+        upd = {}
+        # step_db(B): H from the OLD E
+        for name in h_comps:
+            upd[name] = _advance(state, coeffs, dx, name,
+                                 getattr(state, name), upd, fields)
+        mid = type(state)._make([upd.get(f, getattr(state, f))
+                                 for f in state._fields])
+        # step_db(D): D from the NEW H
+        for name in e_comps:
+            dname = "D" + name[1]
+            upd[dname] = _advance(mid, coeffs, dx, name,
+                                  getattr(mid, dname), upd, fields)
+        # step_source(D): the current is SUBTRACTED, and scaled by d2 under
+        # sigma_d exactly as the fused kernel does.
+        if src_mask is not None and src_amp:
+            for name in e_comps:
+                dname = "D" + name[1]
+                scale = getattr(coeffs, d_name[name][1], None)
+                scale = coeffs.dt if scale is None else scale
+                upd[dname] = upd[dname] - scale * src_amp * src_mask
+        # update_eh(E)
+        for name in e_comps:
+            dname = "D" + name[1]
+            p_sum = mid.P_cur.sum(0)
+            upd[name] = EH_FROM_D(upd[dname], p_sum, coeffs.eps_inf)
+        return type(state)._make([upd.get(f, getattr(state, f))
+                                  for f in state._fields])
+
+    step.curls = curls
+    return step

@@ -227,3 +227,79 @@ def test_a_fold_trims_one_end_and_a_wall_trims_two():
     assert by_src(folded)["Hx"].ghost == "y"
     # and the untouched axis keeps its symmetric trim
     assert by_src(folded)["Hx"].centre[0] == slice(1, -1)
+
+
+# ---------------------------------------------------------------------------
+# Phase composition: a whole TM step, in meep's order.
+# ---------------------------------------------------------------------------
+
+_STEP_CASES = [
+    ("vacuum_pml", dict(npml=6), 0.7),
+    ("sigma_d", dict(npml=6, sigma_d=0.3), 0.7),
+    ("sigma_b", dict(npml=6, sigma_b=0.2), 0.7),
+    ("both_sigmas", dict(npml=6, sigma_d=0.3, sigma_b=0.2), 0.7),
+    ("no_pml", dict(npml=0), 0.7),
+    ("no_source", dict(npml=6), 0.0),
+]
+
+
+@pytest.mark.parametrize("label,kw,amp", _STEP_CASES,
+                         ids=[c[0] for c in _STEP_CASES])
+def test_a_composed_step_is_bitwise_with_step_tm(label, kw, amp):
+    """Every field of a whole step, not just the curl.
+
+    This is the claim the unification rests on: `step_tm` written out by hand
+    and `make_step` built from a spec produce the SAME BITS, including the
+    source injection and the D -> E constitutive division.
+    """
+    from meep_torch.core.factory import make_step
+    from meep_torch.core.stepper_tm import step_tm
+
+    _, m, st = _seeded(**kw)
+    mask = torch.zeros(NX, NY, dtype=torch.float64)
+    mask[12, 10] = 1.0
+    ref = step_tm(st, m, amp, mask)
+    got = make_step(("Ez", "Hx", "Hy"), (NX, NY), (WALL, WALL))(
+        st, m, m.dx, src_amp=amp, src_mask=mask)
+
+    for f, a, b in zip(st._fields, got, ref):
+        if torch.is_tensor(a):
+            assert torch.equal(a, b), f
+
+
+def test_the_phase_order_is_load_bearing():
+    """H from the OLD E, E from the NEW H. Reversing it still converges.
+
+    That is the danger: a stepper with its phases in the wrong order does not
+    blow up, it produces a plausible field that is wrong at O(dt). Advancing E
+    from the stale H is the mistake, so drive one step from a state where the
+    two differ and check the result is not what the correct order gives.
+    """
+    from meep_torch.core.factory import make_step
+    from meep_torch.core.stepper_tm import step_db, update_eh
+
+    _, m, st = _seeded(npml=6)
+    step = make_step(("Ez", "Hx", "Hy"), (NX, NY), (WALL, WALL))
+    right = step(st, m, m.dx)
+
+    # E advanced from the OLD H: run the D phase before the B phase
+    wrong = update_eh(step_db(step_db(st, m, "D"), m, "B"), m, "E")
+    assert not torch.equal(right.Ez, wrong.Ez), (
+        "swapping the phase order changed nothing -- then this state cannot "
+        "tell the orders apart and the test is vacuous")
+
+
+def test_the_damping_names_have_to_be_supplied():
+    """They are a per-stepper convention, and the builder says so.
+
+    TM reads `d1`/`d2` for Ez but `h1x`/`h2x` for Hx; TE reads `d1x`/`d2x` and
+    `hz1`/`hz2`. A builder that guessed would silently read `None` and fall
+    back to the undamped branch, which is a plausible field and the wrong one.
+    """
+    from meep_torch.core.factory import TM_DAMPING, make_step
+
+    assert TM_DAMPING["Ez"] == ("d1", "d2")
+    assert TM_DAMPING["Hx"] == ("h1x", "h2x")
+    with pytest.raises(KeyError):
+        make_step(("Ez", "Hx", "Hy"), (NX, NY), (WALL, WALL),
+                  damping={"Ez": ("d1", "d2")})       # Hx/Hy missing
