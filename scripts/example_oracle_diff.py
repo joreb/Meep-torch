@@ -270,6 +270,75 @@ def compare(port, oracle, rtol=2e-2, atol=1e-12, strict_missing=True):
     return worst, findings, chatter
 
 
+def _arrays_in(path):
+    """``{name: ndarray}`` for a data file the twins wrote, or {} if unreadable.
+
+    Covers what the tutorials actually produce: meep's and mpb's h5 writers,
+    and numpy text exports. A file that cannot be read returns {} rather than
+    raising -- a comparison that dies on one unreadable artefact reports
+    nothing about the other forty.
+    """
+    import numpy as _np
+    try:
+        if path.suffix == ".h5":
+            import h5py
+            out = {}
+            with h5py.File(path, "r") as f:
+                def visit(name, obj):
+                    if isinstance(obj, h5py.Dataset) and obj.size:
+                        out[name] = _np.asarray(obj[()])
+                f.visititems(visit)
+            return out
+        if path.suffix in (".csv", ".txt", ".dat"):
+            a = _np.loadtxt(path, delimiter="," if path.suffix == ".csv" else None)
+            return {"": _np.asarray(a)}
+    except Exception:
+        return {}
+    return {}
+
+
+def file_pairs(d: pathlib.Path):
+    """Yield ``(suffix, mp_path, meep_path)`` for data files BOTH twins wrote.
+
+    This is why the two twins must not share a filename prefix. They write into
+    one directory, so identical names mean the second run overwrites the first
+    and there is nothing left to pair -- which is exactly what the mpb twins
+    did until the porter was fixed to carry the script stem.
+    """
+    name = d.name
+    def side(tag):
+        return {f.name[len(name) + len(tag) + 1:]: f for f in d.iterdir()
+                if f.is_file() and f.name.startswith(f"{name}_{tag}")
+                and f.suffix != ".json"}
+    a, b = side("mp"), side("meep")
+    for suffix in sorted(set(a) & set(b)):
+        yield suffix, a[suffix], b[suffix]
+
+
+def compare_files(d, rtol=2e-2, atol=1e-12):
+    """One finding per dataset that disagrees, not one per element."""
+    import numpy as _np
+    findings, n_cmp = [], 0
+    for suffix, pa, pb in file_pairs(d):
+        A, B = _arrays_in(pa), _arrays_in(pb)
+        for key in sorted(set(A) & set(B)):
+            x, y = A[key], B[key]
+            if x.shape != y.shape:
+                findings.append(("file-shape", f"{suffix}:{key}",
+                                 f"port{list(x.shape)} oracle{list(y.shape)}"))
+                continue
+            n_cmp += 1
+            scale = _np.maximum(_np.abs(x), _np.abs(y))
+            bad = _np.abs(x - y) > atol + rtol * scale
+            if bad.any():
+                with _np.errstate(divide="ignore", invalid="ignore"):
+                    rel = _np.where(scale > 0, _np.abs(x - y) / scale, 0.0)
+                findings.append(("file-diff", f"{suffix}:{key}",
+                                 f"{bad.sum()}/{x.size} elements, "
+                                 f"worst rel={float(rel.max()):.3e}"))
+    return findings, n_cmp
+
+
 def pairs(root):
     """Yield ``(experiment_dir, label, port_json, oracle_json_or_None)``.
 
@@ -315,7 +384,17 @@ def main(argv=None):
                                            strict_missing=(label == "twin"))
         n_cmp = len(set(_numeric(_flatten(pdoc))) & set(_numeric(_flatten(odoc))))
         note = f" ({chatter} chatter key(s) ignored)" if chatter else ""
-        if not n_cmp:
+        # File datasets count as comparable output. Deciding "nothing to
+        # compare" from stdout alone hid ring and bent-waveguide, which print
+        # nothing numeric and write h5 field snapshots.
+        if label == "twin" or not any(True for _ in file_pairs(d)):
+            ff, fn = [], 0
+        else:
+            ff, fn = compare_files(d, rtol=args.rtol)
+        findings += ff
+        if fn:
+            note += f", {fn} dataset(s) from paired files"
+        if not n_cmp and not fn:
             n_empty += 1
             print(f"  ----  {rel} [{label}]  NOTHING COMPARABLE -- the two runs "
                   f"share no numeric key{note}")

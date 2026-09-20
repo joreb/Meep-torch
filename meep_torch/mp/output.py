@@ -32,7 +32,14 @@ def _write(sim, tag, datasets):
         fname, store = append
         for k, v in datasets.items():
             store.setdefault(k, []).append(np.asarray(v))
-        datasets = {k: np.stack(v) for k, v in store.items()}
+        # TRAILING TIME AXIS, because that is where meep puts it. meep's h5
+        # writer grows the LAST dimension when appending, so a 160x160 slice
+        # over 333 steps lands as (160, 160, 333). np.stack defaults to axis=0
+        # and gave (333, 160, 160) -- the same numbers, transposed, which any
+        # reader slicing [..., t] gets silently wrong. Caught by comparing
+        # bent-waveguide's -ez.h5 against the oracle's: port[333,160,160]
+        # against oracle[160,160,333].
+        datasets = {k: np.stack(v, axis=-1) for k, v in store.items()}
         base = _outdir(sim, f"{_prefix(sim)}-{fname}")
     else:
         base = _outdir(sim, f"{_prefix(sim)}-{tag}-{sim.meep_time():09.2f}")
@@ -300,8 +307,10 @@ def in_point(pt, *step_funcs):
 
 
 def to_appended(fname, *step_funcs):
-    """Make output functions among step_funcs append along a new leading time
-    axis into one file named <prefix>-<fname> instead of per-time files."""
+    """Make output functions among step_funcs append along a new TRAILING time
+    axis into one file named <prefix>-<fname> instead of per-time files.
+
+    Trailing because meep's h5 writer grows the last dimension; see _write."""
     store = {}
 
     def _to_appended(sim, todo="step"):
