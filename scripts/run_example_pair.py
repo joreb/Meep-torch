@@ -187,6 +187,10 @@ def run_one(script, timeout=1800, device="cpu"):
         "script": stem}
     doc["stdout"] = rows
     doc["status"] = status
+    # Which device produced these numbers. cpu and cuda reduce in a different
+    # order, so a report that mixes them is comparing two runs, not one.
+    if not stem.endswith("_meep"):
+        doc["device"] = device
     # The failure REASON, not just the code. Without it the gap taxonomy can
     # only be rebuilt from whatever run log happens to be lying in /tmp, which
     # goes stale the moment a gap is fixed -- and a stale ranking quietly keeps
@@ -204,6 +208,20 @@ def run_one(script, timeout=1800, device="cpu"):
     return {"script": script.name, "status": status, "kept": kept,
             "dropped": dropped, "nums": len(rows), "json": dest,
             "stderr_tail": p.stderr.strip().splitlines()[-1:] if p.returncode else []}
+
+
+def _already_ok(script, device):
+    """True when this script's JSON already records an ok run on this device."""
+    dest = script.parent / "output" / _experiment(script.stem) / f"{script.stem}.json"
+    if not dest.exists():
+        return False
+    try:
+        doc = json.loads(dest.read_text())
+    except ValueError:
+        return False
+    if doc.get("status") != "ok":
+        return False
+    return script.stem.endswith("_meep") or doc.get("device") == device
 
 
 def targets(path, want):
@@ -244,6 +262,8 @@ def main(argv=None):
                     help="run only the oracle side or only the meep-torch side")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--device", default=os.environ.get("MEEP_TORCH_DEVICE", "cpu"))
+    ap.add_argument("--resume", action="store_true",
+                    help="skip scripts already recorded ok on this device")
     args = ap.parse_args(argv)
 
     if not pathlib.Path(ORACLE_PYTHON).exists() and args.only != "torch":
@@ -253,6 +273,8 @@ def main(argv=None):
 
     n_bad = 0
     for script in targets(args.path, args.only):
+        if args.resume and _already_ok(script, args.device):
+            continue
         r = run_one(script, timeout=args.timeout, device=args.device)
         mark = "ok  " if r["status"] == "ok" else "FAIL"
         extra = f"{r.get('nums', 0)} number(s) from {r.get('kept', 0)} line(s)"
