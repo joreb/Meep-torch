@@ -15,6 +15,20 @@ license of its source. Full license texts live in `LICENSES/`.
 Every ported file carries an attribution header naming the source project, its
 copyright holders, and its original license.
 
+**The tidy3d row above is a per-file carve-out, not the project's license.**
+tidy3d as a whole is LGPL-2.1 ("GNU LESSER GENERAL PUBLIC LICENSE Version 2.1,
+February 1999", verified against the repository's `LICENSE`). Only
+`components/mode/` carries its own MIT per-file license, because that code is
+ceviche-derived; that is the only part the MIT row covers. Anything else in
+tidy3d -- `components/source.py` among it -- is LGPL-2.1, and copying it into an
+MIT file here would be the same mistake as copying from meep (GPL-2.0).
+
+Reading another project to learn the PHYSICS is not porting. A formula carries
+no license: the paraxial Gaussian beam in `meep_torch/core/sources.py` is
+written from the standard relations and is original MIT code, even though meep
+and tidy3d both implement the same beam. The line is whether the file is a
+transcription of theirs or an implementation of the mathematics.
+
 Note on distribution: files remain individually reusable under their declared
 licenses. A distribution of the combined package that includes GPL-licensed
 files must comply with the corresponding GPL terms for the combined work.
