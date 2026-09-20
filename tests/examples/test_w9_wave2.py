@@ -126,12 +126,25 @@ R_NSTEPS = int(round(R_T_END / (0.5 * R_DX / math.sqrt(3.0))))
 def _ringdown(cpml: bool):
     """Return (residual, decay) for the z-planewave ringdown. ``cpml`` selects
     full CPML (z CPML) vs mixed mode (z matched-sigma absorber, x/y CPML)."""
+    # pml_alpha=0.0 ON BOTH BRANCHES, and it is the difference between a
+    # measurement and an unfair fight. This compares the CPML against a
+    # matched-sigma absorber, and the absorber has no CFS term by
+    # construction. The CFS alpha suppresses evanescent and low-frequency
+    # content and, in exchange, leaves the layer impedance-matched only as
+    # alpha -> 0, so a propagating wave at normal incidence sees a residual
+    # reflection that grows with alpha. Measured at the package default of
+    # 0.05 the CPML decayed 5.693x SLOWER than the absorber; at 0.0 and 0.01
+    # it wins, as it should. That was read as a CPML defect for a while. It is
+    # not: it is this gate comparing a layer that carries a CFS term against
+    # one that cannot, on the one wave type the CFS term costs.
     if cpml:
-        coeffs = build_3d_coeffs(R_NX, R_NY, R_NZ, R_DX, npml=R_NPML, n_abs=0)
+        coeffs = build_3d_coeffs(R_NX, R_NY, R_NZ, R_DX, npml=R_NPML, n_abs=0,
+                                 pml_alpha=0.0)
     else:
         coeffs = build_3d_coeffs(R_NX, R_NY, R_NZ, R_DX, npml=R_NPML,
                                   n_abs=R_NPML, absorber_axes=(2,),
-                                  absorber_m=3, absorber_R0=1e-6)
+                                  absorber_m=3, absorber_R0=1e-6,
+                                  pml_alpha=0.0)
     st = init_3d_state(R_NX, R_NY, R_NZ, npml=R_NPML)
     pulse = GaussianPulse(R_FCEN, R_FW, cutoff=R_CUTOFF)
     src_z = R_NZ // 2

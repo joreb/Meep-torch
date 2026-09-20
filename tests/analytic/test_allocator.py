@@ -465,19 +465,19 @@ def test_3d_psi_matches_psi_extent():
 # ~8000, which is `1/dx^3` at `dx = 0.05` to the digit. A pin that moves for a
 # reason you can read off the numbers is the pin working.
 _PSI3D_BITWISE = [
-    ("plain", dict(nx=16, ny=15, nz=14),
+    ("plain", dict(pml_alpha=0.05, nx=16, ny=15, nz=14),
      {"Ex": "0x1.ec78a0b1b8818p+2", "Ey": "0x1.0000000000000p-48",
       "Ez": "0x1.dbf22c366e6bcp+8", "Hx": "-0x1.6000000000000p-46",
       "Hy": "-0x1.3a7d87fb01dbap+5", "Hz": "0x1.8000000000000p-97"}),
-    ("pmc01", dict(nx=10, ny=10, nz=18, pmc=(0, 1)),
+    ("pmc01", dict(pml_alpha=0.05, nx=10, ny=10, nz=18, pmc=(0, 1)),
      {"Ex": "-0x1.8000000000000p-47", "Ey": "-0x1.0000000000000p-45",
       "Ez": "0x1.63f9a60b4064ep+9", "Hx": "-0x1.0000000000000p-47",
       "Hy": "-0x1.8000000000000p-47", "Hz": "-0x1.b377affa4b1f4p-52"}),
-    ("poles", dict(nx=14, ny=13, nz=12, n_poles=1),
+    ("poles", dict(pml_alpha=0.05, nx=14, ny=13, nz=12, n_poles=1),
      {"Ex": "0x1.43e7064fb26e2p+2", "Ey": "0x1.c000000000000p-49",
       "Ez": "0x1.06a1304d3e174p+7", "Hx": "0x1.0000000000000p-46",
       "Hy": "0x1.4235cac66e32cp+6", "Hz": "0x1.4000000000000p-99"}),
-    ("mixed", dict(nx=12, ny=12, nz=16, n_abs=4, absorber_axes=(2,)),
+    ("mixed", dict(pml_alpha=0.05, nx=12, ny=12, nz=16, n_abs=4, absorber_axes=(2,)),
      {"Ex": "0x1.1d6847a5f07ddp+3", "Ey": "0x1.1d6847a5f07e2p+3",
       "Ez": "-0x1.95ca2a28f0820p+5", "Hx": "-0x1.c4d43f5adcaffp+6",
       "Hy": "0x1.c4d43f5adcb02p+6", "Hz": "0x1.c31055812b23ep-49"}),

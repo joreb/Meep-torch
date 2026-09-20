@@ -32,6 +32,44 @@ def cpml_profiles(
     counts (0 = no layer on that end -> plain PEC wall there).
     Returns (b, a, kappa), each shape (n,). Recursion: psi' = b*psi + a*d,
     effective derivative = d/kappa + psi'.
+
+    ``alpha_max`` is the CFS frequency shift in the stretch
+
+        s(w) = kappa + sigma / (alpha + i w eps0)
+
+    which absorbs evanescent and low-frequency content but leaves the layer
+    impedance-matched only in the limit alpha -> 0, so a propagating wave at
+    normal incidence sees a residual reflection that grows with alpha.
+
+    Measured on tests/examples/test_w9_wave2.py::test_3d_pml_residual_vs_
+    absorber, which pits this layer against a matched-sigma absorber of the
+    same depth: at alpha_max=0.05 the CPML decayed 5.693x SLOWER than the
+    absorber -- i.e. the PML was the worse absorber -- and at alpha_max=0 and
+    0.01 it passes. The 2D guided-reflection gate is unaffected either way,
+    and an earlier 2D sweep recorded in wiki/bugs/cpml-high-edge-anchor.md
+    found alpha_max=0 inert there (0.230 against the default's 0.227).
+
+    It also matches the oracle: meep carries no CFS term at all. Its PML is
+    sigma plus kappa (`mean_stretch`) -- see `use_pml` in
+    reference/meep/src/structure.cpp -- and there is no alpha anywhere in it.
+
+    THE DEFAULT IS LEFT AT 0.05 PENDING A DECISION, and the reason is worth
+    stating rather than burying. Changing it to 0 moves every CPML number in
+    the package, which invalidates two sets of bitwise golden fixtures --
+    ``tests/analytic/test_kernels.py::_TM_PRE_KERNEL`` and
+    ``tests/analytic/test_allocator.py::_PSI3D_BITWISE``. Those are not physics
+    gates; they were captured from the engine BEFORE a refactor to prove the
+    refactor moved no bits, so regenerating them at a new alpha would destroy
+    exactly the historical comparison they exist for. They now pin
+    ``pml_alpha=0.05`` explicitly, so the default can move without taking their
+    meaning with it -- a fixture that inherits a default was always depending
+    on something it did not state.
+
+    Callers that need the alpha-free layer ask for it: the 3D ringdown gate
+    passes ``pml_alpha=0.0`` because it compares this layer against a
+    matched-sigma absorber, and the absorber has no CFS term by construction,
+    so any alpha at all makes that an unfair comparison rather than a
+    measurement.
     """
     n_lo, n_hi = side_counts(npml)
     x = torch.arange(n, dtype=dtype, device=device) + offset

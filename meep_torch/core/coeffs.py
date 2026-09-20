@@ -149,6 +149,7 @@ def build_tm_coeffs(
     x_mirror: int = 0,
     y_rot2: int = 0,
     rot4: int = 0,
+    pml_alpha: float | None = None,   # None -> cpml_profiles' own default
 ) -> TMCoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -220,8 +221,10 @@ def build_tm_coeffs(
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
 
     def prof(n, offset, pair, use_pml=True):
+        kw = {} if pml_alpha is None else {"alpha_max": pml_alpha}
         return cpml_profiles(
-            n, pair if use_pml else 0, offset, dt, dx, dtype=grid.dtype, device=grid.device
+            n, pair if use_pml else 0, offset, dt, dx, dtype=grid.dtype,
+            device=grid.device, **kw
         )
 
     if (y_mirror not in (0, +1, -1) or x_mirror not in (0, +1, -1)
@@ -374,6 +377,7 @@ def build_te_coeffs(
     pole_masks_tensor: Sequence[torch.Tensor] | None = None,
     y_mirror: int = 0,
     x_mirror: int = 0,
+    pml_alpha: float | None = None,   # None -> cpml_profiles' own default
 ) -> TECoeffs:
     dt, dx = grid.dt, grid.dx
     eps = _as_field(eps_inf, grid, 1.0)
@@ -470,7 +474,9 @@ def build_te_coeffs(
         raise ValueError(f"npml={npml} too large for grid {grid.nx}x{grid.ny}")
 
     def prof(n, offset, pair):
-        return cpml_profiles(n, pair, offset, dt, dx, dtype=grid.dtype, device=grid.device)
+        kw = {} if pml_alpha is None else {"alpha_max": pml_alpha}
+        return cpml_profiles(n, pair, offset, dt, dx, dtype=grid.dtype,
+                             device=grid.device, **kw)
 
     # Hz update: dEy/dx at half-x (nx-1); dEx/dy at half-y (ny-1). Both
     # difference at kept-region nodes only -- no ghost enters the Hz

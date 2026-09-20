@@ -194,8 +194,10 @@ def _psi_e_shapes(nx, ny, nz, pmc=()):
     return out
 
 
-def _prof(n, npml, offset, dt, dx, dtype, device):
-    return cpml_profiles(n, npml, offset, dt, dx, dtype=dtype, device=device)
+def _prof(n, npml, offset, dt, dx, dtype, device, pml_alpha=None):
+    """``pml_alpha=None`` defers to ``cpml_profiles``' own default."""
+    return cpml_profiles(n, npml, offset, dt, dx, dtype=dtype, device=device,
+                         **({} if pml_alpha is None else {"alpha_max": pml_alpha}))
 
 
 def _bc(v, ax):
@@ -228,7 +230,8 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
                     npml=0, n_abs=0, absorber_axes=(),
                     sigma_d=None, sigma_b=None, poles=(), pole_masks=None,
                     dtype=torch.float64, device="cpu", absorber_m: int = 2,
-                    absorber_R0: float = 1e-15, pmc_axes=()) -> Coeffs3D:
+                    absorber_R0: float = 1e-15, pmc_axes=(),
+                    pml_alpha: float | None = None) -> Coeffs3D:
     """Boundary modes: full CPML (``npml>0``, ``n_abs=0``), full matched-sigma
     absorber (``npml=0``, ``n_abs>0``), or mixed (``npml>0`` and ``n_abs>0``):
     CPML on the axes not in ``absorber_axes``, matched-sigma absorber on the
@@ -264,9 +267,11 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
                 bH, aH, kH = _ident(n - 1, ax, dtype, device)
                 bE, aE, kE = _ident(n - 2, ax, dtype, device)
             else:                                  # CPML axis
-                b, a, k = _prof(n - 1, npml_ax[ax], 0.5, dt, dx, dtype, device)
+                b, a, k = _prof(n - 1, npml_ax[ax], 0.5, dt, dx, dtype, device,
+                                pml_alpha)
                 bH, aH, kH = _bc(b, ax), _bc(a, ax), _bc(k, ax)
-                b, a, k = _prof(n, npml_ax[ax], 0.0, dt, dx, dtype, device)
+                b, a, k = _prof(n, npml_ax[ax], 0.0, dt, dx, dtype, device,
+                                pml_alpha)
                 bE, aE, kE = _bc(b[1:-1], ax), _bc(a[1:-1], ax), _bc(k[1:-1], ax)
             cpml[kh] = (bH, aH, kH)
             cpml[ke] = (bE, aE, kE)

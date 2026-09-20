@@ -106,22 +106,22 @@ def test_every_kernel_is_one_expression(name):
 # association survives lambdify and nothing about whether the kernel is what
 # the stepper used to compute.
 _TM_PRE_KERNEL = [
-    ("vacuum_pml", dict(npml=8),
+    ("vacuum_pml", dict(pml_alpha=0.05, npml=8),
      {"Ez": "-0x1.916e44a9b931bp+3", "Hx": "0x1.0c4f491921ef5p+4",
       "Hy": "0x1.085ed2e205ddcp+2", "Dz": "-0x1.916e44a9b931bp+3"}),
-    ("sigma_d", dict(npml=8, sigma_d=0.3),
+    ("sigma_d", dict(pml_alpha=0.05, npml=8, sigma_d=0.3),
      {"Ez": "-0x1.745bdff02aa98p+3", "Hx": "0x1.0e389eb845088p+4",
       "Hy": "0x1.f52636caf7678p+1", "Dz": "-0x1.745bdff02aa98p+3"}),
-    ("e_poles", dict(npml=8, poles=[(1.1, 0.0, 0.4), (2.0, 0.1, 0.2)]),
+    ("e_poles", dict(pml_alpha=0.05, npml=8, poles=[(1.1, 0.0, 0.4), (2.0, 0.1, 0.2)]),
      {"Ez": "-0x1.f10b886b69af8p+5", "Hx": "0x1.6bb3b9ec8139ap+4",
       "Hy": "0x1.881ae6495ae8bp+2", "Dz": "-0x1.91762efe902e0p+2"}),
-    ("m_poles", dict(npml=8, m_poles=[(1.3, 0.05, 0.3)]),
+    ("m_poles", dict(pml_alpha=0.05, npml=8, m_poles=[(1.3, 0.05, 0.3)]),
      {"Ez": "0x1.1f535c74e1458p+1", "Hx": "0x1.3c1cddc22197cp+2",
       "Hy": "0x1.3a90517987ef3p+5", "Dz": "0x1.1f535c74e1458p+1"}),
-    ("poles_kerr", dict(npml=8, poles=[(1.1, 0.0, 0.4)], chi3=0.2),
+    ("poles_kerr", dict(pml_alpha=0.05, npml=8, poles=[(1.1, 0.0, 0.4)], chi3=0.2),
      {"Ez": "0x1.9881c7885b781p+4", "Hx": "0x1.e21935b7b3aefp+4",
       "Hy": "-0x1.f093191ac49d8p+1", "Dz": "-0x1.ee43f0b3ea1f0p+1"}),
-    ("chi2", dict(npml=8, chi2=0.15),
+    ("chi2", dict(pml_alpha=0.05, npml=8, chi2=0.15),
      {"Ez": "0x1.5a3116abfb99ep+10", "Hx": "0x1.9a0c2834bc58cp+6",
       "Hy": "-0x1.53481af5e1d8ep+6", "Dz": "-0x1.cd5beeece6300p+7"}),
 ]
