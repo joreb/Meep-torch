@@ -10,9 +10,9 @@
  "num_bands": 50,
  "target_freq": 0.3493,
  "defect_band": 25,
- "defect_freq": 0.37730041628544864,
- "energy_in_cylinder_r1": 0.6227574270994969,
- "targeted_freq": 0.37730041196405995,
- "gap_lo": 0.2822092698545226,
- "gap_hi": 0.4167525751217413
+ "defect_freq": 0.37730041527269725,
+ "energy_in_cylinder_r1": 0.6227582386157771,
+ "targeted_freq": 0.37730041127780095,
+ "gap_lo": 0.28220926985452277,
+ "gap_hi": 0.4167525750688184
 }
