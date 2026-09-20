@@ -799,3 +799,96 @@ def test_every_3d_h_target_has_two_terms_and_disagreeing_sign_sets():
     for target in ("Ex", "Ey", "Ez"):
         assert family_sign(target) == +1, target
         assert curl_signs(target) == curl_terms(target), target
+
+
+# ---------------------------------------------------------------------------
+# 1D: the degenerate case, and the one that pins the REDUCTION rather than the
+# composition. Every component here has exactly one live curl term, because
+# two of the three axes are dropped -- so what is under test is that the
+# factory drops the right two and keeps the right sign on the survivor.
+# ---------------------------------------------------------------------------
+
+_1D = ("Ey", "Ez", "Hy", "Hz")
+
+
+class _C1D(NamedTuple):
+    """`Coeffs1D` under the factory's `b_{family}{axis}` names.
+
+    `stepper_1d` names its CPML arrays `b_h`/`b_e` with no axis, which is
+    unambiguous while there is only one axis and is exactly the shape that
+    stops generalising. The factory always derives `b_{family}{axis}`, so
+    the shim is a rename and nothing else -- the same arrays, in the same
+    order, under the names an nD block would have used.
+    """
+    dt: float
+    b_hx: torch.Tensor; a_hx: torch.Tensor; k_hx: torch.Tensor
+    b_ex: torch.Tensor; a_ex: torch.Tensor; k_ex: torch.Tensor
+
+
+def _1d_seeded(nx=24, npml=4):
+    from meep_torch.core.grid import Grid
+    from meep_torch.core.stepper_1d import build_1d_coeffs, init_1d_state
+
+    g = Grid(nx=nx, ny=3, dx=0.05)
+    m = build_1d_coeffs(g, npml=npml)
+    st = init_1d_state(g)
+    torch.manual_seed(0)
+    st = type(st)._make([(torch.randn_like(v) if torch.is_tensor(v) else v)
+                         for v in st])
+    coeffs = _C1D(m.dt, m.b_h, m.a_h, m.k_h, m.b_e, m.a_e, m.k_e)
+    return m, st, coeffs, BlockSpec(_1D, (nx,), (WALL,))
+
+
+def test_the_built_curl_is_bitwise_with_stepper_1d():
+    """All four 1D curls, against the stepper's own difference kernels.
+
+    `stepper_1d` already carries the factory's psi names (`psi_Ezx` and
+    friends), so the state goes in unshimmed; only the CPML coefficients are
+    renamed. The reference restates the four update lines from `step_1d` and
+    imports everything else, so it cannot drift into testing a copy.
+    """
+    from meep_torch.core.stepper_1d import _dEy, _dEz, _dHy, _dHz
+    from meep_torch.core.symbolic import PSI_NEW, STRETCHED
+
+    m, st, coeffs, spec = _1d_seeded()
+    dx = m.dx
+
+    def h_ref(diff, src, psi, sign):
+        d = diff(getattr(st, src)[:-1], getattr(st, src)[1:], dx)
+        p = PSI_NEW(d, getattr(st, f"psi_{src}x"), m.b_h, m.a_h)
+        out = STRETCHED(d, p, m.k_h)
+        return out if sign > 0 else -out
+
+    def e_ref(diff, src, psi, sign):
+        f = getattr(st, src)
+        d = diff(f[1:], f[:-1], dx)
+        p = PSI_NEW(d, getattr(st, f"psi_{src}x"), m.b_e, m.a_e)
+        out = STRETCHED(d, p, m.k_e)
+        return out if sign > 0 else -out
+
+    cases = {
+        "Hy": (h_ref, _dEz, "Ez", +1),   # Hy = Hy + dt * STRETCHED(dEz, ...)
+        "Hz": (h_ref, _dEy, "Ey", -1),   # Hz = Hz - dt * STRETCHED(dEy, ...)
+        "Ez": (e_ref, _dHy, "Hy", +1),   # Dz[1:-1] += dt * STRETCHED(dHy, ...)
+        "Ey": (e_ref, _dHz, "Hz", -1),   # Dy[1:-1] -= dt * STRETCHED(dHz, ...)
+    }
+    for target, (ref, diff, src, sign) in cases.items():
+        got, psis = make_curl(spec, target)(st, coeffs, dx)
+        want = ref(diff, src, f"psi_{src}x", sign)
+        assert got.shape == want.shape, (target, got.shape, want.shape)
+        assert torch.equal(got, want), target
+        assert list(psis) == [f"psi_{src}x"], (target, list(psis))
+
+
+def test_the_1d_recipe_drops_two_axes_and_keeps_one_term():
+    """The reduction itself, stated as a count.
+
+    In 3D each H target carries two terms; in 1D the y and z differences are
+    identically zero because the block has one extent, so the recipe must come
+    back with one term per component and it must be the x one.
+    """
+    spec = _1d_seeded()[3]
+    for target in _1D:
+        terms, _ = curl_recipe(spec, target)
+        assert len(terms) == 1, (target, [t.source for t in terms])
+        assert terms[0].axis == "x", (target, terms[0].axis)
