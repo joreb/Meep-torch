@@ -33,6 +33,7 @@ import torch
 
 from ..core.ldos import ldos_spectrum
 from ..core.near2far_cyl import farfield_bor_m_complex
+from ..core.sources import source_measure
 from ..core.stepper_bor import build_bor_coeffs, init_bor_state, step_bor
 from ..core.stepper_cyl import (build_cyl_coeffs, init_cyl_state,
                                 step_cyl)
@@ -223,7 +224,16 @@ class CylRun:
 
     def step(self):
         tt = (self.t + 0.5) * self.c.dt
-        amp = self.prof.amplitude(tt) if tt < self.cutoff else 0.0
+        # CUTOFF 0 MEANS "NEVER ENDS", NOT "ENDED AT t = 0".
+        # _source_cutoff returns the latest GaussianPulse.t_end, and its
+        # docstring says "CW never ends -> 0" -- a sentinel for infinity. Read
+        # as a turn-off time it silenced every continuous source in a
+        # cylindrical run: tt < 0.0 is never true, so the amplitude was 0.0 for
+        # every step, the run completed, the fields stayed exactly zero and
+        # nothing raised. The cartesian path does not gate on this at all,
+        # which is why only cylindrical runs were affected.
+        amp = (self.prof.amplitude(tt)
+               if (not self.cutoff or tt < self.cutoff) else 0.0)
         self.state = step_bor(self.state, self.c, amp, self.terms)
         self.t += 1
         self._sample(amp)
@@ -285,6 +295,16 @@ class CylRunRadial(CylRun):
                                   n_absorber=n_abs_r, device=dev)
         self.state = init_cyl_state(g.nr, device=dev)
         self.src_ix, self.prof = _radial_source(sim, g)
+        # THE SOURCE CARRIES A MEASURE, derived rather than typed. meep's rule
+        # (src/sources.cpp:501) multiplies the amplitude by the resolution once
+        # for every grid direction the source is a DELTA in and that the grid
+        # actually has. A radial run's directions are R and Z; sz = 0 makes Z a
+        # nosize direction, so a point source is a delta in R alone and the
+        # measure is 1/dr. step_cyl takes a bare amplitude, so it is applied
+        # here, through the same core.source_measure every cartesian path uses
+        # -- a second copy of the rule is a second thing that can disagree, and
+        # a wrong measure scales the field smoothly with nothing raising.
+        self.measure = source_measure((1,), g.dr, ndim=1)
         self.cutoff = sim._source_cutoff()
         self.t = 0
         self.j_series = []
@@ -294,8 +314,18 @@ class CylRunRadial(CylRun):
 
     def step(self):
         tt = (self.t + 0.5) * self.c.dt
-        amp = self.prof.amplitude(tt) if tt < self.cutoff else 0.0
-        self.state = step_cyl(self.state, self.c, amp, self.src_ix)
+        # CUTOFF 0 MEANS "NEVER ENDS", NOT "ENDED AT t = 0".
+        # _source_cutoff returns the latest GaussianPulse.t_end, and its
+        # docstring says "CW never ends -> 0" -- a sentinel for infinity. Read
+        # as a turn-off time it silenced every continuous source in a
+        # cylindrical run: tt < 0.0 is never true, so the amplitude was 0.0 for
+        # every step, the run completed, the fields stayed exactly zero and
+        # nothing raised. The cartesian path does not gate on this at all,
+        # which is why only cylindrical runs were affected.
+        amp = (self.prof.amplitude(tt)
+               if (not self.cutoff or tt < self.cutoff) else 0.0)
+        self.state = step_cyl(self.state, self.c, amp * self.measure,
+                              self.src_ix)
         self.t += 1
         self._sample(amp)
 
