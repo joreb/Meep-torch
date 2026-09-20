@@ -90,3 +90,42 @@ def test_torch_tm_grad_path():
     assert eps.grad is not None and torch.isfinite(eps.grad).all()
     core = eps.grad[180:220]
     assert torch.all(core > 0)  # raising core eps raises neff
+
+
+def test_mode_parity_classifies_a_symmetric_slab():
+    """Bands of a symmetric slab alternate even, odd, even, odd.
+
+    meep's eig_parity selects a mode by its symmetry, not by its position in
+    the neff ordering, so "EVEN_Y band 1" is the first EVEN mode -- which is
+    band 2 of the full ordering whenever the fundamental is odd. Turning a
+    meep band index into a solved mode therefore needs the profiles
+    classified, and this pins that classification.
+    """
+    import torch
+
+    from meep_torch.modes.fd1d import mode_parity, solve_1d
+
+    n, dx = 120, 0.05
+    eps = torch.ones(n, dtype=torch.float64)
+    eps[50:70] = 12.0                      # slab centred on the line
+    modes = solve_1d(eps, dx, 0.15, "tm", k=4)
+    assert [mode_parity(modes.profiles[i]) for i in range(4)] == [1, -1, 1, -1]
+
+
+def test_mode_parity_refuses_an_asymmetric_line():
+    """No parity to report when the structure has no mirror: 0, not a guess.
+
+    Returning the nearest parity here would let a caller asking for EVEN_Y
+    receive a mode that is not even, which is the plausible-wrong-answer
+    failure this codebase keeps paying for. 0 means "ask a different
+    question".
+    """
+    import torch
+
+    from meep_torch.modes.fd1d import mode_parity, solve_1d
+
+    n, dx = 120, 0.05
+    eps = torch.ones(n, dtype=torch.float64)
+    eps[40:70] = 12.0                      # off-centre slab: no mirror
+    modes = solve_1d(eps, dx, 0.15, "tm", k=2)
+    assert mode_parity(modes.profiles[0]) == 0

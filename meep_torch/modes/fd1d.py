@@ -144,3 +144,29 @@ def solve_1d_tm_torch(eps_line, dx: float, f: float, k: int = 1) -> torch.Tensor
     top = vals[-k:]
     neff = torch.sqrt(torch.clamp(top, min=0.0))
     return torch.flip(neff, dims=[0])           # descending
+
+def mode_parity(profile, tol: float = 1e-6) -> int:
+    """+1 if the profile is even about the line centre, -1 if odd, 0 if neither.
+
+    meep's ``eig_parity`` selects modes by their symmetry under the mirror of
+    the eigenmode volume, so a band index alone does not identify the mode it
+    means: EVEN_Y band 1 is the first EVEN mode, which is band 2 of the full
+    ordering whenever the fundamental happens to be odd. Classifying the solved
+    profiles is what turns a band index into meep's mode.
+
+    Returns 0 rather than guessing when the structure is not symmetric about
+    the line centre -- there is no parity to have then, and a caller asking for
+    one should be told so rather than handed the nearest mode.
+    """
+    import numpy as np
+    a = profile.detach().cpu().numpy() if hasattr(profile, "detach") else np.asarray(profile)
+    peak = float(np.abs(a).max())
+    if peak == 0.0:
+        return 0
+    a = a / peak
+    f = a[::-1]
+    if float(np.abs(a - f).max()) < tol:
+        return +1
+    if float(np.abs(a + f).max()) < tol:
+        return -1
+    return 0
