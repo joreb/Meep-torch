@@ -212,13 +212,18 @@ def test_te_get_array_hz_demirror():
     """get_array(component=Hz) under a mirror uses the TE de-mirror (kept
     half -> full rows/cols cx..nx-2, mirrored half -> 1..cx-1, row/col 0
     zeroed, -phi parity) and matches the full-cell run over the interior.
-    The reconstructed plane is (nx-1, ny-1) = (159, 159) at RES=20."""
+    The reconstructed plane is (nx, ny) = (160, 160) at RES=20."""
     for direction, phase in [(mp.Y, +1), (mp.Y, -1), (mp.X, +1), (mp.X, -1)]:
         sim_half, _, _, _ = _run(direction, phase, half=True)
         sim_full, _, _, _ = _run(direction, phase, half=False)
         a_half = sim_half.get_array(component=mp.Hz)
         a_full = sim_full.get_array(component=mp.Hz)
-        assert a_half.shape == a_full.shape == (RES * 8 - 1, RES * 8 - 1), \
+        # RES*8, not RES*8-1: get_array reports every component on the
+        # CELL-CENTRE grid as meep does, so Hz is the full (nx, ny) rather
+        # than its staggered subgrid. The property under test -- the
+        # half-domain reconstruction equals the full-domain field -- is
+        # unchanged by that.
+        assert a_half.shape == a_full.shape == (RES * 8, RES * 8), \
             f"{a_half.shape} vs {a_full.shape}"
         n = RES
         d = np.abs(a_half - a_full)[n:-n, n:-n]

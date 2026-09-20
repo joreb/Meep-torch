@@ -174,9 +174,24 @@ def test_eigenmodesource_parity_selects_polarization():
         mp.EigenModeSource(mp.GaussianSource(0.15, fwidth=0.1),
                            center=mp.Vector3(), component=mp.Ez,
                            eig_parity=mp.EVEN_Z)
-    with pytest.raises(NotImplementedError):     # no transverse parity filter
+    # The transverse (y) parity filter is wired now: EVEN_Y selects the first
+    # EVEN mode, which is band 2 of the neff ordering whenever the fundamental
+    # is odd. This used to raise NotImplementedError.
+    even_y = mp.EigenModeSource(mp.GaussianSource(0.15, fwidth=0.1),
+                                center=mp.Vector3(),
+                                eig_parity=mp.EVEN_Y + mp.ODD_Z)
+    assert even_y.eig_y_parity == +1
+    odd_y = mp.EigenModeSource(mp.GaussianSource(0.15, fwidth=0.1),
+                               center=mp.Vector3(),
+                               eig_parity=mp.ODD_Y + mp.ODD_Z)
+    assert odd_y.eig_y_parity == -1
+    assert mp.EigenModeSource(mp.GaussianSource(0.15, fwidth=0.1),
+                              center=mp.Vector3(),
+                              eig_parity=mp.ODD_Z).eig_y_parity == 0
+    with pytest.raises(ValueError):              # both parities at once
         mp.EigenModeSource(mp.GaussianSource(0.15, fwidth=0.1),
-                           center=mp.Vector3(), eig_parity=mp.EVEN_Y + mp.ODD_Z)
+                           center=mp.Vector3(),
+                           eig_parity=mp.EVEN_Y + mp.ODD_Y + mp.ODD_Z)
 
 
 def test_eigenmodesource_eig_power_matches_gaussian_ft():
@@ -282,7 +297,10 @@ def test_change_sources_switches_polarization_and_rebuilds():
                                   component=mp.Hz, center=mp.Vector3())])
     assert sim._pol == "te"
     sim.run(until=2)                             # rebuilt coeffs actually step
-    assert sim.get_hfield_z().shape == (39, 39)  # TE Hz staggered grid
+    # (40, 40): get_array reports every component on the CELL-CENTRE grid, as
+    # meep does, not on the staggered grid it is stored on. This asserted
+    # (39, 39) when Hz came back on its own Yee subgrid.
+    assert sim.get_hfield_z().shape == (40, 40)
 
 
 def test_clear_dft_monitors_and_add_sources():

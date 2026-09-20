@@ -130,7 +130,10 @@ def test_to_appended_at_every_stacks_output(tmp_path, monkeypatch):
         import h5py
         with h5py.File(files[0]) as f:
             arr = f["ez"][...]
-    assert arr.ndim == 3 and 4 <= arr.shape[0] <= 6   # frames stacked on time
+    # FRAMES ARE THE TRAILING AXIS, as meep writes them: (nx, ny, nframes),
+    # not (nframes, nx, ny). This asserted shape[0] and so had been checking
+    # the spatial extent since 8919e5d moved the time axis to the end.
+    assert arr.ndim == 3 and 4 <= arr.shape[-1] <= 6
 
 
 # --- FluxData normalization workflow (bend-flux) ---

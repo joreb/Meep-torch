@@ -183,10 +183,21 @@ def test_gaussian_beam_profile_shape():
                              component=mp.Ez, beam_x0=Vector3(5.0, 0.0),
                              beam_kdir=Vector3(1.0, 0.0), beam_w0=w0)
     assert isinstance(src, Source)          # rides the existing Source plumbing
+    # THE SOURCE PLANE IS NOT THE WAIST. beam_x0 is the focus RELATIVE to the
+    # source centre (meep's convention), so the waist sits 5 units downstream
+    # and the profile there has spread to w(z) = w0 sqrt(1 + (z/zR)^2) with
+    # zR = k w0^2 / 2. This used to assert exp(-(y/w0)^2), the WAIST profile,
+    # at a plane five units from the waist -- true only of an envelope that
+    # ignores propagation, which is what the old _beam_envelope did.
+    k = 2.0 * math.pi * 1.0                      # freq 1.0, index 1
+    zR = 0.5 * k * w0 * w0
+    z = -5.0                                     # source plane, relative to the focus
+    wz = w0 * math.sqrt(1.0 + (z / zR) ** 2)
     for y in (0.0, 0.4, 1.0, 2.5):
         # amp_func gets points relative to the source center (meep convention)
-        assert src.amp_func(Vector3(0.0, y)) == pytest.approx(math.exp(-(y / w0) ** 2))
-        assert src.amp_func(Vector3(0.0, -y)) == pytest.approx(src.amp_func(Vector3(0.0, y)))
+        got = abs(complex(src.amp_func(Vector3(0.0, y))))
+        assert got == pytest.approx((w0 / wz) * math.exp(-(y / wz) ** 2))
+        assert abs(complex(src.amp_func(Vector3(0.0, -y)))) == pytest.approx(got)
     with pytest.raises(NotImplementedError):
         GaussianBeamSource(mp.GaussianSource(frequency=1.0, fwidth=0.3),
                            volume=object(), component=mp.Ez, beam_w0=w0)

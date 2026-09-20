@@ -191,6 +191,61 @@ class _Amp:
         return self._amp * self._src.amplitude(t_idx)
 
 
+#: The axes each 2D component is staggered on; () means already at the cell
+#: centre. This is the Yee cell, not a convention chosen here:
+#:
+#:     Ez (i,     j    )   Hx (i,     j+1/2)   Hy (i+1/2, j    )   [TM]
+#:     Hz (i+1/2, j+1/2)   Ex (i+1/2, j    )   Ey (i,     j+1/2)   [TE]
+#:
+#: Hz sits at the cell CORNER and is staggered on BOTH axes. Verified against
+#: the engine's own state on a 60x60 cell: TM Ez (60,60) Hx (60,59) Hy (59,60);
+#: TE Hz (59,59) Ex (59,60) Ey (60,59).
+_STAGGER = {
+    "Ez": (),      "Dz": (),
+    "Hx": (1,),    "Bx": (1,),    "Ey": (1,),    "Dy": (1,),
+    "Hy": (0,),    "By": (0,),    "Ex": (0,),    "Dx": (0,),
+    "Hz": (0, 1),  "Bz": (0, 1),
+}
+
+#: 2D polarisation sets. The two decouple exactly, so a component of the other
+#: set is identically zero -- which is what meep's get_array returns for it.
+_TM_SET = frozenset(("Ez", "Hx", "Hy", "Dz", "Bz"))
+_TE_SET = frozenset(("Hz", "Ex", "Ey", "Dx", "Dy", "Bx", "By"))
+
+
+def _to_centres(arr, axes):
+    """Interpolate a Yee-staggered array onto the cell-centre grid.
+
+    meep reports EVERY component on one grid, the cell centres, measured
+    exactly against pymeep:
+
+        get_array(c)[i, j] == get_field_point(c, Vector3(x[i], y[j]))
+
+    to 1e-12 for Ez, Hx and Hy alike, with x, y from get_array_metadata. A
+    component staggered on an axis has one FEWER sample on it -- the edges
+    between the centres -- so averaging adjacent edges puts it back, which is
+    the linear interpolation get_field_point does.
+
+    Returning the stored array instead leaked the discretisation to the caller:
+    one output_hfield file held three different shapes, and get_array_metadata
+    handed out 60x60 coordinates describing a 60x59 array -- the same fault
+    bugs/array-slice-window-offset.md recorded, on the component axis.
+
+    The first and last centre have only one neighbouring edge and take it: a
+    half-cell first-order error confined to the two outermost columns, which
+    sit inside the PML in any run that has one.
+    """
+    for axis in axes:
+        n = arr.shape[axis] + 1                  # centres = edges + 1
+        lo = np.take(arr, [0], axis=axis)
+        hi = np.take(arr, [arr.shape[axis] - 1], axis=axis)
+        padded = np.concatenate([lo, arr, hi], axis=axis)
+        a = np.take(padded, range(0, n), axis=axis)
+        b = np.take(padded, range(1, n + 1), axis=axis)
+        arr = 0.5 * (a + b)
+    return arr
+
+
 class Simulation:
     """meep mp.Simulation with the full meep 1.34 constructor surface.
 
@@ -932,8 +987,34 @@ class Simulation:
                     out.append(imsrc)
             src.mask = src.mask * amp
             if self._pol == "te":
-                # step_te injects into Dy (Ey grid, (nx, ny-1))
-                src.mask = src.mask[:, :-1]
+                if spec.component == Hz:
+                    # A component=Hz SOURCE IS A MAGNETIC CURRENT, not an
+                    # electric one. Every TE source used to be injected into Dy
+                    # regardless of the component asked for, so driving Hz and
+                    # driving Ey produced bit-identical fields (measured:
+                    # max|a - b| = 0.0). An electric current along y makes an Hz
+                    # that is ODD in x by Ampere's law -- it flips sign across
+                    # the current and vanishes on it -- where meep's Hz from an
+                    # Hz source is EVEN in x and y to 8.6e-16, with a solid
+                    # footprint instead of one with a hole down the middle.
+                    #
+                    # step_te already composes the magnetic path at the B phase
+                    # (src_h_amp, src_hz_mask); nothing built an hz mask for a
+                    # plain mp.Source. Hz lives on (nx-1, ny-1), a cell smaller
+                    # than Ey's (nx, ny-1) on both axes.
+                    #
+                    # PHYSICS: an electric current drives dD/dt = curl H - J, a
+                    # magnetic current drives dB/dt = -curl E - M. Which one is
+                    # injected decides which field is even about the source,
+                    # which is why the symptom was a parity flip rather than a
+                    # wrong amplitude.
+                    src.h_masks = {"src_hz_mask": src.mask[:-1, :-1].contiguous()}
+                    src.h_amplitude = src.amplitude
+                    src.mask = torch.zeros_like(src.mask[:, :-1])
+                else:
+                    # Ey (and the 1D Hy alias): an electric current into Dy,
+                    # which is what the Ey grid (nx, ny-1) carries.
+                    src.mask = src.mask[:, :-1]
             out.append(src)
         return out
 
@@ -2356,22 +2437,19 @@ class Simulation:
             raise ValueError(
                 f"eig_parity implies a {want.upper()} mode but the run is "
                 f"{self._pol.upper()} (ODD_Z = Ez/TM, EVEN_Z = Hz/TE)")
-        if eig_parity & (EVEN_Y | ODD_Y):
-            # REFUSE RATHER THAN IGNORE. This path read only the Z bits and
-            # dropped the Y bits on the floor, so a script passing the same
-            # eig_parity to its source and its monitor -- which
-            # mode-decomposition.py does -- got a filtered mode injected and an
-            # UNFILTERED coefficient back, with nothing marking the second as
-            # unfiltered. The planewave path decomposes into the 0th
-            # diffraction order of a uniform transverse plane, where there is
-            # no mode basis to apply a parity to at all; the filter belongs to
-            # the guided-mode path. Raising says which of the two this is.
-            raise NotImplementedError(
-                "get_eigenmode_coefficients(eig_parity=EVEN_Y/ODD_Y) on the "
-                "planewave path: this monitor decomposes into the 0th "
-                "diffraction order, which has no mode parity to select on. "
-                "The Y bits used to be ignored silently here, which returned "
-                "an unfiltered coefficient for a filtered question.")
+        # THE Y BITS CARRY NO SELECTION HERE, and that is not a defect.
+        # This path decomposes into the 0TH diffraction order of a uniform
+        # transverse plane -- a basis with ONE element -- so a parity cannot
+        # choose between modes; meep's own planewave idiom passes
+        # ODD_Z + EVEN_Y for TM and EVEN_Z + ODD_Y for TE as polarisation
+        # labels, and both must be accepted.
+        #
+        # An earlier version of this guard raised on the Y bits, on the theory
+        # that ignoring them was the silent half of the eig_parity gap. That
+        # mis-scoped it: the gap is in the GUIDED-mode path, where the basis
+        # has several modes and a parity really does select among them. Here
+        # there is nothing to select, and refusing broke
+        # test_eig_coeffs_planewave for both polarisations.
         if bands != [1]:
             raise NotImplementedError(
                 f"get_eigenmode_coefficients(bands={bands}) on a flux "
@@ -2518,18 +2596,44 @@ class Simulation:
             # (Ez,Hx,Hy) -- so no 2D run has both, and aliasing across them
             # fabricates the one it does not have.
             component = {"Ex": "Ez", "Hy": "Hz"}.get(component, component)
+        # ZEROS FOR THE OTHER POLARISATION, because that is what meep returns.
+        # Measured on a 3x3 cell at resolution 20: a TM run's Hz, Ex and Ey come
+        # back as exactly 0.0, not as an error, and likewise Ez, Hx, Hy in a TE
+        # run. The rule lived in mp/output.py, one layer too high -- meep puts
+        # it here, so every caller of get_array gets it rather than only the
+        # output functions.
+        other = _TE_SET if self._pol == "tm" else _TM_SET
+        if component in other:
+            g = self.gs
+            return self._subvolume(np.zeros((g.nx, g.ny), dtype=float),
+                                   center, size)
         if component == "Ez":
-            return self._subvolume(
+            return self._subvolume(_to_centres(
                 self._demirror(self._state.Ez.detach().cpu().numpy(),
-                               self._comp_parity("Ez")), center, size)
-        if component == "Hz":
-            if self._pol == "te":
-                return self._subvolume(
-                    self._demirror_te_hz(self._state.Hz.detach().cpu().numpy()),
-                    center, size)
-            return self._state.Hz if hasattr(self._state, "Hz") else None
+                               self._comp_parity("Ez")),
+                _STAGGER["Ez"]), center, size)
+        if component == "Hz" and self._pol == "te":
+            return self._subvolume(_to_centres(
+                self._demirror_te_hz(self._state.Hz.detach().cpu().numpy()),
+                _STAGGER["Hz"]), center, size)
         if component in ("Hx", "Hy") and self._pol == "tm":
-            return self._subvolume(self._demirror_h(component), center, size)
+            return self._subvolume(_to_centres(self._demirror_h(component),
+                                               _STAGGER[component]),
+                                   center, size)
+        if component in ("Ex", "Ey") and self._pol == "te":
+            # The TE state HOLDS these -- measured |Ey|max = 23.5 on a
+            # Hz-driven run -- and get_array simply had no branch, so they came
+            # back as "unsupported" while being the components that carry the
+            # run. There is no unfold for the staggered E pair (only
+            # _demirror_h for the TM H pair and _demirror_te_hz for TE Hz), so
+            # a folded run raises rather than returning a half-cell guess.
+            if self._sym_cx or self._sym_cy:
+                raise NotImplementedError(
+                    f"{component} under a symmetry fold: no unfold exists for "
+                    "the staggered TE E pair")
+            arr = getattr(self._state, component).detach().cpu().numpy()
+            return self._subvolume(_to_centres(arr, _STAGGER[component]),
+                                   center, size)
         raise ValueError(f"unsupported component {component!r}")
 
     # --- meep Simulation utility methods ---
