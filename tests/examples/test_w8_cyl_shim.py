@@ -126,3 +126,87 @@ def test_force_complex_fields_is_2d_and_cylindrical_only():
     with pytest.raises(NotImplementedError, match="force_complex_fields"):
         mp.Simulation(resolution=10, cell_size=mp.Vector3(2, 2, 2),
                       dimensions=3, force_complex_fields=True)
+
+
+# --- the radial (zero z extent) path: core/stepper_cyl through the shim ------
+
+def test_radial_cylindrical_run_selects_the_radial_stepper():
+    """A cylindrical cell with no z extent routes to core/stepper_cyl.
+
+    Found by the change-impact graph, which flagged CylGrid/CylRun/step as
+    untested: the radial path was validated by running ring-cyl and
+    perturbation_theory against the oracle, but nothing in the suite pinned it,
+    so a regression would only have shown up in a tutorial run.
+    """
+    import numpy as np
+
+    from meep_torch.mp.cyl_shim import CylRunRadial
+
+    sim = mp.Simulation(resolution=20, cell_size=mp.Vector3(3.0, 0, 0),
+                        dimensions=mp.CYLINDRICAL, m=3,
+                        boundary_layers=[mp.PML(1.0)],
+                        geometry=[mp.Block(center=mp.Vector3(1.5),
+                                           size=mp.Vector3(1, mp.inf, mp.inf),
+                                           material=mp.Medium(index=3.4))],
+                        sources=[mp.Source(mp.GaussianSource(0.15, fwidth=0.1),
+                                           component=mp.Ez,
+                                           center=mp.Vector3(1.1))])
+    h = mp.Harminv(mp.Ez, mp.Vector3(1.1), 0.15, 0.1)
+    sim.run(mp.after_sources(h), until_after_sources=50)
+
+    assert type(sim._cyl) is CylRunRadial
+    assert sim._cyl.g.radial and sim._cyl.g.nz == 1
+
+    # eps comes from the ordinary rasterizer, not a hand-built profile: the
+    # ring index 3.4 must appear as 3.4^2.
+    eps = np.asarray(sim.get_epsilon())
+    assert eps.shape == (60,)
+    assert eps.max() == pytest.approx(3.4 ** 2, rel=1e-9)
+    assert eps.min() == pytest.approx(1.0, rel=1e-9)
+
+    # the meep step-function protocol runs on this path (after_sources fired)
+    assert len(h.data) > 100
+
+    # the complementary components are refused, not faked: a radial run has no
+    # Er/Ep/Hz, and returning zeros for them would be a plausible wrong answer
+    for comp in ("Er", "Ep", "Hz"):
+        with pytest.raises(NotImplementedError):
+            sim.get_field_point(comp, mp.Vector3(1.1))
+
+
+def test_radial_cylindrical_source_carries_the_derived_measure():
+    """The radial point source carries 1/dr, from core.sources.source_measure.
+
+    meep treats a zero-thickness source in r as a Dirac delta(r), so the
+    amplitude picks up one factor of the resolution -- R is the only grid
+    direction it is a delta in once a zero z extent makes Z a nosize direction.
+    """
+    from meep_torch.core.sources import source_measure
+
+    sim = mp.Simulation(resolution=20, cell_size=mp.Vector3(3.0, 0, 0),
+                        dimensions=mp.CYLINDRICAL, m=3,
+                        boundary_layers=[mp.PML(1.0)],
+                        sources=[mp.Source(mp.GaussianSource(0.15, fwidth=0.1),
+                                           component=mp.Ez,
+                                           center=mp.Vector3(1.1))])
+    sim.run(until=1)
+    assert sim._cyl.measure == pytest.approx(source_measure((1,), sim._cyl.g.dr, ndim=1))
+    assert sim._cyl.measure == pytest.approx(1.0 / sim._cyl.g.dr)
+
+
+def test_continuous_source_is_not_silenced_in_a_cylindrical_run():
+    """A CW source must actually inject: _source_cutoff returns 0 for "never
+    ends", and reading that as a turn-off time zeroed every CW cylindrical run.
+    """
+    import numpy as np
+
+    sim = mp.Simulation(resolution=20, cell_size=mp.Vector3(3.0, 0, 0),
+                        dimensions=mp.CYLINDRICAL, m=3,
+                        boundary_layers=[mp.PML(1.0)],
+                        sources=[mp.Source(mp.ContinuousSource(0.15),
+                                           component=mp.Ez,
+                                           center=mp.Vector3(1.1))])
+    assert sim._source_cutoff() == 0.0          # the "never ends" sentinel
+    sim.run(until=8)
+    assert np.abs(np.asarray(sim.get_epsilon())).max() > 0      # built
+    assert abs(complex(sim.get_field_point(mp.Ez, mp.Vector3(1.1)))) > 0.0
