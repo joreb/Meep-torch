@@ -23,7 +23,8 @@ from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
-from meep_torch.core.sources import CWRamp, ContinuousSource, GaussianPulse, LineSource
+from meep_torch.core.sources import (CWRamp, ContinuousSource, GaussianPulse,
+                                     LineSource, source_measure)
 from meep_torch.core.stepper_tm import init_tm_state, step_tm
 from meep_torch.geometry.polygons import Polygon
 from meep_torch.geometry.scene import rasterize_scene
@@ -154,8 +155,16 @@ def test_gaussian_beam():
     ix_src = int(round(((-0.5 * s + 2.0 + 1.0) + 0.5 * s) / g.dx))   # x=-4 -> ix=60
     src = LineSource(g, ix_src, 0, g.ny, profile=GaussianPulse(1.0, 0.3))
     y = torch.tensor([-0.5 * s + (j + 0.5) * g.dx for j in range(g.ny)])
+    # KEEP THE MEASURE THE LineSource DERIVED. Overwriting src.mask throws it
+    # away -- the exact defect wiki/bugs/source-normalization-extent.md records
+    # for IndexedSource -- so the raw side lost the 1/dx an extended line
+    # carries while the shim side kept it. The shim field was then 20x the raw
+    # one at resolution 20 and the relative L2 was |20 - 1| = 19, which is what
+    # this asserted against 1e-5: 19.000000182728247, the 1.8e-7 tail being the
+    # agreement the test is actually about.
     src.mask = g.zeros(g.nx, g.ny)
     src.mask[ix_src, :] = torch.exp(-(y ** 2) / (w0 ** 2))
+    src.mask = src.mask * source_measure((g.ny, 1), g.dx)
     c = build_tm_coeffs(g, eps_inf=torch.ones(g.nx, g.ny, dtype=torch.float64, device=g.device), npml=npml)
     st = init_tm_state(g)
     for t in range(1000):
