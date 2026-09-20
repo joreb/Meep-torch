@@ -17,9 +17,15 @@ Physics gates (not golden numbers):
   - With chi3 = 0 the 3rd-harmonic flux vanishes (P3 << P0).
 
 The 3f0 flux has a small boxcar-DFT leakage floor from the strong f0 line
-(~1e-10, present even at chi3=0, scaling ~ a^2). It is subtracted per
-amplitude: P3_net(a) = P3(a, chi3) - P3(a, 0), which restores the clean
-perturbative a^6 / P0^3 scaling over the swept range.
+(~1e-9 over this range, present even at chi3=0, scaling ~ a^2). It is
+subtracted per amplitude: P3_net(a) = P3(a, chi3) - P3(a, 0). At the
+amplitudes swept here the floor sits about four orders below the signal
+(1.0e-9 against 1.6e-5 at a = 0.08), so the subtraction is a correction and
+not the measurement.
+
+The perturbative condition is chi3 * a^2 << 1 along the whole interaction
+length; see the table at AMPS for what happens when it is violated, and why
+"P0 is monotone" is not the same test as "the sweep is perturbative".
 
 meep original: cell sz=100, fcen=1/3, df=fcen/20, dpml=1, res=25, eps=1+chi3*E^2.
 Here sz=80 (NX=2000), dx=0.04 (same res), npml=25 (dpml=1), eps_inf=1.0; the
@@ -47,7 +53,30 @@ N_STEPS = 13000
 CHI3 = 0.3
 IX_SRC = NPML + 2
 IX_MON = NX - NPML - 3
-AMPS = [0.4, 0.6, 0.8, 1.0, 1.2]
+# THE SWEEP MUST STAY PERTURBATIVE, and that window is far narrower than it
+# looks. This medium is eps_inf = 1 with chi3 only, so n(f0) = n(3f0) exactly
+# and THG is PERFECTLY PHASE-MATCHED: conversion grows as z^2 and the pump
+# depletes quickly. Measured P0 at the monitor, chi3 down the side:
+#
+#    chi3   a=0.4   a=0.6   a=0.8   a=1.0   a=1.2   a=1.4
+#     0.3   1.240   2.188   2.489   1.389   0.438   1.401
+#    0.15   1.363   2.731   4.111   4.909   4.744   2.933
+#   0.075   1.420   3.031   4.961   7.018   8.752   9.773
+#     0.0   1.445   3.251   5.780   9.031  13.005  17.701
+#
+# The old range [0.4 ... 1.2] drove past the first depletion null -- P0 peaked
+# at a = 0.8 and fell 5.7x -- and the rise back at a = 1.4 is parametric
+# BACK-CONVERSION, third harmonic returning to the fundamental. Not a solver
+# defect: the turnover tracks constant chi3*a^2 (0.192, 0.150, 0.147), and at
+# chi3 = 0 the flux is exactly quadratic (1.445*(1.4/0.4)^2 = 17.70 against
+# 17.701 measured), so the linear core is clean.
+#
+# Monotone P0 alone is NOT sufficient. At [0.2 ... 0.6] P0 is monotone and
+# P3_net positive, yet P0/a^2 falls 8.88 -> 6.08 (32% depleted) and the slopes
+# come out 1.62 and 2.62. The range below holds P0/a^2 at 9.026 -> 8.877
+# against the undepleted 9.03, i.e. under 2% depletion, and gives
+# slope(P3 vs P0) = 2.934 and slope(P3 vs amp) = 5.818.
+AMPS = [0.08, 0.1, 0.125, 0.15, 0.2]
 
 
 class _Scaled:
