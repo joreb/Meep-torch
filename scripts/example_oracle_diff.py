@@ -297,6 +297,38 @@ def _arrays_in(path):
     return {}
 
 
+def _envelope_note(x, y, live_frac=0.02):
+    """For a time-series dataset, say whether a big pointwise gap is PHASE.
+
+    A dataset written by ``to_appended`` has time as its LAST axis. Comparing
+    such a thing element by element compares the phase of the snapshot, and on
+    a continuous-wave source that is meaningless: measured on bent-waveguide,
+    the two engines sat at a worst relative difference of exactly 2.000 -- a
+    sign flip -- while agreeing to 1.1% on the envelope and 1.6% on rms, with
+    the last frame correlating at -0.36.
+
+    So the ratio is reported beside the pointwise number rather than left for
+    the reader to discover. Exactly 2.000 means antiphase, and an envelope
+    ratio near 1 with a large pointwise gap means the fields agree and the
+    clocks do not. This is the file-level twin of the ``raw_`` prefix.
+    """
+    import numpy as _np
+    if x.ndim < 3 or x.shape[-1] < 8:
+        return ""
+    n = min(40, x.shape[-1])
+    wx, wy = x[..., -n:], y[..., -n:]
+    ex, ey = _np.abs(wx).max(-1), _np.abs(wy).max(-1)
+    live = ey > live_frac * ey.max() if ey.max() else None
+    if live is None or not live.any():
+        return ""
+    with _np.errstate(divide="ignore", invalid="ignore"):
+        env = float(_np.median(ex[live] / ey[live]))
+    rms = float(_np.sqrt((wx ** 2).mean()) / _np.sqrt((wy ** 2).mean() or 1))
+    return (f"; envelope ratio={env:.4f} rms ratio={rms:.4f} over the last "
+            f"{n} frames -- close to 1 means the fields agree and the PHASE "
+            f"differs")
+
+
 def file_pairs(d: pathlib.Path):
     """Yield ``(suffix, mp_path, meep_path)`` for data files BOTH twins wrote.
 
@@ -333,9 +365,10 @@ def compare_files(d, rtol=2e-2, atol=1e-12):
             if bad.any():
                 with _np.errstate(divide="ignore", invalid="ignore"):
                     rel = _np.where(scale > 0, _np.abs(x - y) / scale, 0.0)
-                findings.append(("file-diff", f"{suffix}:{key}",
-                                 f"{bad.sum()}/{x.size} elements, "
-                                 f"worst rel={float(rel.max()):.3e}"))
+                detail = (f"{bad.sum()}/{x.size} elements, "
+                          f"worst rel={float(rel.max()):.3e}")
+                detail += _envelope_note(x, y)
+                findings.append(("file-diff", f"{suffix}:{key}", detail))
     return findings, n_cmp
 
 
