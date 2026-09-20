@@ -206,6 +206,23 @@ def _num_args(func):
     return func.__call__.__func__.__code__.co_argcount - 1
 
 
+def step_dt(sim):
+    """The timestep, from whichever engine owns the grid.
+
+    A cartesian run keeps it on sim.grid; a cylindrical run has sim.grid set
+    to None on purpose -- cyl_shim owns the (r, z) grid -- and keeps it on
+    sim._cyl. Harminv read sim.grid.dt unconditionally, so it raised on the
+    one kind of run that is allowed to pass it through _scope_check.
+    """
+    g = getattr(sim, "grid", None)
+    if g is not None:
+        return g.dt
+    run = getattr(sim, "_cyl", None)
+    if run is not None:
+        return run.dt
+    raise RuntimeError("no timestep yet: run() has not built an engine")
+
+
 def _eval_step_func(sim, func, todo):
     """meep's step-function protocol: a 1-arg f(sim) fires only on
     todo == "step"; a 2-arg f(sim, todo) (combinators, output wrappers) is
@@ -371,7 +388,7 @@ class Harminv:
         self._modes = None
 
     def __call__(self, sim):
-        self._dt = sim.grid.dt
+        self._dt = step_dt(sim)
         self.data.append(complex(sim.get_field_point(self.c, self.pt)))
         self._modes = None
 

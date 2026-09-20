@@ -30,6 +30,8 @@ import torch
 from ..core.ldos import ldos_spectrum
 from ..core.near2far_cyl import farfield_bor_m_complex
 from ..core.stepper_bor import build_bor_coeffs, init_bor_state, step_bor
+from .run_control import (_eval_step_func, fire_per_step,
+                          fire_scheduled, plan_hooks)
 from .vec import Vector3
 
 # meep enum / component sentinels for the cylindrical coordinate system
@@ -236,10 +238,14 @@ def _scope_check(sim, step_funcs):
     if getattr(sim, "k_point", False) not in (False, None):
         raise _NIE("k_point (Bloch) with dimensions=CYLINDRICAL is not "
                    "supported")
-    for sf in step_funcs:
-        if type(sf).__name__ != "Harminv":
-            raise _NIE(f"step function {getattr(sf, '__name__', type(sf).__name__)!r} "
-                       "in a cylindrical run is not supported (mp.Harminv only)")
+    # Step functions are NOT restricted here any more. This used to allow
+    # Harminv and reject everything else, because run_cyl ran its own loop that
+    # called every step function on every step and understood nothing else --
+    # no at_every, no after_sources, no at_end. The cartesian path already has
+    # the whole protocol in run_control.plan_hooks/fire_*, so the cylindrical
+    # loop now wires itself to that instead of reimplementing a worse version.
+    # perturbation_theory.py and ring-cyl.py both use after_sources(Harminv),
+    # which is the ordinary meep idiom and was rejected as unsupported.
 
 
 def run_cyl(sim, step_funcs, until=None, until_after_sources=None,
@@ -265,14 +271,21 @@ def run_cyl(sim, step_funcs, until=None, until_after_sources=None,
             n_total = max(1, int(round((run.cutoff
                                         + float(until_after_sources or 0)) / dt)))
 
+    begin, per_step, scheduled = plan_hooks(step_funcs, run.cutoff)
+    for g in begin:
+        _eval_step_func(sim, g, "step")
     t0 = run.t
+    fire_scheduled(sim, scheduled, run.t * dt, dt)
     while n_total is None or run.t - t0 < n_total:
         run.step()
-        for sf in step_funcs:
-            sf(sim)
+        t = run.t * dt
+        fire_per_step(sim, per_step, t, dt)
+        fire_scheduled(sim, scheduled, t, dt)
         if conds is not None:
-            if run.t * dt >= gate - 1e-9 and any(bool(c(sim)) for c in conds):
+            if t >= gate - 1e-9 and any(bool(c(sim)) for c in conds):
                 break
+    for func in step_funcs:      # meep run-end protocol: todo="finish"
+        _eval_step_func(sim, func, "finish")
 
 
 # --------------------------------------------------------- field probes

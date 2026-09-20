@@ -443,6 +443,22 @@ class Simulation:
             warnings.warn("Rotate2/Rotate4 on a TE run keep the full cell "
                           f"({_SYM_TODO})")
             rot2, rot4 = 0, 0
+        if self.gs is None:
+            # CYLINDRICAL: cyl_shim owns the (r, z) grid, so there is no
+            # self.gs to read a cell count from and no cartesian half-domain
+            # fold to set up. The list below builds its (axis, count) pairs
+            # EAGERLY, before the `ax in mirrors` filter, so it dereferenced
+            # self.gs.ny even for a run that declared no symmetries at all --
+            # which is every cylindrical tutorial. perturbation_theory.py and
+            # ring-cyl.py both died on construction with "'NoneType' object
+            # has no attribute 'ny'", one line into a shim that had nothing to
+            # do for them. The fold state is already zeroed above, which is
+            # the right answer here: no fold.
+            if mirrors or rot2 or rot4:
+                raise NotImplementedError(
+                    "symmetries on a cylindrical run are not supported "
+                    "(the (r, z) grid has no cartesian mirror fold)")
+            return
         odd = [ax for ax, n in ((Y, self.gs.ny), (X, self.gs.nx))
                if ax in mirrors and n % 2]
         if odd:
