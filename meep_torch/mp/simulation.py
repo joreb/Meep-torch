@@ -1311,6 +1311,9 @@ class Simulation:
     def electric_energy_in_box(self, box=None, center=None, size=None):
         """meep electric_energy_in_box: integral of eps |E|^2 / 2 over the
         box (2D; whole cell when no box is given)."""
+        if self.dimensions == CYLINDRICAL:
+            from .cyl_shim import cyl_energy_in_box
+            return cyl_energy_in_box(self, "electric", box, center, size)
         from .output import _epwr
         i0, i1, j0, j1 = self._box_indices(box, center, size)
         return float(np.sum(_epwr(self)[i0:i1, j0:j1]) * self.gs.dx ** 2)

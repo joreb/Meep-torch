@@ -365,6 +365,46 @@ def cyl_array(sim, component, center=None, size=None):
                "carried by the state (Dielectric / Er / Ep / Ez / Hr / Hp / Hz)")
 
 
+def cyl_energy_in_box(sim, kind, box=None, center=None, size=None):
+    """meep ``*_energy_in_box`` on a cylindrical run.
+
+    THE MEASURE IS THE POINT. A cylindrical cell's volume element is
+    2 pi r dr dz, not dr dz, so an energy integral that sums cells uniformly
+    is wrong by a factor that varies across the domain -- it under-weights the
+    outside and over-weights the axis, which no single constant can repair.
+    perturbation_theory.py divides its own numerator, written with explicit
+    2 pi r factors, by this integral, so the two measures have to agree or the
+    ratio is silently wrong rather than loudly broken.
+
+    For a radial run (d/dz = 0) the z integral is per unit length and the
+    element is 2 pi r dr.
+    """
+    run = getattr(sim, "_cyl", None)
+    if run is None:
+        raise RuntimeError("run() before an energy integral")
+    g = run.g
+    if not g.radial:
+        raise _NIE("energy integrals on an (r, z) cylindrical run are not "
+                   "wired yet (the radial case is)")
+    if kind != "electric":
+        raise _NIE(f"{kind}_energy_in_box on a radial cylindrical run is not "
+                   "wired (the radial H pair lives on staggered r grids)")
+    if box is not None:
+        center, size = box.center, box.size
+    ez = run.state.Ez.detach().cpu().numpy()
+    eps = run.c.eps.detach().cpu().numpy()
+    r = np.arange(len(ez)) * g.dr
+    i0, i1 = 0, len(ez)
+    if center is not None or size is not None:
+        c = float((center or Vector3()).x)
+        w = float((size or Vector3()).x)
+        i0 = max(0, int(round((c - w / 2.0) / g.dr)))
+        i1 = min(len(ez), int(round((c + w / 2.0) / g.dr)) + 1)
+    sl = slice(i0, max(i1, i0 + 1))
+    u = 0.5 * eps[sl] * np.abs(ez[sl]) ** 2
+    return float(np.sum(u * 2.0 * np.pi * r[sl]) * g.dr)
+
+
 def _scope_check(sim, step_funcs):
     if getattr(sim, "symmetries", None) or getattr(sim, "_sym_cx", 0) \
             or getattr(sim, "_sym_cy", 0):
