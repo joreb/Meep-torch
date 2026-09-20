@@ -129,3 +129,102 @@ def test_mode_parity_refuses_an_asymmetric_line():
     eps[40:70] = 12.0                      # off-centre slab: no mirror
     modes = solve_1d(eps, dx, 0.15, "tm", k=2)
     assert mode_parity(modes.profiles[0]) == 0
+
+
+def test_select_mode_counts_only_modes_of_the_requested_parity():
+    """meep's band index counts within the parity, not within the ordering.
+
+    THE ODD CASE IS THE ONLY ONE THAT TESTS ANYTHING. On a symmetric slab the
+    fundamental is already even, so EVEN_Y band 1 is the same mode the
+    unfiltered band 1 gives -- that assertion passes whether the filter works
+    or not. ODD_Y band 1 is the mode at ordering index 2, so it moves only if
+    the selection is really happening.
+    """
+    import torch
+
+    from meep_torch.modes.fd1d import select_mode, solve_1d
+
+    n, dx = 120, 0.05
+    eps = torch.ones(n, dtype=torch.float64)
+    eps[50:70] = 12.0
+    ordering = solve_1d(eps, dx, 0.15, "tm", k=2).neff
+
+    neff_any, _ = select_mode(eps, dx, 0.15, "tm", band=0, parity=0)
+    neff_even, _ = select_mode(eps, dx, 0.15, "tm", band=0, parity=+1)
+    neff_odd, _ = select_mode(eps, dx, 0.15, "tm", band=0, parity=-1)
+
+    assert neff_any == pytest.approx(float(ordering[0]))
+    assert neff_even == pytest.approx(float(ordering[0]))   # no-op here
+    assert neff_odd == pytest.approx(float(ordering[1]))    # the real check
+    assert neff_odd != pytest.approx(neff_even)
+
+
+def test_select_mode_refuses_a_parity_the_line_cannot_have():
+    """An asymmetric line has no parity, so a filtered request must raise.
+
+    Handing back the nearest mode would answer a question the structure cannot
+    answer, which is the plausible-wrong-answer failure mode this codebase
+    keeps paying for.
+    """
+    import torch
+
+    from meep_torch.modes.fd1d import select_mode
+
+    n, dx = 120, 0.05
+    eps = torch.ones(n, dtype=torch.float64)
+    eps[40:70] = 12.0                      # off-centre: no mirror
+    with pytest.raises(ValueError, match="even"):
+        select_mode(eps, dx, 0.15, "tm", band=0, parity=+1)
+
+
+def test_select_mode_handles_the_half_domain_basis():
+    """A pmc_lo profile is half a mode, so its parity is not in the profile.
+
+    bc="pmc_lo" solves the y >= 0 half against a magnetic wall at the cut
+    plane, so every mode it returns is the half of an EVEN mode: the parity is
+    enforced by the boundary condition and is invisible to a classifier, which
+    sees a profile that is not symmetric about its own centre and reports 0.
+    Filtering on that would refuse a request that is actually satisfiable, so
+    EVEN_Y is a no-op here and ODD_Y is refused for a physical reason rather
+    than by finding no match.
+    """
+    import torch
+
+    from meep_torch.modes.fd1d import select_mode
+
+    n, dx = 120, 0.05
+    eps = torch.ones(n, dtype=torch.float64)
+    eps[:20] = 12.0                        # core sitting against the cut plane
+    plain, _ = select_mode(eps, dx, 0.15, "tm", band=0, parity=0, bc="pmc_lo")
+    even, _ = select_mode(eps, dx, 0.15, "tm", band=0, parity=+1, bc="pmc_lo")
+    assert even == pytest.approx(plain)
+    with pytest.raises(ValueError, match="pmc_lo"):
+        select_mode(eps, dx, 0.15, "tm", band=0, parity=-1, bc="pmc_lo")
+
+
+def test_select_modes_returns_a_basis_all_of_one_parity():
+    """Every mode in a filtered basis has the requested parity.
+
+    This is the property that keeps a source and a monitor talking about the
+    same thing. compute_smatrix injects the parity-selected mode and projects
+    onto select_modes' basis; if that basis were the unfiltered ordering, the
+    decomposition would be in a different basis than the one driven. On a
+    symmetric guide with EVEN_Y the two coincide, so the mismatch is invisible
+    in the case anyone would test -- it only appears for ODD_Y.
+    """
+    import torch
+
+    from meep_torch.modes.fd1d import mode_parity, select_modes
+
+    n, dx = 200, 0.05
+    eps = torch.ones(n, dtype=torch.float64)
+    eps[70:130] = 12.0
+    for parity in (+1, -1):
+        _, profiles = select_modes(eps, dx, 0.15, "tm", n=3, parity=parity)
+        assert [mode_parity(p) for p in profiles] == [parity] * 3
+
+    # and the two families interleave in the raw ordering, which is why a band
+    # index cannot stand in for a parity selection
+    even, _ = select_modes(eps, dx, 0.15, "tm", n=2, parity=+1)
+    odd, _ = select_modes(eps, dx, 0.15, "tm", n=2, parity=-1)
+    assert even[0] > odd[0] > even[1] > odd[1]

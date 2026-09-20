@@ -18,6 +18,9 @@ class Port:
     hi: int
     direction: int
     n_modes: int = 1
+    #: +1 even, -1 odd, 0 unfiltered -- meep's eig_parity Y bits.
+    #: The band index counts only modes of this parity, as meep counts.
+    parity: int = 0
 
 
 def validate_ports(ports: Sequence[Port], grid: Grid, npml: int) -> None:

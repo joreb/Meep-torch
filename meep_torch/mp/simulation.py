@@ -37,7 +37,7 @@ from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
                           DftNear2Far, DftObj, EigCoeffsResult, FluxData,
                           _eval_step_func, chunk_size, dft_name, fire_per_step,
                           fire_scheduled, plan_hooks)
-from .sources import (AUTOMATIC, EVEN_Z, NO_PARITY, ODD_Z, Dielectric,
+from .sources import (AUTOMATIC, EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z, Dielectric,
                       DiffractedPlanewave, EigenModeSource, Ez,
                       GaussianBeam3DSource, Hz, IndexedSource, Source,
                       _Quadrature, _point_or_span, build_line_source,
@@ -1597,7 +1597,8 @@ class Simulation:
         # AUTOMATIC (meep default, -1) = launch along the region normal, forward
         src_dir = +1 if es.direction == AUTOMATIC else es.direction
         src_port = Port(axis=axis, index=idx, lo=lo, hi=hi, direction=src_dir,
-                        n_modes=es.eig_band)   # eig_band is 1-based (meep)
+                        n_modes=es.eig_band,   # eig_band is 1-based (meep)
+                        parity=getattr(es, "eig_y_parity", 0))
         ports = [src_port]
         self._port_index = {}
         for (name, ax, i, l, h, d) in self._mode_ports:
@@ -2355,6 +2356,22 @@ class Simulation:
             raise ValueError(
                 f"eig_parity implies a {want.upper()} mode but the run is "
                 f"{self._pol.upper()} (ODD_Z = Ez/TM, EVEN_Z = Hz/TE)")
+        if eig_parity & (EVEN_Y | ODD_Y):
+            # REFUSE RATHER THAN IGNORE. This path read only the Z bits and
+            # dropped the Y bits on the floor, so a script passing the same
+            # eig_parity to its source and its monitor -- which
+            # mode-decomposition.py does -- got a filtered mode injected and an
+            # UNFILTERED coefficient back, with nothing marking the second as
+            # unfiltered. The planewave path decomposes into the 0th
+            # diffraction order of a uniform transverse plane, where there is
+            # no mode basis to apply a parity to at all; the filter belongs to
+            # the guided-mode path. Raising says which of the two this is.
+            raise NotImplementedError(
+                "get_eigenmode_coefficients(eig_parity=EVEN_Y/ODD_Y) on the "
+                "planewave path: this monitor decomposes into the 0th "
+                "diffraction order, which has no mode parity to select on. "
+                "The Y bits used to be ignored silently here, which returned "
+                "an unfiltered coefficient for a filtered question.")
         if bands != [1]:
             raise NotImplementedError(
                 f"get_eigenmode_coefficients(bands={bands}) on a flux "

@@ -15,7 +15,7 @@ from typing import Sequence
 import numpy as np
 import torch
 
-from ..modes.fd1d import solve_1d
+from ..modes.fd1d import select_modes
 
 _NORM_FLOOR = 1e-12
 
@@ -26,7 +26,8 @@ def dft_fields(acc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,
-              n_modes: int, axis_sign: float = -1.0, bc: str = "pec"):
+              n_modes: int, axis_sign: float = -1.0, bc: str = "pec",
+              parity: int = 0):
     Ec, Hc = dft_fields(acc)
     nf = len(freqs)
     # The mode solve is a scipy eigenproblem, so solve_1d hands back CPU
@@ -38,10 +39,16 @@ def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,
     a_m = torch.zeros(nf, n_modes, dtype=torch.complex128, device=dev)
     eps_line = eps_line.detach()
     for i, f in enumerate(freqs):
-        modes = solve_1d(eps_line, dx, f, pol, k=n_modes, bc=bc)
+        # THE BASIS MUST MATCH THE SOURCE. When the port carries a parity the
+        # source injects the parity-selected mode, so projecting onto the
+        # unfiltered ordering decomposes in a different basis than the one
+        # driven. For EVEN_Y on a symmetric guide the two coincide, which is
+        # why that error would hide in exactly the case anyone would test.
+        neffs, profs = select_modes(eps_line, dx, f, pol, n=n_modes,
+                                    parity=parity, bc=bc)
         for m in range(n_modes):
-            prof = modes.profiles[m].to(dev)
-            neff = float(modes.neff[m])
+            prof = profs[m].to(dev)
+            neff = neffs[m]
             if pol == "tm":
                 Em = prof
                 Hm = axis_sign * neff * Em                  # stored Hy = -Hy_m for +x

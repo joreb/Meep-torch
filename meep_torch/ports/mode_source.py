@@ -7,7 +7,7 @@ Forward-only: mode profiles are detached (fd1d solves in numpy).
 import torch
 
 from ..core.grid import Grid
-from ..modes.fd1d import solve_1d
+from ..modes.fd1d import select_mode
 from .port import Port, SRC_OFFSET
 
 _H_SIGN = -1.0  # relative sign of the magnetic sheet; fixed by the one-way test
@@ -19,7 +19,8 @@ _TE_SRC_OFFSET = 12
 
 
 class ModeSourceTM:
-    def __init__(self, grid, coeffs, port, profile, fcen, mode=0, bc="pec"):
+    def __init__(self, grid, coeffs, port, profile, fcen, mode=0, bc="pec",
+                 parity=0):
         # bc="pmc_lo": half-domain even-mirror port (build_tm_coeffs
         # y_mirror=+1, port.lo at the cut plane) -- the solver returns the
         # upper half of the even mode.
@@ -31,15 +32,15 @@ class ModeSourceTM:
             eps_line = coeffs.eps_inf[port.lo:port.hi, port.index].detach()
         if coeffs.c3.numel() and self._line_dispersive(coeffs.c3, port):
             raise ValueError("dispersive media on port line unsupported")
-        modes = solve_1d(eps_line, dx, fcen, "tm", k=mode + 1, bc=bc)
-        neff = float(modes.neff[mode])
+        neff, prof_sel = select_mode(eps_line, dx, fcen, "tm", band=mode,
+                                     parity=parity, bc=bc)
         # cladding reference: line ends -- except the pmc_lo cut plane,
         # where the LOW end is the core center (mirror axis)
         clad = float(torch.sqrt(eps_line[-1] if bc == "pmc_lo"
                                 else torch.max(eps_line[0], eps_line[-1])))
         if neff <= clad + 1e-9:
             raise ValueError(f"no guided mode at port (neff={neff:.4f} <= cladding {clad:.4f})")
-        prof = modes.profiles[mode].to(grid.dtype)
+        prof = prof_sel.to(grid.dtype)
         self.neff = neff
         # M sheet sits one cell upstream of the J sheet in BOTH directions
         # (the col/row choice below already places it on the launch side), so the
@@ -88,7 +89,7 @@ class ModeSourceTE:
     h_masks injects a Hz magnetic current. Mode profiles detached.
     """
 
-    def __init__(self, grid, coeffs, port, profile, fcen, mode=0):
+    def __init__(self, grid, coeffs, port, profile, fcen, mode=0, parity=0):
         if port.axis != "x":
             raise NotImplementedError("TE y-normal not supported (FluxMonitorTE is x-normal only)")
         self.profile, self.dt, self.d = profile, grid.dt, port.direction
@@ -97,12 +98,12 @@ class ModeSourceTE:
         eps_line = coeffs.eps_y[port.index, port.lo:port.hi].detach()
         if coeffs.c3y.numel() and bool((coeffs.c3y[:, port.index, port.lo:port.hi] != 0).any()):
             raise ValueError("dispersive media on port line unsupported")
-        modes = solve_1d(eps_line, dx, fcen, "te", k=mode + 1)
-        neff = float(modes.neff[mode])
+        neff, prof_te = select_mode(eps_line, dx, fcen, "te", band=mode,
+                                    parity=parity)
         clad = float(torch.sqrt(torch.max(eps_line[0], eps_line[-1])))
         if neff <= clad + 1e-9:
             raise ValueError(f"no guided mode at port (neff={neff:.4f} <= cladding {clad:.4f})")
-        Hz_m = modes.profiles[mode].to(grid.dtype)
+        Hz_m = prof_te.to(grid.dtype)
         Ey_m = (neff * Hz_m / eps_line).to(grid.dtype)
         self.neff = neff
         self.delay = neff * dx / 2.0  # direction-independent (M upstream of J both ways)

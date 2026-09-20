@@ -462,10 +462,8 @@ class EigenModeSource(Source):
             raise NotImplementedError(
                 "EigenModeSource eig_vol is not supported; the mode is solved "
                 "on the source line")
-        if eig_parity & (EVEN_Y | ODD_Y):
-            raise NotImplementedError(
-                "EigenModeSource transverse (y) parity filtering is not "
-                "supported; use EVEN_Z/ODD_Z to select TE/TM")
+        if (eig_parity & EVEN_Y) and (eig_parity & ODD_Y):
+            raise ValueError("eig_parity cannot be both EVEN_Y and ODD_Y")
         want = Hz if eig_parity & EVEN_Z else (Ez if eig_parity & ODD_Z else None)
         if component is ALL_COMPONENTS:
             component = want or Ez       # meep ALL_COMPONENTS -> TM default here
@@ -475,6 +473,12 @@ class EigenModeSource(Source):
         super().__init__(src=src, component=component, center=center,
                          volume=volume, **kwargs)
         self.direction = direction
+        #: +1 even, -1 odd, 0 unfiltered. meep selects modes by their symmetry
+        #: under the mirror of the eigenmode volume, so EVEN_Y band 1 is the
+        #: FIRST EVEN mode -- band 2 of the neff ordering when the fundamental
+        #: is odd. The band index counts only modes of this parity.
+        self.eig_y_parity = (+1 if eig_parity & EVEN_Y
+                             else (-1 if eig_parity & ODD_Y else 0))
         self.eig_band = eig_band
         self.eig_kpoint = eig_kpoint
         self.eig_match_freq = eig_match_freq

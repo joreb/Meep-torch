@@ -74,7 +74,8 @@ def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
     s = torch.zeros(nf, dim, dim, dtype=torch.complex128)
 
     for col, (j, n) in enumerate(index):
-        src = src_cls(grid, coeffs, ports[j], GaussianPulse(fcen, fwidth), fcen, mode=n)
+        src = src_cls(grid, coeffs, ports[j], GaussianPulse(fcen, fwidth), fcen,
+                      mode=n, parity=ports[j].parity)
         monitors = [mon_fn(p) for p in ports]
         if decay_probe is not None:
             from ..core.run import run_until_decayed
@@ -91,7 +92,7 @@ def compute_smatrix(eps, grid: Grid, ports: Sequence[Port], *, pol: str,
             _, accs = run(init(grid), coeffs, n_steps, source=src,
                           monitors=monitors, checkpoint_every=checkpoint_every)
         coeff = [decompose(acc, eps_fn(p), grid.dx, freqs, pol, p.n_modes,
-                           axis_sign=sign_fn(p))
+                           axis_sign=sign_fn(p), parity=p.parity)
                  for p, acc in zip(ports, accs)]
         a_p, a_m = coeff[j]
         a_in = a_p[:, n] if ports[j].direction > 0 else a_m[:, n]

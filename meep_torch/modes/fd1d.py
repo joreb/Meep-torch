@@ -170,3 +170,69 @@ def mode_parity(profile, tol: float = 1e-6) -> int:
     if float(np.abs(a + f).max()) < tol:
         return -1
     return 0
+
+
+def select_modes(eps_line, dx: float, f: float, pol: str, n: int = 1,
+                 parity: int = 0, bc: str = "pec", extra: int = 4):
+    """The first `n` modes of `parity`, as (neff list, profile list).
+
+    `parity` is +1 even, -1 odd, 0 no filter. THE BASIS AND THE SOURCE MUST
+    AGREE: an S-matrix whose source injects the parity-selected mode while its
+    monitor projects onto the unfiltered ordering is decomposing in the wrong
+    basis, and for EVEN_Y on a symmetric guide the two coincide, so the error
+    hides in exactly the case people test.
+    """
+    if parity and bc == "pmc_lo":
+        # A HALF-DOMAIN PROFILE HAS NO PARITY TO READ. bc="pmc_lo" solves the
+        # y >= 0 half against a magnetic wall at the cut plane, so every mode
+        # it returns is the half of an EVEN mode -- the parity is enforced by
+        # the boundary condition and is not visible in the profile, which is
+        # not symmetric about its own centre. Classifying it would return 0 for
+        # every band and refuse a request that is actually satisfiable.
+        if parity < 0:
+            raise ValueError(
+                "odd modes do not exist in the pmc_lo half-domain basis: the "
+                "magnetic wall at the cut plane selects the even family")
+        parity = 0
+    if not parity:
+        modes = solve_1d(eps_line, dx, f, pol, k=n, bc=bc)
+        return [float(modes.neff[i]) for i in range(n)], [modes.profiles[i] for i in range(n)]
+    # GROW k UNTIL THE MATCHES STOP GROWING, don't guess a margin. The index
+    # counts within the parity, so how many modes to solve for is not known up
+    # front: a fixed margin refuses satisfiable requests whenever the wanted
+    # family is sparse, and the refusal reads as "no such mode" when it means
+    # "I did not look far enough".
+    n_line = len(eps_line)
+    k, prev = n + extra, -1
+    while True:
+        k = min(k, n_line)
+        modes = solve_1d(eps_line, dx, f, pol, k=k, bc=bc)
+        matching = [i for i in range(len(modes.neff))
+                    if mode_parity(modes.profiles[i]) == parity]
+        if len(matching) >= n:
+            return ([float(modes.neff[i]) for i in matching[:n]],
+                    [modes.profiles[i] for i in matching[:n]])
+        if k >= n_line or len(matching) == prev:
+            break
+        prev = len(matching)
+        k = min(k * 2, n_line)
+    want = "even" if parity > 0 else "odd"
+    raise ValueError(
+        f"only {len(matching)} {want} mode(s) on this port line, {n} requested "
+        f"(among the {k} solved). A line with no mirror about its centre has "
+        "no parity to select on, so this is also what an asymmetric structure "
+        "reports.")
+
+
+def select_mode(eps_line, dx: float, f: float, pol: str, band: int = 0,
+                parity: int = 0, bc: str = "pec", extra: int = 4):
+    """(neff, profile) of the `band`-th mode counting only modes of `parity`.
+
+    meep counts the way this does: eig_parity picks modes by their symmetry
+    under the mirror of the eigenmode volume, so EVEN_Y band 1 is the first
+    EVEN mode, which is band 2 of the neff ordering whenever the fundamental
+    is odd.
+    """
+    neffs, profs = select_modes(eps_line, dx, f, pol, n=band + 1,
+                                parity=parity, bc=bc, extra=extra)
+    return neffs[band], profs[band]
