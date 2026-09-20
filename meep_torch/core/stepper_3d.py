@@ -23,7 +23,17 @@ import torch
 
 from .coeffs import _pole_recurrence
 from .pml import absorber_sigma, cpml_profiles, side_counts
-from .symbolic import PSI_NEW, STRETCHED
+from .symbolic import (PSI_NEW, STRETCHED,
+                       compiled_curl_composition)
+
+#: meep's grouping as `stepper_tm` and `stepper_te` write it:
+#: `((d0/k0 + psi0) - d1/k1) - psi1`. This file used to write
+#: `(d0/k0 + psi0) - (d1/k1 + psi1)` instead -- the same algebra, a
+#: different association, and 1.4e-14 apart. Neither grouping is meep's
+#: (meep has no CPML at all), so the tie-break is baselines: tm/te carry
+#: the solve_cw tolerance history and core.factory is bitwise through
+#: this composition on TM and on all three TE components.
+_COMPOSE = compiled_curl_composition(n_terms=2)
 
 
 class Coeffs3D(NamedTuple):
@@ -415,27 +425,24 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     ce_y = STRETCHED(dEz_dy, psi_Ez_y, kHy)
     dEy_dz = _d(state.Ey, 2) / dx
     psi_Ey_z = PSI_NEW(dEy_dz, state.psi_Ey_z, bHz, aHz)
-    ce_z = STRETCHED(dEy_dz, psi_Ey_z, kHz)
     d1, d2 = c.damp["hx"]
-    Hx = d1 * state.Hx - d2 * (ce_y - ce_z)
+    Hx = d1 * state.Hx - d2 * _COMPOSE(ce_y, dEy_dz, kHz, psi_Ey_z)
 
     dEx_dz = _d(state.Ex, 2) / dx
     psi_Ex_z = PSI_NEW(dEx_dz, state.psi_Ex_z, bHz, aHz)
     ce_z2 = STRETCHED(dEx_dz, psi_Ex_z, kHz)
     dEz_dx = _d(state.Ez, 0) / dx
     psi_Ez_x = PSI_NEW(dEz_dx, state.psi_Ez_x, bHx, aHx)
-    ce_x = STRETCHED(dEz_dx, psi_Ez_x, kHx)
     d1, d2 = c.damp["hy"]
-    Hy = d1 * state.Hy - d2 * (ce_z2 - ce_x)
+    Hy = d1 * state.Hy - d2 * _COMPOSE(ce_z2, dEz_dx, kHx, psi_Ez_x)
 
     dEy_dx = _d(state.Ey, 0) / dx
     psi_Ey_x = PSI_NEW(dEy_dx, state.psi_Ey_x, bHx, aHx)
     ce_x2 = STRETCHED(dEy_dx, psi_Ey_x, kHx)
     dEx_dy = _d(state.Ex, 1) / dx
     psi_Ex_y = PSI_NEW(dEx_dy, state.psi_Ex_y, bHy, aHy)
-    ce_y2 = STRETCHED(dEx_dy, psi_Ex_y, kHy)
     d1, d2 = c.damp["hz"]
-    Hz = d1 * state.Hz - d2 * (ce_x2 - ce_y2)
+    Hz = d1 * state.Hz - d2 * _COMPOSE(ce_x2, dEx_dy, kHy, psi_Ex_y)
 
     # E update (dD/dt = curl H); PEC outer edge via _pad_interior, CPML on
     # the in-plane derivatives.

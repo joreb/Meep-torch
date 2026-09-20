@@ -23,9 +23,26 @@ THE MEASURED CONSTRAINT, and the reason this is a factory rather than a
 generic function: resolve the spec at BUILD time. A version that re-read the
 Yee table, compared sympy Rationals and looked coefficients up by string on
 every step measured 1.5-2x slower, and that 1.5-2x was mistaken for the cost of
-genericity by two sessions. Hoisted into a closure over plain ints, slice
-objects and bound functions it runs at parity -- 0.95-0.99x in 2D, 1.00x in 3D
-on CUDA. No codegen; a closure.
+genericity by two sessions. The heavy work -- which terms, which neighbour,
+what shape, what order -- is hoisted into a closure over plain ints, slice
+objects and bound functions. No codegen; a closure.
+
+WHAT IS NOT HOISTED, measured 2026-09-20 on this code rather than inherited
+from the earlier generic stepper: `_one` still builds ``f"b_{t.coeff}"`` and
+friends and calls ``getattr`` per term per step. That costs 222 ns per term
+against 37 ns for a build-time ``attrgetter``, so 0.74 us per 4-term step --
+**0.45% of a 100x100 TM step and 0.029% of a 400x400 one**. An A/B against
+`step_tm` cannot resolve it: the difference sits about two orders of magnitude
+below the thread-scheduling noise at these sizes, and a run that tried it
+produced ratios from 0.69x to 1.04x, i.e. noise with the factory "winning"
+twice, which is impossible for strictly more Python work.
+
+So it is left alone deliberately. Precomputing the names onto `CurlTerm` and
+binding `attrgetter` at build time is about five lines and would keep the
+argument-not-capture property, but 0.03% is not a reason to touch a hot path
+that is bitwise-gated against two steppers. Revisit if a profile ever shows
+per-step Python on the critical path -- many small blocks, or an eager 3D run
+with tiny tiles, are where it would first appear.
 
 ``coeffs`` is an ARGUMENT to the returned function, not a capture, so the same
 built step serves every rebuild of the coefficients an adjoint produces and
