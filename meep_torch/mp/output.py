@@ -16,6 +16,7 @@ import shutil
 import numpy as np
 
 from .run_control import Volume, _eval_step_func
+from .cyl_shim import needs_cyl
 from .functions import component_name, verbosity
 
 _E = ("Ex", "Ey", "Er", "Ep", "Ez")
@@ -111,56 +112,125 @@ def _volume_slice(sim, arr):
 
 
 def _get(sim, component):
-    """Component array, or None when the engine does not expose it."""
+    """Component array, or None when the engine does not expose it.
+
+    A 0-d or object-dtype result counts as NOT EXPOSED. get_array does not
+    always raise for a component the run lacks -- a TM run asked for Hz hands
+    back a 0-d object array, which is not None, so it sailed past the caller's
+    `arr is None` check and reached h5py as
+    ``TypeError: Object dtype dtype('O') has no native HDF5 equivalent``.
+    """
     try:
-        return _volume_slice(sim, np.asarray(sim.get_array(component=component)))
+        arr = np.asarray(sim.get_array(component=component))
     except (ValueError, RuntimeError, AttributeError):
         return None
+    if arr.ndim == 0 or arr.dtype == object:
+        return None
+    return _volume_slice(sim, arr)
 
 
 #: The 2D field components, split by polarisation. In a 2D run the two sets
 #: decouple completely, so a component from the OTHER set is not missing -- it
 #: is identically zero, and that is physics rather than an unimplemented
 #: feature.
-#: `component_name` returns LOWERCASE tags ('ez', not 'Ez'), which the first
-#: version of this check got wrong and so never fired.
-_2D_FIELDS = ("ez", "hx", "hy", "dz", "hz", "ex", "ey", "dx", "dy")
+#: The 2D field components by polarisation. In a 2D run the two sets decouple,
+#: so a component of the OTHER set is identically zero.
+_TM_SET = frozenset("ez hx hy dz bz".split())
+_TE_SET = frozenset("hz ex ey dx dy bx by".split())
+
+
+def _is_zero_in_this_run(sim, component):
+    """True only when the component belongs to the OTHER 2D polarisation.
+
+    Decided from the run's own polarisation, which is the only signal that
+    means what it looks like. Two earlier attempts did not:
+
+    - matching the tag against a list of ALL nine 2D field names cannot tell
+      "absent because the other polarisation" from "present but get_array
+      cannot return it", and wrote zeros over both;
+    - `fields.have_component` is a per-implementation constant (`c in
+      _TM_COMPONENTS`), not a per-run fact, so it reports the TM set even for
+      a TE run.
+
+    Measured availability, which follows neither: a TM run exposes Ez, Hx, Hy
+    AND Ex; a TE run exposes Hz and Hy but NOT its own Ex, Ey. So "get_array
+    failed" cannot mean "the field is zero" -- Ex and Ey in a TE run are real,
+    non-zero, and unavailable, and zeroing them was the bug this replaces.
+
+    Under this rule they raise, which is the honest answer: the engine has the
+    field and cannot hand it over. Only the complementary set is zero-filled,
+    which is the case that motivated any of this -- cyl-ellipsoid.py drives Hz
+    and ends with mp.output_efield_z, and Ez in a TE run is zero everywhere.
+    """
+    pol = getattr(sim, "_pol", None)
+    if pol not in ("tm", "te"):
+        return False                 # 3D or cylindrical: no such decoupling
+    tag = component_name(component)
+    return tag in (_TE_SET if pol == "tm" else _TM_SET)
 
 
 def _zero_of_run(sim):
-    """Full-grid zeros shaped like a component this run does carry.
+    """Full-grid zeros, shaped as meep shapes its output.
 
+    From the dielectric grid, not from a field: meep returns the FULL grid for
+    every component, while this engine returns Yee-native shapes, so a TE run
+    donating Hz gave (59, 59) where meep writes (60, 60).
     """
-    for c in ("Ez", "Hz", "Ex", "Ey", "Hx", "Hy"):
-        a = _get(sim, c)          # mp.Ez IS the string "Ez"
-        if a is not None:
-            return np.zeros_like(a)
+    try:
+        eps = np.asarray(sim.get_epsilon())
+        if eps.ndim >= 2:
+            return np.zeros(eps.shape, dtype=float)
+    except Exception:
+        pass
     return None
 
 
-def _output_component(sim, component):
-    tag = component_name(component)
+def _resolve(sim, component):
+    """The array to write for one component, or a raise.
+
+    ASKING A TE RUN FOR Ez IS NOT AN ERROR. cyl-ellipsoid.py drives Hz and
+    ends with mp.output_efield_z; upstream meep runs it to completion, because
+    in a TE run Ez is zero everywhere rather than absent. Raising there made a
+    legal tutorial fail against a shim whose job is to accept what meep
+    accepts. Anything the engine does hand over wins over the zero fill.
+    """
     arr = _get(sim, component)
-    if arr is None and tag in _2D_FIELDS:
-        # ASKING A TE RUN FOR Ez IS NOT AN ERROR. cyl-ellipsoid.py drives Hz
-        # and ends with mp.output_efield_z; upstream meep runs it to
-        # completion, because in a TE run Ez is zero everywhere rather than
-        # absent. Raising here made a legal tutorial fail against a shim whose
-        # job is to accept what meep accepts.
+    if arr is None and _is_zero_in_this_run(sim, component):
         arr = _zero_of_run(sim)
     if arr is None:
         raise ValueError(f"the engine does not expose component {component!r} "
                          "for this run (see Simulation.get_array)")
-    return _write(sim, tag, {tag: arr})
+    return arr
+
+
+def _output_component(sim, component):
+    tag = component_name(component)
+    return _write(sim, tag, {tag: _resolve(sim, component)})
+
+
+def _in_this_coordinate_system(sim, component):
+    """False for a component of the coordinate system this run is not using.
+
+    The family tuples above are the union over coordinate systems -- _E holds
+    Er and Ep beside Ex and Ey -- so a cartesian run must drop the cylindrical
+    pair outright rather than zero-fill or demand them. They are not zero in a
+    cartesian run; they do not exist in it.
+    """
+    axis = component_name(component)[1:]
+    return (axis in ("r", "p", "z")) if needs_cyl(sim) else (axis in ("x", "y", "z"))
 
 
 def _output_family(sim, comps, tag):
-    """Write every available component of a field family into one file."""
-    data = {component_name(c): a for c in comps
-            if (a := _get(sim, c)) is not None}
-    if not data:
-        raise ValueError(f"the engine exposes none of {comps} for this run")
-    return _write(sim, tag, data)
+    """Write a whole field family into one file, all components or none.
+
+    Dropping the components _get cannot return was silent corruption: a TE
+    output_efield wrote a file holding only the zero-filled ez and quietly lost
+    ex and ey, the two that carry the run. A family file that names itself
+    after the family has to contain it, so an unavailable component of THIS
+    run's polarisation raises here exactly as it does on its own.
+    """
+    comps = [c for c in comps if _in_this_coordinate_system(sim, c)]
+    return _write(sim, tag, {component_name(c): _resolve(sim, c) for c in comps})
 
 
 def _mk_component_fn(c, name):
