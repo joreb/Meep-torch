@@ -61,12 +61,12 @@ import pathlib
 import matplotlib
 
 matplotlib.use("Agg")                # rule 1: headless, before any pyplot import
-OUT = pathlib.Path(__file__).parent / "output"     # rule 2
-OUT.mkdir(exist_ok=True)
+# rule 2. parents=True because output/ itself may not exist yet -- plain
+# exist_ok=True raises FileNotFoundError on the first run of a fresh clone.
+OUT = pathlib.Path(__file__).parent / "output/{experiment}/"
+OUT.mkdir(parents=True, exist_ok=True)
 {device_line}
-_RUN = OUT / "{experiment}"
-_RUN.mkdir(parents=True, exist_ok=True)
-os.chdir(_RUN)        # every relative write upstream makes lands in output/<name>/
+os.chdir(OUT)         # every relative write upstream makes lands in output/<name>/
 # --- end preamble ----------------------------------------------------------
 
 '''
@@ -108,8 +108,16 @@ MEEP_DEVICE = 'DEVICE = "meep-cpu"       # real meep: CPU only, no device concep
 MODESOLVER = re.compile(r"ModeSolver$")
 
 
-def _device_lines(src, device_expr):
-    """Insert ``<var>.device = DEVICE`` after each ModeSolver construction.
+def _modesolver_lines(src, experiment, device_expr=None):
+    """Insert the generated ModeSolver settings after each construction.
+
+    ``filename_prefix`` goes in on BOTH sides: it is real mpb API, and setting
+    it is how ``example_template.py`` rule 2 says an mpb script is told where
+    to write. Naming both engines' outputs identically is also what lets the
+    h5 files be compared by name rather than by guesswork.
+
+    ``device`` goes in on the TORCH SIDE ONLY, because real mpb's ModeSolver
+    has no such attribute.
 
     By AST, not regex: upstream builds these across many lines
     (``ms = mpb.ModeSolver(\n    num_bands=8,\n    ...)``) and a line-oriented
@@ -137,8 +145,12 @@ def _device_lines(src, device_expr):
         return src, 0
     lines = src.splitlines(keepends=True)
     for lineno, var, col in sorted(inserts, reverse=True):
-        lines.insert(lineno, f"{' ' * col}{var}.device = {device_expr}"
-                             f"   # generated: 3D planewave backend only\n")
+        pad = " " * col
+        block = f'{pad}{var}.filename_prefix = str(OUT / "{experiment}")\n'
+        if device_expr:
+            block = (f"{pad}{var}.device = {device_expr}"
+                     f"   # generated: 3D planewave backend only\n") + block
+        lines.insert(lineno, block)
     return "".join(lines), len(inserts)
 
 
@@ -194,9 +206,11 @@ def port(upstream, into, force=False, dry_run=False):
 
     out = []
     for suffix, note, transform, device_line in (
-            ("_mp", " but for the meep import and any ms.device line",
-             lambda s: _device_lines(to_meep_torch(s), "DEVICE")[0], TORCH_DEVICE),
-            ("_meep", "", lambda s: s, MEEP_DEVICE)):
+            ("_mp", " but for the meep import and the generated ModeSolver lines",
+             lambda s: _modesolver_lines(to_meep_torch(s), experiment,
+                                         "DEVICE")[0], TORCH_DEVICE),
+            ("_meep", " but for the generated ModeSolver lines",
+             lambda s: _modesolver_lines(s, experiment)[0], MEEP_DEVICE)):
         dest = into / f"{experiment}{suffix}.py"
         if dest.exists() and not force:
             out.append((dest, "exists: left alone (use --force)"))
