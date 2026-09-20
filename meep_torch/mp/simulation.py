@@ -1008,7 +1008,29 @@ class Simulation:
                     # injected decides which field is even about the source,
                     # which is why the symptom was a parity flip rather than a
                     # wrong amplitude.
-                    src.h_masks = {"src_hz_mask": src.mask[:-1, :-1].contiguous()}
+                    # THE Hz GRID IS OFFSET HALF A CELL, so a source sitting
+                    # on an E node lands BETWEEN Hz nodes and has to occupy
+                    # both. Hz is (nx-1, ny-1) with node (i, j) half a cell up
+                    # and right of E node (i, j), so an E-grid delta at (i, j)
+                    # is at the corner of the four Hz nodes (i-1, j-1)..(i, j).
+                    # Slicing the E mask to [:-1, :-1] put the whole source on
+                    # ONE of them, which is off-centre by half a cell on each
+                    # axis -- the field then mirrors about the wrong axis, and
+                    # the parity stayed broken even once the current was
+                    # magnetic. Averaging the two neighbours per axis is the
+                    # same rule that puts a delta between grid points in
+                    # core.sources (see delta_weights): weight 1/2 each, which
+                    # for a centred source is exactly symmetric.
+                    # Hz is (nx-1, ny-1) and node (i, j) sits half a cell up
+                    # and right of E node (i, j), so the Hz grid's own mirror
+                    # fixed point is an INTEGER node -- index 29 of 59 -- where
+                    # the E grid's is the half-integer 29.5 of 60. A source at
+                    # the geometric centre therefore belongs on ONE Hz node,
+                    # not spread over two: spreading it over nodes 29 and 30
+                    # centres it on 29.5 and the field mirrors about the wrong
+                    # axis. E node i maps to Hz node i-1, which is the [1:, 1:]
+                    # slice.
+                    src.h_masks = {"src_hz_mask": src.mask[1:, 1:].contiguous()}
                     src.h_amplitude = src.amplitude
                     src.mask = torch.zeros_like(src.mask[:, :-1])
                 else:
