@@ -172,8 +172,18 @@ def _modesolver_lines(src, experiment, device_expr=None):
     return "".join(lines), len(inserts)
 
 
+#: ``from meep import mpb`` is the ONE import that does not go to meep_torch.mp.
+#: mpb is a sibling package, ``meep_torch.mpb``, exactly as the hand-written
+#: examples in examples/10_periodic_mpb import it. Routing it through .mp gave
+#: ``ImportError: cannot import name 'mpb' from 'meep_torch.mp'`` on all nine
+#: mpb tutorials, and that read as nine shim gaps in the first results table
+#: when it was one porter bug.
+_FROM_MPB = re.compile(r"^([ \t]*)from[ \t]+meep[ \t]+import[ \t]+mpb\b", re.M)
+
+
 def to_meep_torch(src):
-    """Resolve upstream's meep imports to ``meep_torch.mp``, and nothing else."""
+    """Resolve upstream's meep imports to ``meep_torch``, and nothing else."""
+    src = _FROM_MPB.sub(r"\1from meep_torch import mpb", src)
     src = _IMPORT_AS.sub(
         lambda m: f"{m.group(1)}import meep_torch.mp{m.group(2)}"
                   f"{m.group(3) or ' as meep'}", src)

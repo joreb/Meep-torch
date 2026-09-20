@@ -32,7 +32,7 @@ os.chdir(OUT)         # every relative write upstream makes lands in output/<nam
 import math
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 # A triangular lattice of dielectric rods in air.  (This structure has
 # a band_gap for TM fields.)  This file is used in the "Data Analysis

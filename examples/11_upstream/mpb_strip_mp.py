@@ -30,7 +30,7 @@ os.chdir(OUT)         # every relative write upstream makes lands in output/<nam
 # --- end preamble ----------------------------------------------------------
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 # Compute modes of a rectangular Si strip waveguide on top of oxide.
 # Note that you should only pay attention, here, to the guided modes,

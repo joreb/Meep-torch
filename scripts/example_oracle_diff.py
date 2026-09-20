@@ -74,6 +74,7 @@ import argparse
 import json
 import math
 import pathlib
+import re
 import sys
 
 # Keys that describe the run rather than its result. Comparing them is not a
@@ -136,6 +137,74 @@ def _numeric(d):
             and _leaf(k) not in METADATA and not _leaf(k).startswith("raw_")}
 
 
+ROW = re.compile(r"^(?P<tag>.+)\[(?P<i>\d+)\]\[(?P<j>\d+)\]$")
+
+
+def realign(a: dict, b: dict) -> tuple[dict, dict, list]:
+    """Re-key ``tag[i][j]`` rows by their FIRST column instead of their ordinal.
+
+    meep's tutorials print rows whose first field is the independent variable:
+    a time, a frequency, an angle. Keying the rest of the row by its position
+    in the output means one extra or missing row shifts everything after it,
+    and a single behavioural difference is reported as dozens of numeric ones.
+
+    Measured on absorber-1d: meep-torch prints 16 rows from t=0, meep prints 15
+    from t=10, because our `at_every` fires at t=0 and meep's does not. That one
+    fact produced 23 phantom differences -- every later row compared against its
+    neighbour. Re-keyed by t, it produces exactly what it is: one row present on
+    our side only.
+
+    Falls back to the ordinal key for any tag whose first column is not a usable
+    label (duplicated or missing on either side), because a bad join is worse
+    than an honest ordinal.
+    """
+    groups: dict[str, dict[str, dict[int, float]]] = {}
+    for side, d in (("a", a), ("b", b)):
+        for k, v in d.items():
+            m = ROW.match(k)
+            if not m:
+                continue
+            groups.setdefault(m["tag"], {}).setdefault(side, {})
+    out_a, out_b, notes = dict(a), dict(b), []
+    for tag in groups:
+        rows = {}
+        for side, d in (("a", a), ("b", b)):
+            byi: dict[int, dict[int, float]] = {}
+            for k, v in d.items():
+                m = ROW.match(k)
+                if m and m["tag"] == tag:
+                    byi.setdefault(int(m["i"]), {})[int(m["j"])] = v
+            rows[side] = byi
+        labels = {}
+        for side in ("a", "b"):
+            ls = [r.get(0) for r in rows[side].values()]
+            if not ls or any(l is None for l in ls) or len(set(ls)) != len(ls):
+                labels = None
+                break
+            labels[side] = ls
+        if labels is None:
+            continue                       # keep ordinal keys for this tag
+        # A first column is only an INDEPENDENT VARIABLE if it behaves like
+        # one: several rows, and the two engines sweeping the same values. On a
+        # single-row tag the first column is the RESULT -- perturbation_theory_2d
+        # prints one `dwdR:` line -- and re-keying by it guarantees the sides
+        # never meet, turning a real 54% difference into "2 rows on one side
+        # only". Overlap is the test that separates the two cases.
+        shared = set(labels["a"]) & set(labels["b"])
+        if len(labels["a"]) < 2 or len(labels["b"]) < 2 or not shared:
+            continue
+        for side, dst in (("a", out_a), ("b", out_b)):
+            for i, cols in rows[side].items():
+                for j, v in cols.items():
+                    dst.pop(f"{tag}[{i}][{j}]", None)
+                    dst[f"{tag}@{cols[0]:g}[{j}]"] = v
+        only = set(labels["a"]) ^ set(labels["b"])
+        if only:
+            notes.append(f"{tag}: {len(only)} row(s) on one side only "
+                         f"(first column {sorted(only)[:4]}...)")
+    return out_a, out_b, notes
+
+
 def _is_result(key):
     """True if a one-sided key is a RESULT the script printed, not chatter.
 
@@ -161,7 +230,10 @@ def compare(port, oracle, rtol=2e-2, atol=1e-12, strict_missing=True):
     it buries the twin's real findings under the variant's 179 non-findings.
     """
     a, b = _numeric(_flatten(port)), _numeric(_flatten(oracle))
+    a, b, notes = realign(a, b)
     findings, worst, chatter = [], 0.0, 0
+    for n in notes:
+        findings.append(("row-count", n, None))
     for side, keys in (("only-in-port", set(a) - set(b)),
                        ("only-in-oracle", set(b) - set(a))):
         for k in sorted(keys):

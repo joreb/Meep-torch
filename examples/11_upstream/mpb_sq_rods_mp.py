@@ -32,7 +32,7 @@ os.chdir(OUT)         # every relative write upstream makes lands in output/<nam
 import time
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 # Compute band structure for a square lattice of dielectric rods
 # in air.

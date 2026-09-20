@@ -32,7 +32,7 @@ os.chdir(OUT)         # every relative write upstream makes lands in output/<nam
 import math
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 # A line_defect waveguide in a 2d triangular lattice of dielectric
 # rods (c.f. tri_rods.ctl), formed by a row of missing rods along the

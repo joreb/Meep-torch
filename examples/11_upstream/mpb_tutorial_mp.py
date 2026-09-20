@@ -34,7 +34,7 @@ import math
 from scipy.optimize import minimize_scalar, ridder
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 
 def print_heading(h):

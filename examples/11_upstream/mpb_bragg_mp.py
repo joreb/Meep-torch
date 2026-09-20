@@ -30,7 +30,7 @@ os.chdir(OUT)         # every relative write upstream makes lands in output/<nam
 # --- end preamble ----------------------------------------------------------
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 # Compute the bands at the X point for a quarter-wave stack Bragg
 # mirror (this is the point that defines the band gap edges).

@@ -32,7 +32,7 @@ os.chdir(OUT)         # every relative write upstream makes lands in output/<nam
 import math
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 # Compute the band structure for a Bragg mirror consisting of a
 # sinusoidally-varying dielectric index.

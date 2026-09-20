@@ -32,7 +32,7 @@ os.chdir(OUT)         # every relative write upstream makes lands in output/<nam
 import math
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 # A honeycomb lattice of dielectric rods in air.  (This structure has
 # a complete (overlapping TE/TM) band gap.)  A honeycomb lattice is really

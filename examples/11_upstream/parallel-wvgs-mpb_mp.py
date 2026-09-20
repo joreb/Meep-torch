@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import meep_torch.mp as mp
-from meep_torch.mp import mpb
+from meep_torch import mpb
 
 resolution = 128  # pixels/μm
 
