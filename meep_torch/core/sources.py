@@ -307,14 +307,11 @@ class RandomSource:
 #
 # Gaussian beam amplitude on a source plane, from the standard paraxial form.
 #
-# WRITTEN FROM THE PHYSICS, NOT PORTED. An earlier version of this file was a
-# line-by-line transcription of meep's ``gaussianbeam::get_fields``
-# (src/sources.cpp), which meep adapted from SCUFF-EM. Both are GPL, and this
-# project ships an MIT wheel with "no meep (GPL2) code" as a stated rule
-# (docs/plans/2026-07-29-complete-port-execution-plan.md). A transcription of
-# GPL source into an MIT-headed file is a licence violation however small it is,
-# so it is gone. The physical result is not anyone's property; the particular
-# code that computes it is.
+# WRITTEN FROM THE PHYSICS, NOT PORTED. This project ships an MIT wheel and
+# does not carry ported engine code; see LICENSE.md. The paraxial beam is a
+# published result, so it is implemented here from the formulae rather than
+# taken from any particular implementation -- which also means it can be read
+# and checked against a textbook instead of trusted.
 #
 # THE FORM USED HERE is the textbook paraxial Gaussian beam:
 #
