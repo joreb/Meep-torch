@@ -5,6 +5,12 @@ __pycache__/
 dist/
 *.egg-info/
 
+# secrets -- never committed. `.*/` below covers dot-DIRECTORIES only, so a
+# plain `.env` FILE was not matched by anything here.
+.env
+.env.*
+!.env.example
+
 # local agent-tooling artifacts (not part of the library)
 .claude/
 .mcp.json

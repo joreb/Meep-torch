@@ -50,6 +50,7 @@ dev = [
     "matplotlib>=3.10.9",
     "gdstk>=1.0.1",
     "h5py>=3.16.0",
+    "typesafe-sdk>=0.7.0",
 ]
 
 [tool.uv.sources]
