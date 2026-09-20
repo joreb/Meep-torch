@@ -2468,20 +2468,29 @@ class Simulation:
             raise RuntimeError("run() before get_array(fields)")
         if self._bloch_state is not None:
             return self._subvolume(self._bloch_array(component), center, size)
-        if component in ("Ez", "Ex"):
+        if self.dimensions == 1:
+            # A 1D meep run propagates along z and names its pair Ex, Hy; this
+            # engine stores that same pair as Ez, Hz. The rename is a 1D fact
+            # and is gated on 1D: ungated it answered a 2D TM get_array("Ex")
+            # with the run's Ez array, so a TE-only component came back with
+            # the magnitude of the TM one it aliased (ex == ez == 2.07), and
+            # output_efield wrote that impostor into the file. In 2D the two
+            # polarisations decouple -- Ex belongs to (Hz,Ex,Ey) and Ez to
+            # (Ez,Hx,Hy) -- so no 2D run has both, and aliasing across them
+            # fabricates the one it does not have.
+            component = {"Ex": "Ez", "Hy": "Hz"}.get(component, component)
+        if component == "Ez":
             return self._subvolume(
                 self._demirror(self._state.Ez.detach().cpu().numpy(),
                                self._comp_parity("Ez")), center, size)
-        if component in ("Hz", "Hy"):
+        if component == "Hz":
             if self._pol == "te":
                 return self._subvolume(
                     self._demirror_te_hz(self._state.Hz.detach().cpu().numpy()),
                     center, size)
-            if component == "Hy" and hasattr(self._state, "Hy"):
-                return self._subvolume(self._demirror_h("Hy"), center, size)
             return self._state.Hz if hasattr(self._state, "Hz") else None
-        if component == "Hx" and self._pol == "tm":
-            return self._subvolume(self._demirror_h("Hx"), center, size)
+        if component in ("Hx", "Hy") and self._pol == "tm":
+            return self._subvolume(self._demirror_h(component), center, size)
         raise ValueError(f"unsupported component {component!r}")
 
     # --- meep Simulation utility methods ---
