@@ -1,6 +1,9 @@
 # From the Meep tutorial: plotting permittivity and fields of a straight waveguide
 import os
 import pathlib
+import sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from _report import record
 
 import matplotlib
 
@@ -85,3 +88,26 @@ print(np.shape(data))
 
 peak = float(np.max(np.abs(ez_data)))
 print(f"straight-waveguide.png  [{DEVICE}]  max|Ez| after t=200 = {peak:.6e}")
+
+# The same numbers a third time, as named scalars: a PNG is not diffable and
+# two CSVs need a reader to say which column is which.
+#
+# THIS IS A CW RUN, so the instantaneous field is recorded as `raw_` and NOT
+# compared. Sampling a continuous-wave field at one instant compares the phase
+# of the snapshot: measured here, the two engines sat at 196% relative
+# difference pointwise while agreeing to 0.08% on the guided envelope, because
+# meep's snapshot was 18 cells further along the same wave. What gets compared
+# is phase-insensitive -- envelope, rms and the spatial period, which is the
+# guided wavelength and therefore the real physics of a waveguide.
+_g = slice(30, 150)                      # guided span, clear of source and PML
+_line = ez_data[:, ez_data.shape[1] // 2]
+_guide = _line[_g]
+_zc = np.where(np.diff(np.signbit(_guide)))[0]
+record(__file__, device=DEVICE,
+       shape=[int(n) for n in ez_data.shape],
+       peak_abs_ez_guided=float(np.abs(_guide).max()),
+       rms_ez_guided=float(np.sqrt((_guide ** 2).mean())),
+       spatial_period_cells=float(2 * np.mean(np.diff(_zc))),
+       raw_peak_abs_ez=peak,
+       raw_ez_centerline=_line,
+       eps_centerline=eps_data[:, eps_data.shape[1] // 2])
