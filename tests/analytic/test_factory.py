@@ -331,20 +331,25 @@ def test_a_damping_name_is_supplied_or_the_component_is_undamped():
 
 
 def test_the_allocator_and_the_curl_name_the_same_psi_arrays():
-    """Two independent derivations of one name set, compared as SETS.
+    """Two routes to one name set, compared as SETS.
 
-    `BlockSpec.psi_shapes` gets them from Yee-offset inequality; the built
-    curl gets them from `curl_terms`. Comparing shapes on the keys they share
-    would pass while one side allocated an array nothing writes -- which is
-    exactly the `stepper_3d_lean` over-allocation the parity gate could not
-    see, because a psi that is never read is never wrong.
+    Comparing shapes on the keys they share would pass while one side
+    allocated an array nothing writes -- which is exactly the
+    `stepper_3d_lean` over-allocation the parity gate could not see, because
+    a psi that is never read is never wrong. `psi_shapes` once derived the
+    set from Yee-offset inequality, which agrees within one polarisation and
+    over-allocates across two (`psi_Hxx` for `Ex` on the six-component
+    block); it now reads `curl_terms` like the curl does, and the
+    six-component case below is the one that told the two apart.
     """
     from meep_torch.core.factory import make_step
 
+    for spec in (_spec(), _kz2d_spec(), _kz2d_spec(imaginary=_TM_SET)):
+        step = make_step(spec)
+        built = {t.psi for c in spec.components for t in step.curls[c].terms
+                 if t.psi}
+        assert set(spec.psi_shapes()) == built, spec.components
     spec = _spec()
-    step = make_step(spec)
-    built = {t.psi for c in spec.components for t in step.curls[c].terms}
-    assert set(spec.psi_shapes()) == built
 
     _, m, st = _seeded(npml=6)
     for name, shape in spec.psi_shapes().items():
@@ -989,3 +994,256 @@ def test_the_built_curl_is_bitwise_with_stepper_bloch2_at_zero_k():
     # and the stepper's fields follow from those rhs terms
     assert torch.equal(nxt.Hx_c, Hx + dt * wants["Hx"])
     assert torch.equal(nxt.Hy_c, Hy + dt * wants["Hy"])
+
+
+# ---------------------------------------------------------------------------
+# The representation: meep's implicit i. One six-component 2D block with a
+# phased z axis, built twice from the same spec -- complex, and real with the
+# TM polarisation stored as i*TM -- and held together bitwise.
+# ---------------------------------------------------------------------------
+
+_KZ2D = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+_TM_SET, _TE_SET = ("Ez", "Hx", "Hy"), ("Ex", "Ey", "Hz")
+
+
+def _kz2d_spec(**kw):
+    from meep_torch.core.factory import TM_DAMPING
+    kw.setdefault("damping", TM_DAMPING + (("Ex", "d1x", "d2x"),
+                                           ("Ey", "d1y", "d2y"),
+                                           ("Hz", "hz1", "hz2")))
+    kw.setdefault("entry", "B")
+    kw.setdefault("sources", ("Ez", "Ey"))
+    kw.setdefault("constitutive", (("Ez", "eps_inf"), ("Ex", "eps_x"),
+                                   ("Ey", "eps_y")))
+    kw.setdefault("phases", (("z", "kz"),))
+    return BlockSpec(_KZ2D, (NX, NY), (WALL, WALL), **kw)
+
+
+def _kz2d_coeffs(kz=0.8, **kw):
+    """TM's and TE's coefficient tables merged, which the block needs both of.
+
+    The CPML families are named `b_ex`..`k_hy` in both, and the two builders
+    produce the SAME profiles under the same names (asserted, not assumed) --
+    so a six-component block can read one table. The damping pairs and the
+    permittivities do not collide, and `kz` is new.
+    """
+    from meep_torch.core.coeffs import build_te_coeffs
+    g = Grid(nx=NX, ny=NY, dx=0.05)
+    tm, te = build_tm_coeffs(g, **kw), build_te_coeffs(g, **kw)
+    vals = {"dt": tm.dt, "dx": tm.dx, "kz": kz}
+    for n in tm._fields:
+        v = getattr(tm, n)
+        if n in te._fields and torch.is_tensor(v):
+            w = getattr(te, n)
+            assert torch.equal(v, w) if torch.is_tensor(w) else v == w, n
+        vals[n] = v
+    for n in te._fields:
+        vals.setdefault(n, getattr(te, n))
+    return NamedTuple("_Kz2dCoeffs", [(n, object) for n in vals])(**vals)
+
+
+def _kz2d_state(spec, complex_=True, seed=0):
+    """Every array the block's own curls name, randomised, complex or real."""
+    from meep_torch.core.factory import make_curl
+    shapes = {c: spec.shape(c) for c in spec.components}
+    for c in spec.components:
+        for t in make_curl(spec, c).terms:
+            if t.psi:
+                shapes[t.psi] = make_curl(spec, c).shape
+    for c in spec.components:
+        if c[0] == "E":
+            shapes["D" + c[1]] = spec.shape(c)
+    torch.manual_seed(seed)
+    vals = {}
+    for n, s in shapes.items():
+        v = torch.randn(*s, dtype=torch.float64)
+        vals[n] = torch.complex(v, torch.randn(*s, dtype=torch.float64)) \
+            if complex_ else v
+    for c in spec.components:
+        if c[0] == "E":
+            z = torch.zeros(0, *spec.shape(c), dtype=torch.float64)
+            vals[f"P{c[1]}_cur"] = torch.complex(z, z) if complex_ else z
+    return NamedTuple("_Kz2dState", [(n, torch.Tensor) for n in vals])(**vals)
+
+
+def _family_of(name):
+    """Which polarisation a state array belongs to, by its own name."""
+    comp = name[4:6] if name.startswith("psi_") else (
+        "E" + name[1] if name[0] in "DP" else name[:2])
+    return "tm" if comp in _TM_SET else "te"
+
+
+def _stored(state, imaginary, part):
+    """The real block's state from the complex one: ``Re``/``Im`` of ``S F``,
+    where ``S`` multiplies the imaginary-stored polarisation by ``i``."""
+    imag_fam = "tm" if imaginary == _TM_SET else "te"
+    out = {}
+    for n in state._fields:
+        v = getattr(state, n)
+        w = v * 1j if _family_of(n) == imag_fam else v
+        out[n] = w.real.clone() if part == "re" else w.imag.clone()
+    return type(state)(**out)
+
+
+def _unstored(re, im, imaginary):
+    """Inverse of :func:`_stored`: ``F = S^-1 (re + i im)``."""
+    imag_fam = "tm" if imaginary == _TM_SET else "te"
+    out = {}
+    for n in re._fields:
+        z = torch.complex(getattr(re, n), getattr(im, n))
+        out[n] = z * (-1j) if _family_of(n) == imag_fam else z
+    return type(re)(**out)
+
+
+def test_the_six_component_block_couples_the_polarisations_through_the_phase():
+    """meep's four beta terms and nothing on Ez or Hz, from the spec alone.
+
+    With TM stored as i*TM the E targets read a real +k (their source is the
+    imaginary one) and the H targets a real -k; storing TE instead flips
+    every one. The signs against the conjugated system are gated in
+    symbolic_test/test_implicit_i.py; here the block is checked to carry them.
+    """
+    from meep_torch.core.factory import make_curl
+
+    for imaginary, e_phase in ((_TM_SET, 1), (_TE_SET, -1)):
+        spec = _kz2d_spec(imaginary=imaginary)
+        phased = {}
+        for c in spec.components:
+            for t in make_curl(spec, c).terms:
+                if t.phase:
+                    phased[(c, t.source)] = (t.sign, t.real_phase)
+        assert set(phased) == {("Ex", "Hy"), ("Ey", "Hx"),
+                               ("Hx", "Ey"), ("Hy", "Ex")}
+        assert phased[("Ex", "Hy")][0] == -phased[("Ey", "Hx")][0]
+        assert phased[("Hx", "Ey")][0] == -phased[("Hy", "Ex")][0]
+        for (c, _), (_, rp) in phased.items():
+            assert rp == (e_phase if c[0] == "E" else -e_phase), (c, rp)
+    for t in (t for c in _KZ2D for t in make_curl(_kz2d_spec(), c).terms):
+        assert t.real_phase == 0            # no `imaginary`: complex block
+
+
+def _within_ulps(a, b, name, ulps=4):
+    """Equal to within ``ulps`` of the array's own scale.
+
+    Not bitwise, and the reason is one operation: see
+    `test_torch_divides_complex_by_real_inexactly`. Four ulps is the bound
+    the measurement gave (worst 1.4e-14 on a scale of 1.1e2, under one ulp);
+    a real drift would be orders above it.
+    """
+    tol = ulps * torch.finfo(b.dtype).eps * b.abs().max()
+    err = (a - b).abs().max()
+    assert err <= tol, (name, err.item(), tol.item())
+
+
+def test_torch_divides_complex_by_real_inexactly():
+    """The one fact that keeps the next gate from being bitwise. `(a + 0i) / c`
+    is not `a / c` to the last bit in torch, while products and sums of a
+    complex by a real are exact per component. The block divides in exactly
+    three places -- the difference (`/ h`), the stretch (`/ kappa`) and the E
+    solve (`/ eps`) -- and a complex build rounds each differently from the
+    real build dividing the same numbers. Kept as a test so the ulp bound
+    below turns back into `torch.equal` the day this stops holding."""
+    torch.manual_seed(1)
+    a = torch.randn(10000, dtype=torch.float64)
+    c = torch.rand(10000, dtype=torch.float64) + 0.5
+    z = torch.zeros_like(a)
+    assert not torch.equal((torch.complex(a, z) / c).real, a / c)
+    assert torch.equal((torch.complex(a, z) * c).real, a * c)
+    assert torch.equal((torch.complex(a, z) * (1j * 0.8)).imag, 0.8 * a)
+
+
+@pytest.mark.parametrize("imaginary", [_TM_SET, _TE_SET], ids=["i*TM", "i*TE"])
+@pytest.mark.parametrize("label,kw", _CASES, ids=[c[0] for c in _CASES])
+def test_the_real_block_matches_the_complex_block_on_the_stored_state(
+        label, kw, imaginary):
+    """Same spec built complex and real; the real one on Re(S F) and Im(S F).
+
+    The algebra is exact: `(a + i b) * i k` is a component swap with one
+    negation, complex-times-real and complex-plus-real are exact per
+    component, so every phased term, every CN update and every psi
+    recurrence produces the same bits on both routes. What is not exact is
+    torch's complex-by-real DIVISION, which the block performs in the
+    difference, the stretch and the E solve -- so the gate is to four ulps of
+    each array's scale, with the cause pinned by the test above rather than
+    absorbed into a tolerance. Both polarisations are tried as the
+    imaginary-stored one: meep picks TM, and the rule does not care.
+    """
+    from meep_torch.core.factory import make_curl, make_step
+
+    cs = _kz2d_coeffs(**kw)
+    spec_c, spec_r = _kz2d_spec(), _kz2d_spec(imaginary=imaginary)
+    st = _kz2d_state(spec_c)
+    for part in ("re", "im"):
+        sr = _stored(st, imaginary, part)
+        for c in spec_c.components:
+            want, wpsi = make_curl(spec_c, c)(st, cs, cs.dx)
+            got, gpsi = make_curl(spec_r, c)(sr, cs, cs.dx)
+            # an imaginary-stored TARGET stores its curl as i*curl too
+            w = want * 1j if c in imaginary else want
+            _within_ulps(got, w.real if part == "re" else w.imag, (c, part))
+            for k in wpsi:
+                p = wpsi[k] * 1j if c in imaginary else wpsi[k]
+                _within_ulps(gpsi[k], p.real if part == "re" else p.imag,
+                             (k, part))
+        ref = make_step(spec_c)(st, cs, cs.dx)
+        got = make_step(spec_r)(sr, cs, cs.dx)
+        want = _stored(ref, imaginary, part)
+        for n in ref._fields:
+            if getattr(ref, n).numel():
+                _within_ulps(getattr(got, n), getattr(want, n), (n, part))
+
+
+def test_the_stored_i_is_a_superposition_of_two_real_runs():
+    """meep's own description: the real-field run is the superposition of the
+    fields at beta and the time-reversed fields at -beta. Concretely: the
+    complex run equals `S^-1 (real run from Re(SF) + i real run from Im(SF))`
+    after any number of steps, to rounding."""
+    from meep_torch.core.factory import make_step
+
+    cs = _kz2d_coeffs(npml=6)
+    spec_c, spec_r = _kz2d_spec(), _kz2d_spec(imaginary=_TM_SET)
+    step_c, step_r = make_step(spec_c), make_step(spec_r)
+    st = _kz2d_state(spec_c)
+    re, im = _stored(st, _TM_SET, "re"), _stored(st, _TM_SET, "im")
+    for _ in range(40):
+        st, re, im = step_c(st, cs, cs.dx), step_r(re, cs, cs.dx), step_r(im, cs, cs.dx)
+    back = _unstored(re, im, _TM_SET)
+    for n in st._fields:
+        assert torch.allclose(getattr(back, n), getattr(st, n),
+                              rtol=1e-13, atol=1e-13), n
+
+
+def test_the_stored_i_is_live_and_signed():
+    """A real block that ignored `kz` or its sign would pass a shape test.
+
+    `kz` and `-kz` must differ on the same stored state, and so must storing
+    TE instead of TM: both are valid representations, and they are of
+    DIFFERENT complex fields, so a gate that could not tell them apart would
+    not be gating the representation.
+    """
+    from meep_torch.core.factory import make_step
+
+    spec_c = _kz2d_spec()
+    st = _stored(_kz2d_state(spec_c), _TM_SET, "re")
+    plus = make_step(_kz2d_spec(imaginary=_TM_SET))(st, _kz2d_coeffs(kz=0.8), 0.05)
+    minus = make_step(_kz2d_spec(imaginary=_TM_SET))(st, _kz2d_coeffs(kz=-0.8), 0.05)
+    other = make_step(_kz2d_spec(imaginary=_TE_SET))(st, _kz2d_coeffs(kz=0.8), 0.05)
+    assert not torch.equal(plus.Hx, minus.Hx)
+    assert not torch.equal(plus.Hx, other.Hx)
+    # Hz's own curl has no phased term, so the B half leaves it kz-blind;
+    # Ez is NOT, because the D half reads the new Hx/Hy.
+    assert torch.equal(plus.Hz, minus.Hz)
+    assert not torch.equal(plus.Ez, minus.Ez)
+
+
+def test_the_representation_is_one_whole_polarisation_or_nothing():
+    from meep_torch.core.factory import make_curl
+
+    with pytest.raises(ValueError, match="both side"):
+        make_curl(_kz2d_spec(imaginary=_TM_SET + _TE_SET), "Ex")
+    with pytest.raises(ValueError, match="neither side"):
+        make_curl(_kz2d_spec(imaginary=("Ez",)), "Hx")     # Hx <- Ey, both real
+    with pytest.raises(ValueError, match="does not carry"):
+        make_curl(_kz2d_spec(imaginary=("Er",)), "Ex")
+    # a block with no phased axis never reaches the rule, whatever it stores
+    make_curl(_spec(imaginary=("Ez",)), "Hx")
