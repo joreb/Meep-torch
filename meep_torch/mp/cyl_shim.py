@@ -16,10 +16,14 @@ Coordinates. meep's cylindrical cell is ``Vector3(sr, 0, sz)`` with r in
 i+1/2, Ez at j+1/2, ...) follows core/stepper_bor.
 
 Scope (everything else raises with a named reason):
+  * cells: (r, z) via core/stepper_bor, or zero z extent -- a run with no
+    z dependence -- via core/stepper_cyl (radial, {Ez, Hr, Hphi}, m != 0)
   * geometry: mp.Block only (r-z rectangles), non-dispersive media
   * sources: point Er/Ep/Ez sources sharing one time profile
   * boundaries: PML/Absorber -> the stepper's matched absorber ramp
-  * step functions: mp.Harminv, stop_when_fields_decayed
+  * step functions: the full meep protocol, shared with the cartesian
+    path via run_control.plan_hooks (at_every, at_beginning, at_end,
+    after_sources, to_appended, Harminv, stop_when_fields_decayed)
   * monitors: add_near2far / get_farfield, dft_ldos
 """
 import math
@@ -30,6 +34,8 @@ import torch
 from ..core.ldos import ldos_spectrum
 from ..core.near2far_cyl import farfield_bor_m_complex
 from ..core.stepper_bor import build_bor_coeffs, init_bor_state, step_bor
+from ..core.stepper_cyl import (build_cyl_coeffs, init_cyl_state,
+                                step_cyl)
 from .run_control import (_eval_step_func, fire_per_step,
                           fire_scheduled, plan_hooks)
 from .vec import Vector3
@@ -63,19 +69,28 @@ class CylGrid:
         cs = cs if isinstance(cs, Vector3) else Vector3(*cs)
         self.dr = 1.0 / float(sim.resolution)
         self.sr, self.sz = float(cs.x), float(cs.z)
-        if self.sr <= 0 or self.sz <= 0:
-            raise _NIE("cylindrical cells need a nonzero r and z extent "
-                       "(cell_size = Vector3(sr, 0, sz)); the 1D radial-only "
-                       "case lives in core/stepper_cyl.py")
+        if self.sr <= 0 or self.sz < 0:
+            raise _NIE("cylindrical cells need a positive r extent "
+                       "(cell_size = Vector3(sr, 0, sz), or Vector3(sr, 0, 0) "
+                       "for a run with no z dependence)")
+        # A ZERO z EXTENT IS A LEGAL MEEP CELL, not a malformed one. Upstream
+        # ring-cyl.py passes Vector3(sr, 0, 0): a body of revolution with no z
+        # dependence, solved in r and the azimuthal index m alone. pymeep runs
+        # it and reports "Working in Cylindrical dimensions". This used to
+        # raise and point at core/stepper_cyl.py, which is the radial stepper
+        # that was already written for exactly this tutorial -- implemented,
+        # unit-tested, and reachable from nothing.
+        self.radial = self.sz == 0.0
         self.nr = max(3, int(round(self.sr / self.dr)))
-        self.nz = max(3, int(round(self.sz / self.dr)))
+        self.nz = 1 if self.radial else max(3, int(round(self.sz / self.dr)))
 
     def index(self, comp: str, pt) -> tuple[int, int]:
         """Nearest (i, j) index of meep point ``pt`` on component ``comp``'s
         staggered subgrid, clamped to that subgrid's shape."""
         offr, offz = _OFF[comp]
         i = int(round(float(pt.x) / self.dr - offr))
-        j = int(round((float(pt.z) + self.sz / 2.0) / self.dr - offz))
+        j = 0 if self.radial else int(
+            round((float(pt.z) + self.sz / 2.0) / self.dr - offz))
         ni = self.nr - (1 if offr else 0)
         nj = self.nz - (1 if offz else 0)
         return max(0, min(ni - 1, i)), max(0, min(nj - 1, j))
@@ -230,6 +245,126 @@ class CylRun:
                 else self.dft[comp] + contrib
 
 
+#: The radial (d/dz = 0) run carries the {Ez, Hr, Hphi} set only -- the
+#: complementary {Er, Ep, Hz} have no equations in core/stepper_cyl.
+_RADIAL_SET = ("Ez", "Hr", "Hp")
+
+
+class CylRunRadial(CylRun):
+    """A cylindrical run with no z dependence, on core/stepper_cyl.
+
+    Everything that is not the stepper itself -- the source cutoff, the step
+    counter, the LDOS/DFT sampling, and the whole meep step-function protocol
+    that run_cyl now shares with the cartesian path -- is inherited. Only the
+    three things that are genuinely different are overridden: what is built,
+    what one step does, and how a point is probed.
+    """
+
+    def __init__(self, sim):
+        self.sim = sim
+        self.g = g = CylGrid(sim)
+        n_abs_r, _ = _absorber_cells(sim, g)      # the axis is not a boundary
+        dev = getattr(sim, "device", "cpu") or "cpu"
+        # eps comes from the SAME rasterizer as the (r, z) case, evaluated on
+        # its single z row. A shim that assembles a permittivity profile by
+        # hand is a shim computing physics; the raw example may do that, this
+        # may not.
+        # The rasterizer's Grid demands ny >= 3, and a radial run has one z
+        # row. Rasterize on three identical rows and take the middle one: the
+        # geometry has no z dependence here (a cylindrical Block spans z), so
+        # every row is the same and the middle one is free of any edge
+        # treatment the outer two might carry.
+        import copy
+        g3 = copy.copy(g)
+        g3.nz = 3
+        eps = cyl_eps(sim, g3)[:, 1].contiguous()
+        # build_cyl_coeffs raises for m = 0 on its own (the axis update lands
+        # with W7.5), which is the right refusal to inherit rather than
+        # reimplement: better to raise than to return a plausible field.
+        self.c = build_cyl_coeffs(g.nr, g.dr, int(sim.m), eps=eps,
+                                  n_absorber=n_abs_r, device=dev)
+        self.state = init_cyl_state(g.nr, device=dev)
+        self.src_ix, self.prof = _radial_source(sim, g)
+        self.cutoff = sim._source_cutoff()
+        self.t = 0
+        self.j_series = []
+        self.dft = None
+        self.dft_freqs = None
+        self.ldos = None
+
+    def step(self):
+        tt = (self.t + 0.5) * self.c.dt
+        amp = self.prof.amplitude(tt) if tt < self.cutoff else 0.0
+        self.state = step_cyl(self.state, self.c, amp, self.src_ix)
+        self.t += 1
+        self._sample(amp)
+
+    def field(self, comp: str, pt) -> complex:
+        if comp not in _RADIAL_SET:
+            raise _NIE(f"component {comp!r} is not carried by a radial "
+                       "cylindrical run (Ez / Hr / Hp only; the cell has no "
+                       "z extent, so there is no Er / Ep / Hz to report)")
+        i, _ = self.g.index(comp, pt)
+        arr = getattr(self.state, _FIELD[comp])
+        return complex(arr[min(i, arr.shape[0] - 1)].item())
+
+
+def _radial_source(sim, g: CylGrid):
+    """(src_ix, profile) for step_cyl, reusing the (r, z) source validation."""
+    terms, prof = _src_terms(sim, g)
+    if len(terms) != 1:
+        raise _NIE("a radial cylindrical run drives one point source "
+                   f"(got {len(terms)})")
+    comp, i, _j, factor = terms[0]
+    if comp != "Ez":
+        raise _NIE(f"radial cylindrical source component {comp!r} is not "
+                   "supported (step_cyl drives Dz, so mp.Ez only)")
+    if abs(complex(factor) - 1.0) > 1e-12:
+        raise _NIE("a radial cylindrical source carries no amplitude factor "
+                   f"(got {factor!r})")
+    return i, prof
+
+
+def cyl_array(sim, component, center=None, size=None):
+    """meep ``Simulation.get_array`` on a cylindrical run.
+
+    Reached because the hook rewire made at_beginning(mp.output_epsilon) fire
+    at all: ring-cyl.py opens with it, and the cartesian get_array walks
+    self.gs, which is None here. The permittivity a cylindrical run actually
+    solves with lives on the stepper coefficients, so report THAT rather than
+    rasterizing a second copy -- two arrays that can disagree is the defect
+    this codebase keeps paying for.
+    """
+    if center is not None or size is not None:
+        raise _NIE("get_array(center=, size=) sub-volumes are not supported "
+                   "for a cylindrical run")
+    name = component if isinstance(component, str) else ""
+    run = getattr(sim, "_cyl", None)
+    if name == "Dielectric":
+        g = run.g if run is not None else CylGrid(sim)
+        if g.radial:
+            # The radial coefficients carry the one eps the stepper solves
+            # with, so report that rather than rasterizing a second copy.
+            # Only the RADIAL table has a plain `.eps`; build_bor_coeffs
+            # splits its permittivity across eps_r / eps_p / eps_z, so
+            # reading `run.c.eps` unconditionally would raise on every
+            # (r, z) run -- a fault introduced by writing the radial case
+            # first and assuming the other matched it.
+            if run is not None:
+                return run.c.eps.detach().cpu().numpy()
+            import copy
+            g3 = copy.copy(g)
+            g3.nz = 3
+            return cyl_eps(sim, g3)[:, 1].detach().cpu().numpy()
+        return cyl_eps(sim, g).detach().cpu().numpy()
+    if name in _FIELD:
+        if run is None:
+            raise RuntimeError("run() before get_array(fields)")
+        return getattr(run.state, _FIELD[name]).detach().cpu().numpy()
+    raise _NIE(f"cylindrical get_array: component {component!r} is not "
+               "carried by the state (Dielectric / Er / Ep / Ez / Hr / Hp / Hz)")
+
+
 def _scope_check(sim, step_funcs):
     if getattr(sim, "symmetries", None) or getattr(sim, "_sym_cx", 0) \
             or getattr(sim, "_sym_cy", 0):
@@ -254,7 +389,8 @@ def run_cyl(sim, step_funcs, until=None, until_after_sources=None,
     _scope_check(sim, step_funcs)
     run = getattr(sim, "_cyl", None)
     if run is None:
-        run = sim._cyl = CylRun(sim)
+        cls = CylRunRadial if CylGrid(sim).radial else CylRun
+        run = sim._cyl = cls(sim)
     dt = run.dt
 
     conds, gate, n_total = None, 0.0, n_steps

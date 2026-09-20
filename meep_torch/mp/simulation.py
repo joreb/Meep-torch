@@ -2476,6 +2476,9 @@ class Simulation:
             if f is None:
                 raise ValueError(f"unsupported component {component!r}")
             return f.detach().cpu().numpy()
+        if self.dimensions == CYLINDRICAL:
+            from .cyl_shim import cyl_array
+            return cyl_array(self, component, center, size)
         if component == Dielectric:
             return self._subvolume(self._demirror(
                 self._rm.eps_tm.detach().cpu().numpy() if self._pol == "tm"
