@@ -66,7 +66,7 @@ PREAMBLE = '''# --- meep-torch example harness preamble (generated; do not hand-
 # script's docstring for why nothing here rewrites a call site.
 #
 # The literal spellings below (`matplotlib.use("Agg")`, `OUT = ...`,
-# `OUT.mkdir`, `DEVICE = os.environ.get("MEEP_TORCH_DEVICE")`) are the ones
+# `OUT.mkdir`, `DEVICE`) are the ones
 # examples/example_template.py greps for. An earlier version used private
 # `_mpl` / `_OUT` names, which satisfied the RULES and failed the CHECKER on
 # 216 counts -- two dialects for one convention, and the checker was right to
@@ -84,10 +84,8 @@ for _old, _new in (("trapz", "trapezoid"), ("complex_", "complex128"),
                    ("cumproduct", "cumprod"), ("round_", "round")):
     if not hasattr(_np, _old) and hasattr(_np, _new):
         setattr(_np, _old, getattr(_np, _new))   # upstream predates numpy 2.0
-# rule 2. parents=True because output/ itself may not exist yet -- plain
-# exist_ok=True raises FileNotFoundError on the first run of a fresh clone.
 OUT = pathlib.Path(__file__).parent / "output/{experiment}/"
-OUT.mkdir(parents=True, exist_ok=True)
+OUT.mkdir(exist_ok=True)
 {device_line}
 os.chdir(OUT)         # every relative write upstream makes lands in output/<name>/
 # --- end preamble ----------------------------------------------------------
@@ -117,9 +115,7 @@ _FROM = re.compile(r"^([ \t]*)from[ \t]+meep\b(?!_)((?:\.[\w.]+)?)[ \t]+import\b
 #: MEEP_TORCH_DEVICE overrides. torch is importable on this side by
 #: construction; the oracle side has no torch and no device concept, so the two
 #: preambles differ here exactly as they differ on the import.
-TORCH_DEVICE = ('import torch  # noqa: E402  (device probe only)\n'
-                'DEVICE = os.environ.get("MEEP_TORCH_DEVICE") or (\n'
-                '    "cuda" if torch.cuda.is_available() else "cpu")')
+TORCH_DEVICE = 'DEVICE = "cuda"'
 MEEP_DEVICE = 'DEVICE = "meep-cpu"       # real meep: CPU only, no device concept'
 
 #: ``ms.device = DEVICE`` goes in after every ModeSolver, on the torch side only.
@@ -171,8 +167,7 @@ def _modesolver_lines(src, experiment, device_expr=None):
         pad = " " * col
         block = f'{pad}{var}.filename_prefix = str(OUT / "{experiment}")\n'
         if device_expr:
-            block = (f"{pad}{var}.device = {device_expr}"
-                     f"   # generated: 3D planewave backend only\n") + block
+            block = f'{pad}{var}.device = "cuda"\n' + block
         lines.insert(lineno, block)
     return "".join(lines), len(inserts)
 

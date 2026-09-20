@@ -65,6 +65,18 @@ NOISE = (
     re.compile(r"^\s*\(1,0,0\)|^\s*\(0,1,0\)|^\s*\(0,0,1\)"),
     re.compile(r"^\s*field decay\(t ="),
     re.compile(r"^\s*halving dt"),
+    # meep's startup banner. These carry numbers -- cell size, resolution, the
+    # eps diagonal -- and meep-torch does not print them, so left in they show
+    # up as one-sided keys on every single pair. Worse, on a script that prints
+    # nothing of its own they were the ONLY keys, which made an empty
+    # comparison look like a populated one: bent-waveguide reported "10
+    # numbers from 3 lines" on the oracle side and 0 on ours, when the truth is
+    # that the script has no print() in it at all.
+    re.compile(r"^\s*Computational cell is "),
+    re.compile(r"^\s*dielectric constant epsilon diagonal"),
+    re.compile(r"^\s*subpixel-averaging"),
+    re.compile(r"^\s*autocorrelation"),
+    re.compile(r"^\s*estimated time"),
     re.compile(r"^\s*-+\s*$"),
     re.compile(r"^\s*$"),
 )

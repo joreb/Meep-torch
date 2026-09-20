@@ -8,7 +8,7 @@
 # script's docstring for why nothing here rewrites a call site.
 #
 # The literal spellings below (`matplotlib.use("Agg")`, `OUT = ...`,
-# `OUT.mkdir`, `DEVICE = os.environ.get("MEEP_TORCH_DEVICE")`) are the ones
+# `OUT.mkdir`, `DEVICE`) are the ones
 # examples/example_template.py greps for. An earlier version used private
 # `_mpl` / `_OUT` names, which satisfied the RULES and failed the CHECKER on
 # 216 counts -- two dialects for one convention, and the checker was right to
@@ -26,13 +26,9 @@ for _old, _new in (("trapz", "trapezoid"), ("complex_", "complex128"),
                    ("cumproduct", "cumprod"), ("round_", "round")):
     if not hasattr(_np, _old) and hasattr(_np, _new):
         setattr(_np, _old, getattr(_np, _new))   # upstream predates numpy 2.0
-# rule 2. parents=True because output/ itself may not exist yet -- plain
-# exist_ok=True raises FileNotFoundError on the first run of a fresh clone.
 OUT = pathlib.Path(__file__).parent / "output/stochastic_emitter_reciprocity/"
-OUT.mkdir(parents=True, exist_ok=True)
-import torch  # noqa: E402  (device probe only)
-DEVICE = os.environ.get("MEEP_TORCH_DEVICE") or (
-    "cuda" if torch.cuda.is_available() else "cpu")
+OUT.mkdir(exist_ok=True)
+DEVICE = "cuda"
 os.chdir(OUT)         # every relative write upstream makes lands in output/<name>/
 # --- end preamble ----------------------------------------------------------
 
