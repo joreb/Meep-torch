@@ -53,9 +53,24 @@ def test_te_straight_guide():
     grid = Grid(nx=200, ny=80, dx=0.1)
     eps = torch.ones(grid.nx, grid.ny, dtype=torch.float64, device=grid.device)
     eps[:, 35:45] = 12.0
+    # THE PORT MUST SPAN THE WHOLE NON-PML APERTURE, y = 1.0 .. 7.0 um here
+    # (npml=10 of 80 cells). The old lo=20, hi=59 window was 3.9 um about a
+    # guide centred at 4.0, and it CLIPPED the mode: the overlap integral
+    # misses the evanescent tail, which is longest for the most weakly guided
+    # frequency, so the error appears as a low-frequency-only transmission
+    # deficit. Measured at f = 0.13, widening 3.9 -> 6.0 um moves |S21| from
+    # 0.9712 to 0.9823 and |S11| from 0.0583 to 0.0129, a 4.5x drop in
+    # apparent reflection with nothing about the engine changed.
+    #
+    # 6.0 um is not a tuned number: it is exactly what real meep uses, whose
+    # mode monitor spans `size=Vector3(0, SY - 2*DPML)`. Against that oracle
+    # at the same geometry and resolution, meep gives |S21| = 0.9941 / 1.0023
+    # / 1.0061 at f = 0.13 / 0.15 / 0.17 -- its own method noise is ~1%, since
+    # a passive guide cannot exceed 1 -- so ~1.2% of disagreement remains at
+    # f = 0.13 and is inside the gate rather than explained by it.
     ports = [
-        Port(axis="x", index=40, lo=20, hi=59, direction=+1),
-        Port(axis="x", index=160, lo=20, hi=59, direction=-1),
+        Port(axis="x", index=40, lo=10, hi=70, direction=+1),
+        Port(axis="x", index=160, lo=10, hi=70, direction=-1),
     ]
     sm = compute_smatrix(eps, grid, ports, pol="te", fcen=FCEN, fwidth=FWIDTH,
                          freqs=FREQS, n_steps=3000, npml=10)
