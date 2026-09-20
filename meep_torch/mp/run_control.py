@@ -211,8 +211,11 @@ def step_dt(sim):
 
     A cartesian run keeps it on sim.grid; a cylindrical run has sim.grid set
     to None on purpose -- cyl_shim owns the (r, z) grid -- and keeps it on
-    sim._cyl. Harminv read sim.grid.dt unconditionally, so it raised on the
-    one kind of run that is allowed to pass it through _scope_check.
+    sim._cyl. Harminv read `sim.grid.dt` unconditionally, so it raised on
+    the one kind of run that is allowed to pass it through _scope_check,
+    and so did the field collector below it -- two copies of the same
+    wrong assumption, which is why this is an accessor and not a fix at
+    each site.
     """
     g = getattr(sim, "grid", None)
     if g is not None:
@@ -291,7 +294,7 @@ class at_every(_Combinator):
 
     def __call__(self, sim, todo="step"):
         t = sim.round_time()
-        if todo == "finish" or t >= self._tlast + self.every - 0.5 * sim.grid.dt:
+        if todo == "finish" or t >= self._tlast + self.every - 0.5 * step_dt(sim):
             self._fire(sim, todo)
             self._tlast = t
 
@@ -387,10 +390,58 @@ class Harminv:
         self._dt = None
         self._modes = None
 
-    def __call__(self, sim):
-        self._dt = step_dt(sim)
-        self.data.append(complex(sim.get_field_point(self.c, self.pt)))
-        self._modes = None
+    def __call__(self, sim, todo="step"):
+        """Collect every step; print meep's table at the end of the run.
+
+        THE PRINTED TABLE IS THE TUTORIAL'S OUTPUT. meep's Harminv writes it on
+        todo == "finish", and ring-cyl.py -- like every harminv tutorial --
+        reports nothing else: the oracle JSON for that script is exactly these
+        six numbers. Collecting the modes and never printing them left the
+        comparison with nothing to compare, so the script "ran" and produced an
+        empty result, which reads as a broken port rather than a missing print.
+
+        Taking (sim, todo) rather than (sim) is what gets this called at the
+        end at all: _eval_step_func only forwards "finish" to a 2-argument step
+        function, and gates a 1-argument one to "step".
+        """
+        if todo != "finish":
+            self._dt = step_dt(sim)
+            self.data.append(complex(sim.get_field_point(self.c, self.pt)))
+            self._modes = None
+            return
+        if self._dt is None:                  # never stepped: nothing to report
+            return
+        # THE NUMBER IS THE RUN INDEX, NOT A CREATION COUNTER. meep tags the
+        # table with the simulation's run counter, the same one display_fluxes
+        # uses for "flux1:". Checked against the oracle JSONs:
+        # perturbation_theory.py builds TWO Harminv objects on two separate
+        # Simulations and both print harminv0, while a script that calls run()
+        # repeatedly on one Simulation prints harminv0 .. harminv20. A
+        # per-instance counter reproduces neither, and the mismatch would land
+        # in the JSON keys -- the comparison would then read as missing rows
+        # rather than as a naming difference.
+        # run_index is bumped on ENTRY to run(), so it is 1 during the first
+        # run -- which is why display_fluxes prints "flux1:" for it, matching
+        # meep. harminv is 0-based over the same counter: every single-run
+        # tutorial in the oracle set prints harminv0, and holey-wvg-bands,
+        # which calls run() in a loop on one Simulation, prints harminv0
+        # through harminv20. Hence run_index - 1, not run_index, and not a
+        # per-instance creation counter -- perturbation_theory.py builds two
+        # Harminv objects on two Simulations and the oracle tags both
+        # harminv0, which a creation counter would have numbered 0 and 1.
+        tag = f"harminv{max(0, getattr(sim, 'run_index', 1) - 1)}"
+        print(f"{tag}:, frequency, imag. freq., Q, |amp|, amplitude, error")
+        for md in self.modes:
+            # meep reports the complex frequency f - i f_i with Q = f / (2 f_i),
+            # so the imaginary part it prints is -f / (2Q). Checked against the
+            # pymeep line for ring-cyl: f = 0.1182071521199419 and
+            # Q = 77.09981477914208 give -0.00076658518..., which is what meep
+            # prints to every digit.
+            fi = (-md.freq / (2.0 * md.Q)) if md.Q else 0.0
+            a = complex(md.amp)
+            err = complex(md.err)
+            print(f"{tag}:, {md.freq}, {fi}, {md.Q}, {abs(a)}, "
+                  f"{a.real}{a.imag:+}i, {err.real}{err.imag:+}i")
 
     @property
     def modes(self):
@@ -442,7 +493,7 @@ class PadeDFT:
         self._dft = None
 
     def __call__(self, sim):
-        self._dt = sim.grid.dt
+        self._dt = step_dt(sim)
         pt = (self.vol.center if self.vol is not None else self.center) or Vector3()
         self.data.append(sim.get_field_point(self.c, pt))
         self._dft = None
