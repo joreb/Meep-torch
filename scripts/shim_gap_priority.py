@@ -120,12 +120,31 @@ def scan(path: pathlib.Path):
     """
     gaps = collections.defaultdict(lambda: {"blocks": [], "message": ""})
     root = path if path.is_dir() else ROOT / "examples/11_upstream"
+    # A JSON written before 0e5993c records `status` but no `error`, so its gap
+    # cannot be named. The run log can fill that in -- but ONLY as a message for
+    # a script the JSONs already say is failing. The set of failures always
+    # comes from the JSONs, so a stale log can add a wrong description and can
+    # never resurrect a gap that has since been fixed. That asymmetry is the
+    # whole point: staleness that cannot change the conclusion is tolerable.
+    from_log = {}
+    if RUNLOG.exists():
+        for line in RUNLOG.read_text().splitlines():
+            m = re.match(r"\s*(?:FAIL|----)\s+(\S+?)_mp\.py\s+(.*)", line)
+            if m:
+                from_log.setdefault(m.group(1),
+                                    re.sub(r"^exit \d+\s+", "", m.group(2).strip()))
     for j in sorted((root / "output").glob("*/*_mp.json")):
         doc = json.loads(j.read_text())
         if doc.get("status") in (None, "ok"):
             continue
         script = j.stem[:-len("_mp")]
-        msg = doc.get("error") or doc.get("status", "")
+        msg = doc.get("error") or from_log.get(script) or doc.get("status", "")
+        if j.stat().st_mtime < _engine_mtime():
+            # This script has not run since the engine last changed, so its
+            # failure may already be fixed. Per-script, not per-tree: a global
+            # check passes the moment ANY script is re-run, which is exactly
+            # when the stale ones are easiest to believe.
+            script += "  [STALE: not re-run since the engine changed]"
         cap = next((name for pat, name in NORMALISE if re.search(pat, msg)),
                    None)
         if cap is None:
@@ -134,6 +153,56 @@ def scan(path: pathlib.Path):
         if not gaps[cap]["message"]:
             gaps[cap]["message"] = re.sub(r"^exit \d+\s+", "", msg)[:200]
     return dict(gaps)
+
+
+_ENGINE_MTIME = None
+
+
+def _engine_mtime():
+    """Commit time of the newest change under meep_torch/, cached."""
+    global _ENGINE_MTIME
+    if _ENGINE_MTIME is None:
+        import subprocess as _sp
+        try:
+            out = _sp.run(["git", "log", "-1", "--format=%ct", "--",
+                           "meep_torch"], cwd=ROOT, capture_output=True,
+                          text=True).stdout.strip()
+            _ENGINE_MTIME = float(out) if out else 0.0
+        except Exception:
+            _ENGINE_MTIME = 0.0
+    return _ENGINE_MTIME
+
+
+def staleness_banner(path):
+    """Warn when the engine is newer than the runs this ranking is built on.
+
+    The JSONs record what the last RUN found, never what the code now does. A
+    gap fixed after its script last ran still appears here, and that is not a
+    bug in the tool -- it is the tool being unable to know. Saying so is the
+    difference between a stale list and a misleading one: this ranking already
+    listed set_boundary and Mirror-on-odd-cells after both were fixed in
+    f457f5c, because neither script had been re-run.
+    """
+    import subprocess as _sp
+    root = path if path.is_dir() else ROOT / "examples/11_upstream"
+    jsons = list((root / "output").glob("*/*_mp.json"))
+    if not jsons:
+        return
+    newest_run = max(j.stat().st_mtime for j in jsons)
+    try:
+        code = _sp.run(["git", "log", "-1", "--format=%ct", "--",
+                        "meep_torch/mp", "meep_torch/core"],
+                       cwd=ROOT, capture_output=True, text=True).stdout.strip()
+        newest_code = float(code) if code else 0.0
+    except Exception:
+        return
+    if newest_code > newest_run:
+        import datetime as _dt
+        fmt = lambda t: _dt.datetime.fromtimestamp(t).strftime("%H:%M")
+        print(f"!! engine changed at {fmt(newest_code)}, newest run is "
+              f"{fmt(newest_run)}.\n"
+              f"!! Gaps fixed since then still appear below. Re-run the shim "
+              f"pass before trusting this order.\n")
 
 
 def load_dotenv(path):
@@ -172,6 +241,7 @@ def main(argv=None):
     ap.add_argument("--markdown", action="store_true")
     args = ap.parse_args(argv)
 
+    staleness_banner(args.log)
     gaps = scan(args.log)
     if not gaps:
         print(f"no gaps parsed from {args.log}", file=sys.stderr)
