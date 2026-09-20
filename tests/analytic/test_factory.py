@@ -656,3 +656,146 @@ def test_a_source_only_drives_the_components_the_spec_declares():
     # and a component this block does not carry raises rather than passing
     with pytest.raises(ValueError, match="not in this block"):
         step(st, m, m.dx, currents={"Ez": (1.0, mask_x)})
+
+
+# ---------------------------------------------------------------------------
+# 3D: the strongest test of the curl-sign derivation, because every H target
+# there has TWO live curl terms where TM has none and TE has one.
+# ---------------------------------------------------------------------------
+
+_3D = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+
+
+class _S3D(NamedTuple):
+    """`State3D` under the factory's derived names.
+
+    THE NAMING GAP, as data rather than prose: `stepper_3d` calls its CPML
+    memory `psi_Ez_y`, the factory derives `psi_Ezy` from (source, axis). Same
+    array, different convention, and it is the same gap `stepper_kz` has. The
+    shim is the translation, and it is why 3D cannot be gated through
+    `make_step` yet -- see the task page's BlockSpec gaps.
+    """
+    Ex: torch.Tensor; Ey: torch.Tensor; Ez: torch.Tensor
+    Hx: torch.Tensor; Hy: torch.Tensor; Hz: torch.Tensor
+    psi_Ezy: torch.Tensor; psi_Eyz: torch.Tensor
+    psi_Exz: torch.Tensor; psi_Ezx: torch.Tensor
+    psi_Eyx: torch.Tensor; psi_Exy: torch.Tensor
+    psi_Hzy: torch.Tensor; psi_Hyz: torch.Tensor
+    psi_Hxz: torch.Tensor; psi_Hzx: torch.Tensor
+    psi_Hyx: torch.Tensor; psi_Hxy: torch.Tensor
+
+
+class _C3D(NamedTuple):
+    """`Coeffs3D`'s CPML dict under the factory's `b_{family}{axis}` names."""
+    dt: float
+    b_hx: torch.Tensor; a_hx: torch.Tensor; k_hx: torch.Tensor
+    b_hy: torch.Tensor; a_hy: torch.Tensor; k_hy: torch.Tensor
+    b_hz: torch.Tensor; a_hz: torch.Tensor; k_hz: torch.Tensor
+    b_ex: torch.Tensor; a_ex: torch.Tensor; k_ex: torch.Tensor
+    b_ey: torch.Tensor; a_ey: torch.Tensor; k_ey: torch.Tensor
+    b_ez: torch.Tensor; a_ez: torch.Tensor; k_ez: torch.Tensor
+
+
+def _3d_seeded(n=12, npml=3):
+    from meep_torch.core.stepper_3d import build_3d_coeffs, init_3d_state
+
+    c = build_3d_coeffs(n, n, n, 0.05, npml=npml)
+    st = init_3d_state(n, n, n, npml=npml)
+    torch.manual_seed(0)
+    st = type(st)._make([(torch.randn_like(v) if torch.is_tensor(v) else v)
+                         for v in st])
+    cp = c.cpml
+    shim = _S3D(st.Ex, st.Ey, st.Ez, st.Hx, st.Hy, st.Hz,
+                st.psi_Ez_y, st.psi_Ey_z, st.psi_Ex_z,
+                st.psi_Ez_x, st.psi_Ey_x, st.psi_Ex_y,
+                st.psi_Hz_y, st.psi_Hy_z, st.psi_Hx_z,
+                st.psi_Hz_x, st.psi_Hy_x, st.psi_Hx_y)
+    coeffs = _C3D(c.dt, *cp["hx"], *cp["hy"], *cp["hz"],
+                  *cp["ex"], *cp["ey"], *cp["ez"])
+    return c, st, shim, coeffs, BlockSpec(_3D, (n, n, n), (WALL,) * 3)
+
+
+def test_the_built_curl_is_bitwise_with_stepper_3d_h_targets():
+    """All three H curls, each with two live terms.
+
+    This is the second independent test of the `curl_signs`/`family_sign`
+    derivation TE forced, and the strongest one available: TM's only two-term
+    curl is Ez, where rhs and curl signs agree because the family sign is +1,
+    so TM could not have exposed the distinction at all.
+
+    The reference restates only the COMPOSITION ORDER -- the thing under test.
+    Everything else (`_d`, `PSI_NEW`, `STRETCHED`, `_COMPOSE`) is imported from
+    the stepper, so this cannot drift into testing a copy of the stepper.
+    """
+    from meep_torch.core.stepper_3d import _COMPOSE, _d
+    from meep_torch.core.symbolic import PSI_NEW, STRETCHED
+
+    c, st, shim, coeffs, spec = _3d_seeded()
+    cp, dx = c.cpml, c.dx
+
+    def ref(pos_src, pos_ax, pos_key, neg_src, neg_ax, neg_key):
+        dp = _d(getattr(st, pos_src), pos_ax) / dx
+        pp = PSI_NEW(dp, getattr(st, f"psi_{pos_src[0]}{pos_src[1]}_{'xyz'[pos_ax]}"),
+                     *cp[pos_key][:2])
+        dn = _d(getattr(st, neg_src), neg_ax) / dx
+        pn = PSI_NEW(dn, getattr(st, f"psi_{neg_src[0]}{neg_src[1]}_{'xyz'[neg_ax]}"),
+                     *cp[neg_key][:2])
+        # family sign -1 for an H target: meep's minus is applied at the update
+        return -_COMPOSE(STRETCHED(dp, pp, cp[pos_key][2]), dn, cp[neg_key][2], pn)
+
+    cases = {
+        "Hx": ("Ez", 1, "hy", "Ey", 2, "hz"),
+        "Hy": ("Ex", 2, "hz", "Ez", 0, "hx"),
+        "Hz": ("Ey", 0, "hx", "Ex", 1, "hy"),
+    }
+    for target, args in cases.items():
+        got, psis = make_curl(spec, target)(shim, coeffs, dx)
+        want = ref(*args)
+        assert got.shape == want.shape, (target, got.shape, want.shape)
+        assert torch.equal(got, want), target
+        assert len(psis) == 2, (target, list(psis))
+
+
+def test_the_built_curl_is_bitwise_with_stepper_3d_e_target():
+    """The D phase too, so both halves of 3D are covered.
+
+    `pmc=()` here, where `_pad_pmc` is the identity, so the comparison is
+    against the stepper's interior trim without the PMC padding machinery.
+    """
+    from meep_torch.core.stepper_3d import _COMPOSE, _d, _trim_full
+    from meep_torch.core.symbolic import PSI_NEW, STRETCHED
+
+    c, st, shim, coeffs, spec = _3d_seeded()
+    cp, dx, pmc = c.cpml, c.dx, ()
+
+    dHz_dy = _trim_full(_d(st.Hz, 1), (1, 2), 2, pmc) / dx
+    psi1 = PSI_NEW(dHz_dy, st.psi_Hz_y, *cp["ey"][:2])
+    dHy_dz = _trim_full(_d(st.Hy, 2), (1, 2), 1, pmc) / dx
+    psi2 = PSI_NEW(dHy_dz, st.psi_Hy_z, *cp["ez"][:2])
+    want = _COMPOSE(STRETCHED(dHz_dy, psi1, cp["ey"][2]),
+                    dHy_dz, cp["ez"][2], psi2)      # family sign +1 for an E target
+
+    got, psis = make_curl(spec, "Ex")(shim, coeffs, dx)
+    assert got.shape == want.shape, (got.shape, want.shape)
+    assert torch.equal(got, want)
+    assert set(psis) == {"psi_Hzy", "psi_Hyz"}, sorted(psis)
+
+
+def test_every_3d_h_target_has_two_terms_and_disagreeing_sign_sets():
+    """Why 3D is the test that matters, asserted rather than asserted in prose.
+
+    If any H target had one term, or if rhs and curl signs agreed there, 3D
+    would test nothing TE had not already covered.
+    """
+    from meep_torch.core.symbolic import curl_signs, curl_terms, family_sign
+
+    _, _, _, _, spec = _3d_seeded()
+    for target in ("Hx", "Hy", "Hz"):
+        terms, _ = curl_recipe(spec, target)
+        assert len(terms) == 2, (target, len(terms))
+        assert family_sign(target) == -1, target
+        for t in terms:
+            assert t.curl_sign == -t.sign, (target, t.source)
+    for target in ("Ex", "Ey", "Ez"):
+        assert family_sign(target) == +1, target
+        assert curl_signs(target) == curl_terms(target), target
