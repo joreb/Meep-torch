@@ -260,14 +260,63 @@ class Source:
         sim._sources.append(self)
 
 
-def _beam_envelope(beam_E0, beam_w0):
-    """Real Gaussian waist envelope exp(-(y^2+z^2)/w0^2) scaled by |beam_E0|'s
-    largest component (points relative to the source center, meep style)."""
+def _beam_amp(src_obj):
+    """meep's own beam amplitude for this source, as a complex amp_func.
+
+    Uses the ported gaussianbeam::get_fields rather than a paraxial formula,
+    so the transverse plane comes from beam_kdir instead of being hard-coded.
+    The component taken is the one the 2D engine drives, since it injects a
+    single soft source rather than meep's six-component equivalent-current
+    sheet -- that limitation is unchanged; only the amplitude is now meep's.
+    """
+    from .gaussianbeam import beam_amp_func
+    idx = {"Ex": 0, "Ey": 1, "Ez": 2}.get(str(src_obj.component), 2)
+    freq = getattr(src_obj.src, "frequency", None) or getattr(
+        src_obj.src, "fcen", 1.0)
+    return beam_amp_func(src_obj.beam_E0, src_obj.beam_kdir, src_obj.beam_w0,
+                         src_obj.beam_x0, freq, idx)
+
+
+def _beam_envelope(beam_E0, beam_w0, beam_kdir=None, beam_x0=None):
+    """Real Gaussian waist envelope exp(-rho^2/w0^2) about the BEAM AXIS.
+
+    rho is the distance from the beam axis, which is meep's own definition --
+    `sources.cpp:624-641` computes
+
+        xrel = x - x0                 relative to the beam focus
+        zhat = kdir / |kdir|          unit propagation direction
+        rho  = |zhat x xrel|          transverse distance from the axis
+
+    and the field goes as exp(-rho^2/w(z)^2) (source.py:695).
+
+    THE PREVIOUS VERSION USED exp(-(p.y^2 + p.z^2)/w0^2), which takes y-z as
+    the transverse plane and is therefore correct ONLY for a beam propagating
+    along x. gaussian-beam.py sets beam_kdir = Vector3(0, 1, 0) -- its own
+    comment reads "(0: +y axis)" -- so its transverse plane is x-z and the
+    envelope was evaluated along the propagation direction instead of across
+    it. A cross product has no preferred axis and is right for any kdir.
+
+    ``p`` arrives relative to the source centre (meep's amp_func contract), and
+    ``beam_x0`` is the focus in that same frame, so xrel = p - beam_x0.
+    """
     if beam_w0 is None:
         raise ValueError("GaussianBeamSource requires beam_w0")
     w0 = float(beam_w0)
     e0 = max(abs(beam_E0.x), abs(beam_E0.y), abs(beam_E0.z)) or 1.0
-    return lambda p: e0 * math.exp(-(p.y ** 2 + p.z ** 2) / (w0 ** 2))
+    k = beam_kdir or Vector3(0.0, 0.0, 1.0)
+    kn = math.sqrt(k.x * k.x + k.y * k.y + k.z * k.z) or 1.0
+    zx, zy, zz = k.x / kn, k.y / kn, k.z / kn
+    x0 = beam_x0 or Vector3()
+
+    def envelope(p):
+        rx, ry, rz = p.x - x0.x, p.y - x0.y, p.z - x0.z
+        cx = zy * rz - zz * ry
+        cy = zz * rx - zx * rz
+        cz = zx * ry - zy * rx
+        rho2 = cx * cx + cy * cy + cz * cz
+        return e0 * math.exp(-rho2 / (w0 ** 2))
+
+    return envelope
 
 
 class GaussianBeam3DSource(Source):
@@ -311,7 +360,7 @@ class GaussianBeam2DSource(GaussianBeam3DSource):
                          beam_x0=beam_x0, beam_kdir=beam_kdir, beam_w0=beam_w0,
                          beam_E0=beam_E0, **kwargs)
         if self.amp_func is None:
-            self.amp_func = _beam_envelope(self.beam_E0, self.beam_w0)
+            self.amp_func = _beam_amp(self)
 
     @staticmethod
     def get_r_rhat(X, X0):
@@ -391,7 +440,7 @@ class GaussianBeamSource(GaussianBeam3DSource):
                          beam_x0=beam_x0, beam_kdir=beam_kdir, beam_w0=beam_w0,
                          beam_E0=beam_E0, **kwargs)
         if self.amp_func is None:
-            self.amp_func = _beam_envelope(self.beam_E0, self.beam_w0)
+            self.amp_func = _beam_amp(self)
 
 
 class IndexedSource(Source):
@@ -481,6 +530,42 @@ class EigenModeSource(Source):
         return abs(self.amplitude * self.src.fourier_transform(freq)) ** 2
 
 
+def source_axis(size: Vector3 | None) -> str:
+    """Which axis a source segment EXTENDS along: "y", "x", or "point".
+
+    meep places no constraint on a source's orientation -- a beam travelling
+    along +y needs a source line extended along x, and gaussian-beam.py is
+    exactly that: `size=mp.Vector3(s)`, 14um in x and zero in y.
+
+    _point_or_span used to read only `size.y`, so an x-extended source fell
+    into its "no y extent" branch and became a SINGLE CELL. The 14um line
+    collapsed to a point, and with it the line measure dx/dx^2 became the
+    point measure 1/dx^2 -- a factor of 1/dx too much amplitude on top of
+    losing the extent. Nothing raised; the run just produced the wrong field.
+    """
+    if size is None:
+        return "point"
+    ey = math.isinf(size.y) or size.y != 0
+    ex = math.isinf(size.x) or size.x != 0
+    if ey and ex:
+        raise NotImplementedError(
+            "a source extended in BOTH x and y is an area source, not a line; "
+            "pass a zero extent on one axis")
+    return "y" if ey else ("x" if ex else "point")
+
+
+def _span_x(center: Vector3, size: Vector3 | None, gs: GridSpec):
+    """(jy, i0, i1) for a source line extended along x at a fixed y."""
+    c = center or Vector3()
+    jy = max(0, min(gs.ny - 1, cell_index_y(c.y, gs)))
+    if math.isinf(size.x):
+        return jy, 0, gs.nx
+    x0 = c.x - size.x / 2.0 + gs.sx / 2.0
+    x1 = c.x + size.x / 2.0 + gs.sx / 2.0
+    i0, i1 = span_index_range(max(0.0, x0), min(gs.sx, x1), gs, "x")
+    return jy, i0, i1
+
+
 def _point_or_span(center: Vector3, size: Vector3 | None, gs: GridSpec):
     """Return (ix, j0, j1) for a source line normal to x (Ez/Ex/Hy 2D).
 
@@ -501,6 +586,13 @@ def _point_or_span(center: Vector3, size: Vector3 | None, gs: GridSpec):
 
 
 def build_line_source(spec: Source, gs: GridSpec, pol: str):
+    axis = source_axis(spec.size)
+    if axis == "x":
+        # Extended along x: a horizontal segment at fixed y. Reported with its
+        # own tag so Simulation builds a row mask rather than a column one.
+        jy, i0, i1 = _span_x(spec.center, spec.size, gs)
+        return ("xline", pol, jy, i0, i1, spec.src.profile(), spec.amplitude,
+                spec.amp_func, spec.center, gs)
     ix, j0, j1 = _point_or_span(spec.center, spec.size, gs)
     # LineSource is constructed on the Grid by Simulation (needs grid); return spec
     return ("line", pol, ix, j0, j1, spec.src.profile(), spec.amplitude, spec.amp_func,

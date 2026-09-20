@@ -835,7 +835,17 @@ class Simulation:
                 spec = Source(spec.src, spec.component,
                              center=Vector3(spec.center.z, 0, 0), size=sz,
                              amplitude=spec.amplitude, amp_func=spec.amp_func)
-            _, _, ix, j0, j1, prof, amp, amp_func, center, gs = build_line_source(spec, self.gs, self._pol)
+            kind, _, a0, b0, b1, prof, amp, amp_func, center, gs = build_line_source(
+                spec, self.gs, self._pol)
+            if kind == "xline":
+                # A SOURCE EXTENDED ALONG X, which the y-only path silently
+                # collapsed to a single cell. Built here as a row mask with the
+                # SAME line measure LineSource derives from an extent
+                # (dx/dx^2), so the two orientations normalise identically.
+                out.extend(self._x_line_source(a0, b0, b1, prof, amp, amp_func,
+                                               center, gs, spec))
+                continue
+            ix, j0, j1 = a0, b0, b1
             if self._sym_cy or self._sym_cx:
                 if amp_func is not None:
                     raise NotImplementedError(
@@ -857,42 +867,49 @@ class Simulation:
                 if mirx or miry:
                     continue
             from ..core.sources import LineSource
-            src = LineSource(self.grid, ix, j0, j1, profile=prof)
-            if amp_func is not None:
-                # overwrite the uniform span mask with the spatial profile across y
-                # RELATIVE TO THE SOURCE CENTRE, which is meep's contract:
-                # "The position argument is *relative* to the `center` of the
-                # current source" (reference/meep/python/source.py:82).
-                #
-                # (j + 0.5) * dx is the corner-origin world y; subtracting
-                # sy/2 puts it in meep's centre-origin frame, and subtracting
-                # c.y makes it relative. The previous line ADDED c.y, so a
-                # source at y = -3 handed amp_func y values centred on -6
-                # instead of on 0. Invisible for a source at the origin, which
-                # is why it survived: every amp_func test placed one there.
-                #
-                # x is 0.0 for the same reason -- the line sits at the source's
-                # own x, so its relative x is zero, not c.x.
-                c = center or Vector3()
-                ys = [(j + 0.5) * gs.dx - gs.sy / 2 - c.y for j in range(j0, j1)]
-                w = np.array([complex(amp_func(Vector3(0.0, y, 0.0))) for y in ys])
-                src.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
-                src.mask[ix, j0:j1] = torch.tensor(w.real, dtype=self.grid.dtype,
-                                                device=self.grid.device)
+            # THE SPATIAL PROFILE GOES THROUGH LineSource, not over its mask.
+            # LineSource derives the source MEASURE from the extent -- dx/dx^2
+            # for a line, 1/dx^2 for a point (core/sources.py) -- and applies
+            # it to whatever mask it builds. Overwriting src.mask afterwards
+            # threw that measure away, which is exactly the defect recorded in
+            # wiki/bugs/source-normalization-extent.md for IndexedSource,
+            # living on at a second call site. Handing amp_func to LineSource
+            # keeps one normalisation path for every construction.
+            #
+            # RELATIVE TO THE SOURCE CENTRE, which is meep's contract: "The
+            # position argument is *relative* to the `center` of the current
+            # source" (reference/meep/python/source.py:82). LineSource calls
+            # back with the corner-origin y of each cell, so subtracting sy/2
+            # puts it in meep's centre-origin frame and subtracting c.y makes
+            # it relative. x is 0.0 because the line sits at the source's own
+            # x. An earlier version ADDED c.y, so a source at y = -3 handed
+            # amp_func values centred on -6; invisible at the origin, which is
+            # where every amp_func test places its source.
+            c = center or Vector3()
+
+            def _rel(y_corner, _c=c, _gs=gs):
+                return Vector3(0.0, y_corner - _gs.sy / 2 - _c.y, 0.0)
+
+            if amp_func is None:
+                src = LineSource(self.grid, ix, j0, j1, profile=prof)
+            else:
+                src = LineSource(self.grid, ix, j0, j1, profile=prof,
+                                 amp_func=lambda y: complex(amp_func(_rel(y))).real)
+                ys = [(j + 0.5) * gs.dx for j in range(j0, j1)]
+                w = np.array([complex(amp_func(_rel(y))) for y in ys])
                 if np.abs(w.imag).max() > 0.0:
                     # complex amplitude on real fields (meep: inject
                     # Re[a * s(t)]): the imaginary part rides the
-                    # quadrature-shifted carrier as a second soft source
+                    # quadrature-shifted carrier as a second soft source, and
+                    # it takes the SAME measure by the same route.
                     fcen = getattr(spec.src, "frequency", None)
                     if not fcen:
                         raise NotImplementedError(
                             "complex amp_func needs a source with a carrier "
                             "frequency (GaussianSource/ContinuousSource)")
-                    imsrc = LineSource(self.grid, ix, j0, j1,
-                                       profile=_Quadrature(prof, fcen))
-                    imsrc.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
-                    imsrc.mask[ix, j0:j1] = torch.tensor(w.imag,
-                                                         dtype=self.grid.dtype)
+                    imsrc = LineSource(
+                        self.grid, ix, j0, j1, profile=_Quadrature(prof, fcen),
+                        amp_func=lambda y: complex(amp_func(_rel(y))).imag)
                     imsrc.mask = imsrc.mask * amp
                     if self._pol == "te":
                         imsrc.mask = imsrc.mask[:, :-1]
@@ -1592,6 +1609,53 @@ class Simulation:
                     return       # the Bloch driver samples from its own loop
             self.init_sim()
             self.fields._register(name, mon)
+
+    def _x_line_source(self, jy, i0, i1, prof, amp, amp_func, center, gs, spec):
+        """A soft source on the horizontal segment y=jy, x in [i0, i1).
+
+        meep places no constraint on a source's orientation; a beam along +y
+        needs its source line along x. The engine's LineSource is a COLUMN
+        (x=ix, y in [j0,j1)), so a row is built here as a SoftSource carrying
+        the same measure LineSource derives from its extent -- dx/dx^2 for a
+        span of more than one cell, 1/dx^2 for a single one. Getting that
+        measure from the same rule, rather than by hand, is what keeps a
+        horizontal and a vertical source comparable.
+        """
+        import torch
+        from ..core.sources import SoftSource
+        c = center or Vector3()
+        imag = np.zeros(1)
+        if amp_func is None:
+            w = np.ones(i1 - i0)
+        else:
+            xs = [(i + 0.5) * gs.dx - gs.sx / 2 - c.x for i in range(i0, i1)]
+            w = np.array([complex(amp_func(Vector3(x, 0.0, 0.0))) for x in xs])
+            imag = w.imag
+            w = w.real
+        per_cell = gs.dx if (i1 - i0) > 1 else 1.0
+
+        def _row(vals, profile):
+            m = self.grid.zeros(self.grid.nx, self.grid.ny)
+            m[i0:i1, jy] = torch.as_tensor(vals * (per_cell / gs.dx ** 2),
+                                           dtype=self.grid.dtype,
+                                           device=self.grid.device)
+            m = m * amp
+            if self._pol == "te":
+                m = m[:, :-1]
+            return SoftSource(self.grid, m, profile)
+
+        extra = []
+        if amp_func is not None and np.abs(imag).max() > 0.0:
+            # complex amplitude on real fields, exactly as the y-line path
+            # does it: meep injects Re[a*s(t)], so the imaginary part rides a
+            # quadrature-shifted carrier as a second soft source.
+            fcen = getattr(spec.src, "frequency", None)
+            if not fcen:
+                raise NotImplementedError(
+                    "complex amp_func needs a source with a carrier frequency")
+            extra.append(_row(imag, _Quadrature(prof, fcen)))
+        return [_row(w, prof)] + extra
+
 
     def set_boundary(self, side, direction, condition):
         """meep's ``Simulation.set_boundary``, for the conditions this engine has.
