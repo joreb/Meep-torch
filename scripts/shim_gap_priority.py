@@ -133,11 +133,27 @@ def scan(path: pathlib.Path):
             if m:
                 from_log.setdefault(m.group(1),
                                     re.sub(r"^exit \d+\s+", "", m.group(2).strip()))
+    not_ours, unverified = [], []
     for j in sorted((root / "output").glob("*/*_mp.json")):
         doc = json.loads(j.read_text())
         if doc.get("status") in (None, "ok"):
             continue
         script = j.stem[:-len("_mp")]
+        # A failure is only a GAP once the oracle passes the same script. The
+        # runner writes meep's status in the sibling JSON, and four tutorials
+        # fail there too -- cavity_arrayslice calls
+        # get_array(Volume(...), component=...) which meep itself rejects
+        # ("The first argument must be the component"), cherenkov-radiation
+        # wants the h5topng binary, coupler cannot open its input, and
+        # differential_cross_section wants PyMieScatt. Ranking a missing
+        # Python module as a shim gap keeps recommending work that is not ours.
+        oracle = j.with_name(j.name.replace("_mp.json", "_meep.json"))
+        if oracle.exists():
+            if json.loads(oracle.read_text()).get("status") != "ok":
+                not_ours.append(script)
+                continue
+        else:
+            unverified.append(script)
         msg = doc.get("error") or from_log.get(script) or doc.get("status", "")
         if j.stat().st_mtime < _engine_mtime():
             # This script has not run since the engine last changed, so its
@@ -152,6 +168,16 @@ def scan(path: pathlib.Path):
         gaps[cap]["blocks"].append(script)
         if not gaps[cap]["message"]:
             gaps[cap]["message"] = re.sub(r"^exit \d+\s+", "", msg)[:200]
+    if not_ours:
+        gaps["NOT OURS: the oracle fails this script too"] = {
+            "blocks": sorted(not_ours),
+            "message": "real meep exits non-zero on the same script, so this "
+                       "is upstream or environment, not a shim gap"}
+    if unverified:
+        gaps["UNVERIFIED: no oracle result to compare against"] = {
+            "blocks": sorted(unverified),
+            "message": "no _meep.json next to it; run the oracle side before "
+                       "counting this as ours"}
     return dict(gaps)
 
 
