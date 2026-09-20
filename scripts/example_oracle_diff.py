@@ -401,7 +401,7 @@ def main(argv=None):
                     help="findings printed per pair before the rest are counted")
     args = ap.parse_args(argv)
 
-    n_pair = n_lonely = n_empty = 0
+    n_pair = n_lonely = n_empty = n_failed = 0
     bad = {"twin": 0, "variant": 0}
     for d, label, port, twin in pairs(args.root):
         rel = d.relative_to(args.root.parent if args.root.parent != pathlib.Path(".")
@@ -413,6 +413,20 @@ def main(argv=None):
             continue
         n_pair += 1
         pdoc, odoc = json.loads(port.read_text()), json.loads(twin.read_text())
+        # A RUN THAT CRASHED IS NOT A RUN THAT DISAGREED. Without this, a
+        # meep-torch side that exited 1 reported as "NOTHING COMPARABLE, 3959
+        # chatter key(s) ignored" -- indistinguishable from a script that
+        # simply printed different things, and the 3959 were the ORACLE's
+        # perfectly good results being counted as noise. binary_grating is
+        # exactly that case: it dies on get_eigenmode_coefficients(bands=[...]).
+        bad_status = [(w, d.get("status")) for w, d in
+                      (("port", pdoc), ("oracle", odoc))
+                      if d.get("status") not in (None, "ok")]
+        if bad_status:
+            n_failed += 1
+            who = ", ".join(f"{w} {st}" for w, st in bad_status)
+            print(f"  ----  {rel} [{label}]  DID NOT RUN: {who}")
+            continue
         worst, findings, chatter = compare(pdoc, odoc, rtol=args.rtol,
                                            strict_missing=(label == "twin"))
         n_cmp = len(set(_numeric(_flatten(pdoc))) & set(_numeric(_flatten(odoc))))
@@ -448,12 +462,13 @@ def main(argv=None):
 
     print(f"\n{n_pair} comparison(s) at rtol={args.rtol:g}: "
           f"{bad['twin']} twin-vs-oracle and {bad['variant']} variant-vs-oracle "
-          f"disagree; {n_empty} with nothing comparable; "
+          f"disagree; {n_failed} where a side did not run; "
+          f"{n_empty} with nothing comparable; "
           f"{n_lonely} run(s) with no oracle twin JSON")
     if bad["twin"]:
         print("A twin disagreement is the ENGINE's: that script is "
               "byte-comparable with the oracle's apart from the import.")
-    return 1 if (bad["twin"] or bad["variant"] or n_empty) else 0
+    return 1 if (bad["twin"] or bad["variant"] or n_empty or n_failed) else 0
 
 
 if __name__ == "__main__":
