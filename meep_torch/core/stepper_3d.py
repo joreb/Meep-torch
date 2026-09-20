@@ -127,6 +127,31 @@ def _trim_full(t, padaxes, fullax, pmc):
     return t[tuple(sl)]
 
 
+def _pad_pmc_kappa(t, padaxes, fullax, pmc):
+    """:func:`_pad_pmc` for a kappa profile, which pads with ONE rather than zero.
+
+    The E-update terms are composed as ``s0 - d/kappa - psi`` so that this file
+    groups its curls the way `stepper_tm` and `stepper_te` do. That needs the
+    derivative, its kappa and its psi padded to a common shape instead of the
+    stretched value being padded whole.
+
+    Zero is the right pad for ``d`` and ``psi`` for the reason `_pad_pmc`
+    already gives -- the derivative along a pmc axis is identically zero for the
+    transverse-uniform fields this pad exists for. The matching pad for kappa is
+    ONE, so the padded region contributes ``0/1 + 0 = 0``: exactly what the
+    zero-padded stretched value contributed before. Padding kappa with zero
+    instead would divide by it.
+
+    Each kappa is 1-D along its own derivative axis and broadcast elsewhere, so
+    padding it on the pmc axis keeps it aligned with the padded derivative.
+    """
+    pad = [0, 0, 0, 0, 0, 0]
+    for a in padaxes:
+        if a != fullax and a in pmc:
+            pad[2 * (2 - a)] = pad[2 * (2 - a) + 1] = 1
+    return (torch.nn.functional.pad(t, pad, value=1.0) if any(pad) else t)
+
+
 def _pad_pmc(t, padaxes, fullax, pmc):
     """PMC wall handling for one E-update curl term (2D ``y_pmc`` mirror:
     tangential E live at the wall, H=0 ghost beyond it). The reduced-axis
@@ -452,9 +477,11 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     ch_y = STRETCHED(dHz_dy, psi_Hz_y, kEy)
     dHy_dz = _trim_full(_d(Hy, 2), (1, 2), 1, pmc) / dx
     psi_Hy_z = PSI_NEW(dHy_dz, state.psi_Hy_z, bEz, aEz)
-    ch_z = STRETCHED(dHy_dz, psi_Hy_z, kEz)
-    curl_x = _pad_interior(_pad_pmc(ch_y, (1, 2), 2, pmc)
-                           - _pad_pmc(ch_z, (1, 2), 1, pmc), (1, 2), pmc)
+    curl_x = _pad_interior(
+        _COMPOSE(_pad_pmc(ch_y, (1, 2), 2, pmc),
+                 _pad_pmc(dHy_dz, (1, 2), 1, pmc),
+                 _pad_pmc_kappa(kEz, (1, 2), 1, pmc),
+                 _pad_pmc(psi_Hy_z, (1, 2), 1, pmc)), (1, 2), pmc)
     d1, d2 = c.damp["ex"]
     Ex = (_e_pole(state.Ex, state.Px_cur, pn["x"], d1, d2, eps_x, curl_x)
           if pols is not None else
@@ -466,9 +493,11 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     ch_z2 = STRETCHED(dHx_dz, psi_Hx_z, kEz)
     dHz_dx = _trim_full(_d(Hz, 0), (0, 2), 2, pmc) / dx
     psi_Hz_x = PSI_NEW(dHz_dx, state.psi_Hz_x, bEx, aEx)
-    ch_x = STRETCHED(dHz_dx, psi_Hz_x, kEx)
-    curl_y = _pad_interior(_pad_pmc(ch_z2, (0, 2), 0, pmc)
-                           - _pad_pmc(ch_x, (0, 2), 2, pmc), (0, 2), pmc)
+    curl_y = _pad_interior(
+        _COMPOSE(_pad_pmc(ch_z2, (0, 2), 0, pmc),
+                 _pad_pmc(dHz_dx, (0, 2), 2, pmc),
+                 _pad_pmc_kappa(kEx, (0, 2), 2, pmc),
+                 _pad_pmc(psi_Hz_x, (0, 2), 2, pmc)), (0, 2), pmc)
     d1, d2 = c.damp["ey"]
     Ey = (_e_pole(state.Ey, state.Py_cur, pn["y"], d1, d2, eps_y, curl_y)
           if pols is not None else
@@ -480,9 +509,11 @@ def step_3d(state: State3D, c: Coeffs3D, src_amp: float = 0.0,
     ch_x2 = STRETCHED(dHy_dx, psi_Hy_x, kEx)
     dHx_dy = _trim_full(_d(Hx, 1), (0, 1), 0, pmc) / dx
     psi_Hx_y = PSI_NEW(dHx_dy, state.psi_Hx_y, bEy, aEy)
-    ch_y2 = STRETCHED(dHx_dy, psi_Hx_y, kEy)
-    curl_z = _pad_interior(_pad_pmc(ch_x2, (0, 1), 1, pmc)
-                           - _pad_pmc(ch_y2, (0, 1), 0, pmc), (0, 1), pmc)
+    curl_z = _pad_interior(
+        _COMPOSE(_pad_pmc(ch_x2, (0, 1), 1, pmc),
+                 _pad_pmc(dHx_dy, (0, 1), 0, pmc),
+                 _pad_pmc_kappa(kEy, (0, 1), 0, pmc),
+                 _pad_pmc(psi_Hx_y, (0, 1), 0, pmc)), (0, 1), pmc)
     d1, d2 = c.damp["ez"]
     Ez = (_e_pole(state.Ez, state.Pz_cur, pn["z"], d1, d2, eps_z, curl_z)
           if pols is not None else
