@@ -86,7 +86,7 @@ ms = mpb.ModeSolver(
     mesh_size=mesh_size,
 )
 ms.device = "cuda"
-ms.filename_prefix = str(OUT / "mpb_diamond")
+ms.filename_prefix = str(OUT / "mpb_diamond_mp")
 
 
 def main():

@@ -90,7 +90,7 @@ ms = mpb.ModeSolver(
     num_bands=num_bands,
     filename_prefix=filename_prefix,
 )
-ms.filename_prefix = str(OUT / "mpb_strip")
+ms.filename_prefix = str(OUT / "mpb_strip_meep")
 
 
 def main():

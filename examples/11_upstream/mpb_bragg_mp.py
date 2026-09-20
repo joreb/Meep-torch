@@ -66,7 +66,7 @@ ms = mpb.ModeSolver(
     default_material=default_material,
 )
 ms.device = "cuda"
-ms.filename_prefix = str(OUT / "mpb_bragg")
+ms.filename_prefix = str(OUT / "mpb_bragg_mp")
 
 
 def main():

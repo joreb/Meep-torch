@@ -80,7 +80,7 @@ ms = mpb.ModeSolver(
     num_bands=num_bands,
     resolution=resolution,
 )
-ms.filename_prefix = str(OUT / "mpb_line_defect")
+ms.filename_prefix = str(OUT / "mpb_line_defect_meep")
 
 
 def main():

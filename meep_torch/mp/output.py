@@ -111,9 +111,36 @@ def _get(sim, component):
         return None
 
 
+#: The 2D field components, split by polarisation. In a 2D run the two sets
+#: decouple completely, so a component from the OTHER set is not missing -- it
+#: is identically zero, and that is physics rather than an unimplemented
+#: feature.
+#: `component_name` returns LOWERCASE tags ('ez', not 'Ez'), which the first
+#: version of this check got wrong and so never fired.
+_2D_FIELDS = ("ez", "hx", "hy", "dz", "hz", "ex", "ey", "dx", "dy")
+
+
+def _zero_of_run(sim):
+    """Full-grid zeros shaped like a component this run does carry.
+
+    """
+    for c in ("Ez", "Hz", "Ex", "Ey", "Hx", "Hy"):
+        a = _get(sim, c)          # mp.Ez IS the string "Ez"
+        if a is not None:
+            return np.zeros_like(a)
+    return None
+
+
 def _output_component(sim, component):
     tag = component_name(component)
     arr = _get(sim, component)
+    if arr is None and tag in _2D_FIELDS:
+        # ASKING A TE RUN FOR Ez IS NOT AN ERROR. cyl-ellipsoid.py drives Hz
+        # and ends with mp.output_efield_z; upstream meep runs it to
+        # completion, because in a TE run Ez is zero everywhere rather than
+        # absent. Raising here made a legal tutorial fail against a shim whose
+        # job is to accept what meep accepts.
+        arr = _zero_of_run(sim)
     if arr is None:
         raise ValueError(f"the engine does not expose component {component!r} "
                          "for this run (see Simulation.get_array)")

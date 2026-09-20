@@ -178,10 +178,16 @@ def realign(a: dict, b: dict) -> tuple[dict, dict, list]:
         labels = {}
         for side in ("a", "b"):
             ls = [r.get(0) for r in rows[side].values()]
-            if not ls or any(l is None for l in ls) or len(set(ls)) != len(ls):
+            if not ls or any(l is None for l in ls):
                 labels = None
                 break
             labels[side] = ls
+        # A REPEATED LABEL IS NOT A REASON TO GIVE UP. cyl-ellipsoid runs both
+        # at_every(0.25, print_stuff) and at_end(print_stuff), so its last time
+        # prints twice on BOTH engines. Demanding unique labels threw away the
+        # alignment of all 94 rows to avoid ambiguity in one. Occurrences of the
+        # same label are numbered instead, which keeps the join exact and lines
+        # the repeats up with each other.
         if labels is None:
             continue                       # keep ordinal keys for this tag
         # A first column is only an INDEPENDENT VARIABLE if it behaves like
@@ -193,15 +199,23 @@ def realign(a: dict, b: dict) -> tuple[dict, dict, list]:
         shared = set(labels["a"]) & set(labels["b"])
         if len(labels["a"]) < 2 or len(labels["b"]) < 2 or not shared:
             continue
+        seen_counts = {}
         for side, dst in (("a", out_a), ("b", out_b)):
-            for i, cols in rows[side].items():
+            nth = {}
+            for i in sorted(rows[side]):
+                cols = rows[side][i]
+                lab = cols[0]
+                n = nth.get(lab, 0)
+                nth[lab] = n + 1
                 for j, v in cols.items():
                     dst.pop(f"{tag}[{i}][{j}]", None)
-                    dst[f"{tag}@{cols[0]:g}[{j}]"] = v
-        only = set(labels["a"]) ^ set(labels["b"])
+                    dst[f"{tag}@{lab:g}#{n}[{j}]"] = v
+            seen_counts[side] = {f"{l:g}#{k}"
+                                 for l, c in nth.items() for k in range(c)}
+        only = seen_counts["a"] ^ seen_counts["b"]
         if only:
             notes.append(f"{tag}: {len(only)} row(s) on one side only "
-                         f"(first column {sorted(only)[:4]}...)")
+                         f"(first column {sorted(only)[:4]})")
     return out_a, out_b, notes
 
 

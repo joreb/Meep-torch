@@ -88,7 +88,7 @@ ms = mpb.ModeSolver(
     k_points=k_points,
 )
 ms.device = "cuda"
-ms.filename_prefix = str(OUT / "mpb_hole_slab")
+ms.filename_prefix = str(OUT / "mpb_hole_slab_mp")
 
 
 def main():

@@ -91,7 +91,7 @@ ms = mpb.ModeSolver(
     filename_prefix=filename_prefix,
 )
 ms.device = "cuda"
-ms.filename_prefix = str(OUT / "mpb_strip")
+ms.filename_prefix = str(OUT / "mpb_strip_mp")
 
 
 def main():

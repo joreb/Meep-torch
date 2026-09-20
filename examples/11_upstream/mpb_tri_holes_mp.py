@@ -79,7 +79,7 @@ ms = mpb.ModeSolver(
     num_bands=num_bands,
 )
 ms.device = "cuda"
-ms.filename_prefix = str(OUT / "mpb_tri_holes")
+ms.filename_prefix = str(OUT / "mpb_tri_holes_mp")
 
 
 def main():

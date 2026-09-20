@@ -23,6 +23,15 @@ from .vec import Vector3
 # meep's C++ boundary_side enum is {High, Low}: High=0, Low=1 (matches
 # mp.cpp.geom and real pymeep).
 High, Low = 0, 1
+
+# meep's boundary_condition enum, meep.hpp:1594:
+#   enum boundary_condition { Periodic = 0, Metallic, Magnetic, None };
+# Metallic is a PEC wall (tangential E = 0), Magnetic a PMC wall (tangential
+# H = 0). The names are exported so a tutorial that calls
+# `sim.set_boundary(mp.Low, mp.Z, mp.Metallic)` can be read at all; whether
+# the engine can HONOUR a given one is decided in Simulation.set_boundary,
+# not here.
+Periodic, Metallic, Magnetic, NoBoundary = 0, 1, 2, 3
 ALL = -1
 
 FreqRange = namedtuple("FreqRange", ["min", "max"])

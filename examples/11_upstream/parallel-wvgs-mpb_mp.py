@@ -70,7 +70,7 @@ def parallel_waveguide(s, yodd):
         tolerance=1e-9,
     )
     ms.device = "cuda"
-    ms.filename_prefix = str(OUT / "parallel-wvgs-mpb")
+    ms.filename_prefix = str(OUT / "parallel-wvgs-mpb_mp")
 
     if yodd:
         ms.run_yodd_zodd()

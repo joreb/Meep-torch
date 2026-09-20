@@ -443,16 +443,29 @@ class Simulation:
             warnings.warn("Rotate2/Rotate4 on a TE run keep the full cell "
                           f"({_SYM_TODO})")
             rot2, rot4 = 0, 0
+        odd = [ax for ax, n in ((Y, self.gs.ny), (X, self.gs.nx))
+               if ax in mirrors and n % 2]
+        if odd:
+            # A MIRROR IS AN OPTIMISATION, NOT PHYSICS. The half-domain fold
+            # needs the mirror plane to fall BETWEEN cells, which an odd count
+            # does not give. meep accepts the symmetry either way and simply
+            # solves what it can, so raising here turned a legal tutorial into
+            # a failure over a speed hint: cavity-farfield.py declares
+            # Mirror(X,-1) and Mirror(Y,-1) on a cell whose x size is
+            # 2*(dpad+dpml+N)+d-1, which is odd at resolution 20.
+            #
+            # Dropping to the full cell is the same answer for more work, and
+            # it is exactly what the two branches above already do for a
+            # k_point run and for Rotate2/Rotate4 on TE.
+            warnings.warn(
+                "Mirror(" + "/".join("XY"[a == Y] for a in odd) + ") on an odd "
+                f"cell count keeps the full cell (same physics, no speedup; "
+                f"{_SYM_TODO})")
+            mirrors = {a: v for a, v in mirrors.items() if a not in odd}
         if Y in mirrors:
-            if self.gs.ny % 2:
-                raise NotImplementedError(
-                    f"Mirror(Y) needs an even cell row count ({_SYM_TODO})")
             self._sym_cy = self.gs.ny // 2
             self._sym_py = mirrors[Y]
         if X in mirrors:
-            if self.gs.nx % 2:
-                raise NotImplementedError(
-                    f"Mirror(X) needs an even cell column count ({_SYM_TODO})")
             self._sym_cx = self.gs.nx // 2
             self._sym_px = mirrors[X]
         if rot2:
@@ -1566,6 +1579,48 @@ class Simulation:
                     return       # the Bloch driver samples from its own loop
             self.init_sim()
             self.fields._register(name, mon)
+
+    def set_boundary(self, side, direction, condition):
+        """meep's ``Simulation.set_boundary``, for the conditions this engine has.
+
+        ACCEPTS ONLY WHAT IS ALREADY TRUE, and raises otherwise. The engine
+        terminates every non-periodic axis in a PEC wall -- ``build_1d_coeffs``
+        documents "a 0 end is a PEC wall", and a PML end is an absorber in
+        front of that same wall, exactly as meep builds it. So ``Metallic`` on
+        such a side is a statement the engine already satisfies and there is
+        nothing to change.
+
+        That is the whole reason this is not a silent no-op. Accepting every
+        condition and doing nothing would let a script asking for a PMC wall
+        run and quietly return PEC answers. ``Magnetic`` raises, because
+        y_pmc is chosen when the grid is built and cannot be set afterwards,
+        and ``Periodic`` raises because periodicity comes from ``k_point``.
+
+        Found by antenna_pec_ground_plane_1D.py, which puts a PEC ground plane
+        at the low z face with ``set_boundary(mp.Low, mp.Z, mp.Metallic)``.
+        """
+        from .material import (High, Low, Magnetic, Metallic, NoBoundary,
+                               Periodic)
+
+        if side not in (Low, High):
+            raise ValueError(f"set_boundary side must be mp.Low or mp.High, "
+                             f"got {side!r}")
+        axes = _layer_axes(direction, self.dimensions, self.cell_size)
+        if not axes:
+            raise ValueError(f"set_boundary direction {direction!r} is not an "
+                             f"axis of this {self.dimensions}D cell")
+        if condition == Metallic:
+            # already the engine's wall on every non-periodic axis
+            self._explicit_pec = getattr(self, "_explicit_pec", set())
+            self._explicit_pec.add((side, direction))
+            return
+        name = {Magnetic: "mp.Magnetic", Periodic: "mp.Periodic",
+                NoBoundary: "mp.None"}.get(condition, repr(condition))
+        raise NotImplementedError(
+            f"set_boundary({name}): this engine terminates every non-periodic "
+            f"axis in a PEC wall, so only mp.Metallic can be honoured. A PMC "
+            f"wall is selected when the grid is built (y_pmc) and periodicity "
+            f"comes from k_point; neither can be set after the fact")
 
     def add_flux(self, fcen, df, nfreq, *fluxes, name=None):
         """meep add_flux(fcen, df, nfreq, *fluxregions) -> DftFlux (fluxes over

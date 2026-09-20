@@ -473,7 +473,16 @@ def plan_hooks(step_funcs, cutoff):
         elif isinstance(f, at_time):
             scheduled.append([f.t, None, f.fns])
         elif isinstance(f, at_every):
-            scheduled.append([0.0, f.every, f.fns])
+            # FIRST FIRE AT dT, NOT AT ZERO. meep's at_every starts its closure
+            # at tlast = 0.0 and fires when t >= tlast + dT - dt/2, so t = 0 is
+            # not a firing time -- the first call lands at dT. Scheduling from
+            # 0.0 here gave every at_every run one extra sample at t = 0, which
+            # showed up against the oracle as an off-by-one in every printed
+            # series: absorber-1d printed 16 rows from t=0 where meep printed
+            # 15 from t=10, and cyl-ellipsoid the same at t=0 against 0.25.
+            # at_every.__call__ below already had meep's rule; only this
+            # scheduler path did not.
+            scheduled.append([f.every, f.every, f.fns])
         elif isinstance(f, after_time):
             per_step.extend((g, f.t, math.inf) for g in f.fns)
         elif isinstance(f, before_time):

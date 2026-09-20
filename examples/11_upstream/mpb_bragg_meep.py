@@ -65,7 +65,7 @@ ms = mpb.ModeSolver(
     resolution=resolution,
     default_material=default_material,
 )
-ms.filename_prefix = str(OUT / "mpb_bragg")
+ms.filename_prefix = str(OUT / "mpb_bragg_meep")
 
 
 def main():

@@ -69,7 +69,7 @@ def parallel_waveguide(s, yodd):
         num_bands=1,
         tolerance=1e-9,
     )
-    ms.filename_prefix = str(OUT / "parallel-wvgs-mpb")
+    ms.filename_prefix = str(OUT / "parallel-wvgs-mpb_meep")
 
     if yodd:
         ms.run_yodd_zodd()

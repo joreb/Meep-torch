@@ -17,9 +17,11 @@ from .material import (ALL, Absorber, DrudeSusceptibility, FreqRange,
                        GyrotropicDrudeSusceptibility,
                        GyrotropicLorentzianSusceptibility,
                        GyrotropicSaturatedSusceptibility, High,
-                       LorentzianSusceptibility, Low, Medium, MultilevelAtom,
+                       LorentzianSusceptibility, Low, Magnetic, Medium,
+                       Metallic, MultilevelAtom, NoBoundary,
                        NoisyDrudeSusceptibility, NoisyLorentzianSusceptibility,
-                       PML, Susceptibility, Transition, get_rotation_matrix)
+                       PML, Periodic, Susceptibility, Transition,
+                       get_rotation_matrix)
 from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
                           DftNear2Far, DftObj, FluxData, Harminv, PadeDFT,
                           Volume, after_sources, after_time, at_beginning,

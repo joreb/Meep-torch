@@ -87,7 +87,7 @@ ms = mpb.ModeSolver(
     resolution=resolution,
     num_bands=num_bands,
 )
-ms.filename_prefix = str(OUT / "mpb_honey_rods")
+ms.filename_prefix = str(OUT / "mpb_honey_rods_meep")
 
 
 def main():

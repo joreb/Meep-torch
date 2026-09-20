@@ -127,13 +127,20 @@ MEEP_DEVICE = 'DEVICE = "meep-cpu"       # real meep: CPU only, no device concep
 MODESOLVER = re.compile(r"ModeSolver$")
 
 
-def _modesolver_lines(src, experiment, device_expr=None):
+def _modesolver_lines(src, stem, device_expr=None):
     """Insert the generated ModeSolver settings after each construction.
 
-    ``filename_prefix`` goes in on BOTH sides: it is real mpb API, and setting
-    it is how ``example_template.py`` rule 2 says an mpb script is told where
-    to write. Naming both engines' outputs identically is also what lets the
-    h5 files be compared by name rather than by guesswork.
+    ``filename_prefix`` goes in on BOTH sides -- it is real mpb API, and it is
+    how ``example_template.py`` rule 2 says an mpb script is told where to
+    write -- but it carries the SCRIPT STEM, not the experiment name.
+
+    An earlier version used the experiment name on both twins, on the reasoning
+    that identical filenames are what lets the h5 outputs be compared. That is
+    exactly backwards: both twins then wrote `mpb_bragg-h.k01.b01.y.tm.h5` into
+    one directory and the second run silently overwrote the first, leaving one
+    file where a comparison needs two. The stem gives `mpb_bragg_mp-...` and
+    `mpb_bragg_meep-...`, which is also what meep's own FDTD writers already do
+    (`ring_mp-ez-*` against `ring_meep-ez-*`).
 
     ``device`` goes in on the TORCH SIDE ONLY, because real mpb's ModeSolver
     has no such attribute.
@@ -165,7 +172,7 @@ def _modesolver_lines(src, experiment, device_expr=None):
     lines = src.splitlines(keepends=True)
     for lineno, var, col in sorted(inserts, reverse=True):
         pad = " " * col
-        block = f'{pad}{var}.filename_prefix = str(OUT / "{experiment}")\n'
+        block = f'{pad}{var}.filename_prefix = str(OUT / "{stem}")\n'
         if device_expr:
             block = f'{pad}{var}.device = "cuda"\n' + block
         lines.insert(lineno, block)
@@ -235,10 +242,11 @@ def port(upstream, into, force=False, dry_run=False):
     out = []
     for suffix, note, transform, device_line in (
             ("_mp", " but for the meep import and the generated ModeSolver lines",
-             lambda s: _modesolver_lines(to_meep_torch(s), experiment,
-                                         "DEVICE")[0], TORCH_DEVICE),
+             lambda s: _modesolver_lines(to_meep_torch(s), experiment + "_mp",
+                                         "cuda")[0], TORCH_DEVICE),
             ("_meep", " but for the generated ModeSolver lines",
-             lambda s: _modesolver_lines(s, experiment)[0], MEEP_DEVICE)):
+             lambda s: _modesolver_lines(s, experiment + "_meep")[0],
+             MEEP_DEVICE)):
         dest = into / f"{experiment}{suffix}.py"
         if dest.exists() and not force:
             out.append((dest, "exists: left alone (use --force)"))

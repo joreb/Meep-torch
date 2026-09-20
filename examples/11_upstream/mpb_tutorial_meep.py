@@ -66,7 +66,7 @@ ms = mpb.ModeSolver(
     geometry_lattice=geometry_lattice,
     resolution=resolution,
 )
-ms.filename_prefix = str(OUT / "mpb_tutorial")
+ms.filename_prefix = str(OUT / "mpb_tutorial_meep")
 
 print_heading("Square lattice of rods: TE bands")
 ms.run_te()

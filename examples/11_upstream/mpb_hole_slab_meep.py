@@ -87,7 +87,7 @@ ms = mpb.ModeSolver(
     num_bands=num_bands,
     k_points=k_points,
 )
-ms.filename_prefix = str(OUT / "mpb_hole_slab")
+ms.filename_prefix = str(OUT / "mpb_hole_slab_meep")
 
 
 def main():

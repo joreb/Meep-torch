@@ -85,7 +85,7 @@ ms = mpb.ModeSolver(
     num_bands=num_bands,
     mesh_size=mesh_size,
 )
-ms.filename_prefix = str(OUT / "mpb_diamond")
+ms.filename_prefix = str(OUT / "mpb_diamond_meep")
 
 
 def main():

@@ -78,7 +78,7 @@ ms = mpb.ModeSolver(
     resolution=resolution,
     num_bands=num_bands,
 )
-ms.filename_prefix = str(OUT / "mpb_tri_holes")
+ms.filename_prefix = str(OUT / "mpb_tri_holes_meep")
 
 
 def main():

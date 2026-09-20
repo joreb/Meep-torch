@@ -81,7 +81,7 @@ ms = mpb.ModeSolver(
     resolution=resolution,
 )
 ms.device = "cuda"
-ms.filename_prefix = str(OUT / "mpb_line_defect")
+ms.filename_prefix = str(OUT / "mpb_line_defect_mp")
 
 
 def main():
