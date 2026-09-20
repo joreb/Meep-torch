@@ -29,7 +29,7 @@ from meep_torch.core.factory import curl_recipe, make_curl
 from meep_torch.core.grid import Grid
 from meep_torch.core.kernels import CN_UPDATE
 from meep_torch.core.stepper_tm import init_tm_state, step_db
-from meep_torch.core.symbolic import FOLD, WALL, BlockSpec
+from meep_torch.core.symbolic import FOLD, PERIODIC, WALL, BlockSpec
 
 NX, NY = 24, 20
 
@@ -892,3 +892,100 @@ def test_the_1d_recipe_drops_two_axes_and_keeps_one_term():
         terms, _ = curl_recipe(spec, target)
         assert len(terms) == 1, (target, [t.source for t in terms])
         assert terms[0].axis == "x", (target, terms[0].axis)
+
+
+# ---------------------------------------------------------------------------
+# PERIODIC: the wrap gather, and the psi-free path it implies. A wrapped axis
+# and an absorber are contradictory conditions on the same axis, so "no CPML
+# here" is DERIVED from the boundary rather than declared -- which is why
+# these two things are tested together and not separately.
+# ---------------------------------------------------------------------------
+
+_TM_P = ("Ez", "Hx", "Hy")
+
+
+def _periodic_spec(n=16):
+    return BlockSpec(_TM_P, (n, n), (PERIODIC, PERIODIC))
+
+
+def test_a_periodic_axis_wraps_instead_of_slicing():
+    """The recipe's shape, before any arithmetic.
+
+    On a walled axis the difference eats a row and the psi extent is two
+    shorter; on a wrapped axis the neighbour of the last row is the first, so
+    nothing is lost, both slices keep the full extent, and the offset the
+    slice pair would have encoded moves into `wrap`.
+    """
+    terms, want = curl_recipe(_periodic_spec(), "Ez")
+    assert want == (16, 16), want
+    for t in terms:
+        assert t.centre == t.neighbour, (t.source, t.centre, t.neighbour)
+        assert all(s == slice(None) for s in t.centre), (t.source, t.centre)
+        assert t.wrap in (1, -1), (t.source, t.wrap)
+        # the derived consequence: a wrap carries no absorber
+        assert t.psi == "" and t.coeff == "", (t.source, t.psi, t.coeff)
+
+
+def test_the_wrap_direction_follows_the_same_rule_the_slices_do():
+    """`centre_is_upper` picks the roll sign, exactly as it picks the slices.
+
+    Centre-upper means the neighbour sits one row BELOW, which `roll(f, +1)`
+    supplies; centre-lower means one above, `roll(f, -1)`. Getting this
+    backwards negates the derivative, and a negated curl still runs.
+    """
+    spec = _periodic_spec()
+    seen = {(t.source, t.axis): t.wrap
+            for tgt in _TM_P for t in curl_recipe(spec, tgt)[0]}
+    # H reads E forward (E sits at the lower node), D reads H backward
+    assert seen[("Ez", "x")] == -1 and seen[("Ez", "y")] == -1, seen
+    assert seen[("Hy", "x")] == +1 and seen[("Hx", "y")] == +1, seen
+
+
+def test_the_built_curl_is_bitwise_with_stepper_bloch2_at_zero_k():
+    """The wrap and the psi-free composition, against a real stepper.
+
+    `stepper_bloch2` is NOT gated by this. It carries each component as a
+    quadrature PAIR and its Bloch phase is `k * midpoint(the other channel)`,
+    which is neither the factory's `i k f` nor anything it can express -- see
+    the representation task. What this pins is the one point where that gap
+    closes: at `kx = ky = 0` the two channels decouple and the `_c` channel
+    IS a plain periodic TM stepper, so every roll and every bare composition
+    on this path is a stepper's own arithmetic rather than a restatement.
+
+    Both compose branches are covered: Hx and Hy have one bare term each, Ez
+    has two.
+    """
+    from meep_torch.core.stepper_bloch2 import (Bloch2State, _bwd, _fwd,
+                                                step_bloch2_tm)
+
+    n, dx, dt = 16, 0.05, 0.02
+    torch.manual_seed(0)
+    z = lambda: torch.zeros(n, n, dtype=torch.float64)
+    Ez, Hx, Hy = (torch.randn(n, n, dtype=torch.float64) for _ in range(3))
+    st = Bloch2State(Ez, z(), Hx, z(), Hy, z(), z(), z())
+    eps = torch.ones(n, n, dtype=torch.float64)
+    nxt = step_bloch2_tm(st, eps, dt, dx, 0.0, 0.0)
+
+    class _NoCPML:      # a periodic block has no coefficients to carry
+        pass
+    coeffs, spec = _NoCPML(), _periodic_spec(n)
+
+    # the stepper's own updates, rearranged as `new = old + dt * rhs` so the
+    # rhs is what the factory returns. IEEE negation is exact.
+    wants = {
+        "Hx": -_fwd(Ez, 1, dx),
+        "Hy": +_fwd(Ez, 0, dx),
+        "Ez": _bwd(nxt.Hy_c, 0, dx) - _bwd(nxt.Hx_c, 1, dx),
+    }
+    # Ez reads H at n+1/2, so it sees the stepper's updated H, not the seed
+    fields = {"Hx": nxt.Hx_c, "Hy": nxt.Hy_c, "Ez": Ez}
+    for target, want in wants.items():
+        got, psis = make_curl(spec, target)(st._replace(), coeffs, dx,
+                                            fields=fields)
+        assert psis == {}, (target, psis)
+        assert got.shape == want.shape, (target, got.shape, want.shape)
+        assert torch.equal(got, want), (target, (got - want).abs().max().item())
+
+    # and the stepper's fields follow from those rhs terms
+    assert torch.equal(nxt.Hx_c, Hx + dt * wants["Hx"])
+    assert torch.equal(nxt.Hy_c, Hy + dt * wants["Hy"])

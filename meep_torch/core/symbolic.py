@@ -1161,7 +1161,7 @@ def ordered_sum(terms):
     return total
 
 
-def compiled_curl_composition(n_terms: int = 2):
+def compiled_curl_composition(n_terms: int = 2, stretched=None):
     """The steppers' D-phase curl composition, compiled from derived pieces.
 
     This is the executable counterpart of :func:`compiled_stretched_curl`. That
@@ -1201,16 +1201,37 @@ def compiled_curl_composition(n_terms: int = 2):
 
     Returns ``f(stretched_0, d_1, k_1, psi_1, ...)``: the caller computes the
     differences and psi recursions (they are state) and passes them in.
+
+    ``stretched`` says, per term, whether that difference carries an absorber.
+    A term differenced along a PERIODIC axis never does -- a wrap and an
+    absorber are contradictory boundary conditions on the same axis -- so its
+    contribution is the bare difference and it drops out of the argument list
+    entirely. It is NOT ``k = 1, psi = 0``: that is the same number by two
+    extra full-array ops, and ``-0.0/1 + 0.0`` is ``+0.0``, so it is not even
+    the same bits. ``stepper_fv2d`` composes exactly the mixed case (its x
+    difference is stretched, its y roll is not) and ``stepper_bloch2`` the
+    all-bare one.
     """
     if n_terms < 2:
         raise ValueError(f"a curl component has at least two terms, got {n_terms}")
-    s0 = sp.Symbol("stretched_0")
-    args, terms = [s0], [s0]
+    stretched = (True,) * n_terms if stretched is None else tuple(stretched)
+    if len(stretched) != n_terms:
+        raise ValueError(f"stretched has {len(stretched)} flags for {n_terms} terms")
+    if stretched[0]:
+        s0 = sp.Symbol("stretched_0")
+        args, terms = [s0], [s0]
+    else:
+        d0 = sp.Symbol("d_0")
+        args, terms = [d0], [d0]
     for i in range(1, n_terms):
-        d, k, psi = (sp.Symbol(f"d_{i}"), sp.Symbol(f"k_{i}"),
-                     sp.Symbol(f"psi_{i}"))
-        args += [d, k, psi]
-        terms += [-d / k, -psi]
+        d = sp.Symbol(f"d_{i}")
+        if stretched[i]:
+            k, psi = sp.Symbol(f"k_{i}"), sp.Symbol(f"psi_{i}")
+            args += [d, k, psi]
+            terms += [-d / k, -psi]
+        else:
+            args += [d]
+            terms += [-d]
     return sp.lambdify(args, ordered_sum(terms), "torch")
 
 

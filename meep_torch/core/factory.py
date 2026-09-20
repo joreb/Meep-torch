@@ -59,7 +59,7 @@ from typing import NamedTuple
 import torch
 
 from .kernels import EH_FROM_D, PSI_NEW, STRETCHED
-from .symbolic import (AXES, FOLD, BlockSpec, compiled_curl_composition,
+from .symbolic import (AXES, FOLD, PERIODIC, BlockSpec, compiled_curl_composition,
                        compiled_difference, compiled_phase_factor, curl_signs,
                        curl_terms, family_sign, field_shape, psi_extent,
                        stencil_offsets, yee_table)
@@ -74,8 +74,11 @@ class CurlTerm(NamedTuple):
     """One difference of a curl, fully resolved at build time."""
     source: str                  # component being differenced
     axis: str                    # axis it is differenced along
-    sign: int                    # +1 or -1, from curl_terms: the RHS sign,
-                                 # which is what a one-term update applies
+    sign: int                    # +1 or -1: the RHS sign, `family_sign(target)
+                                 # * curl_sign` -- DERIVED, not an independent
+                                 # source of truth (the identity is asserted in
+                                 # curl_recipe). It is what the three branches
+                                 # with nothing to associate read directly.
     diff: object                 # compiled_difference(source, axis, target)
     centre: tuple                # slice for the field's OWN node (k = 0)
     neighbour: tuple             # slice for the other sample
@@ -84,12 +87,27 @@ class CurlTerm(NamedTuple):
     ghost: str                   # axis needing a cut-plane row before the
                                  # difference, or "" -- see make_curl
     curl_sign: int = 0           # the INTRINSIC curl's sign for this term,
-                                 # from curl_signs. Differs from `sign` by the
-                                 # family sign on an H target, and it is the
-                                 # one that fixes WHICH term is stretched first
-                                 # -- meep composes the curl and negates at the
-                                 # update, so ordering by `sign` there is one
-                                 # ulp out. See make_curl.
+                                 # from curl_signs. `sign` above is this times
+                                 # `family_sign(target)`, so on ONE term the
+                                 # two carry the same information and `sign` is
+                                 # the cheaper read. They part company only
+                                 # where two stretched terms are COMPOSED:
+                                 # there the order of the pair is the grouping,
+                                 # and the grouping has to follow the intrinsic
+                                 # curl with the family flip applied once at
+                                 # the end -- meep's single family-wide stride
+                                 # flip (`step_db.cpp`: `if (ft == D_stuff) {
+                                 # stride_p = -stride_p; stride_m = -stride_m;
+                                 # }`). Ordering that branch by `sign` instead
+                                 # fails 12 of 48 tests; see make_curl.
+    wrap: int = 0                # roll shift for a PERIODIC differenced axis,
+                                 # or 0 when the axis is sliced. A wrap has no
+                                 # fencepost: the neighbour of the last row is
+                                 # the first, so `centre` and `neighbour` both
+                                 # keep the full extent on that axis and the
+                                 # roll supplies the offset the slice pair
+                                 # would have. Sign follows `centre_is_upper`
+                                 # exactly as the slices do -- see curl_recipe.
     phase: str = ""              # coefficient holding this axis's wavenumber
                                  # when the axis is PHASED rather than
                                  # differenced; "" for an ordinary term. A
@@ -108,7 +126,7 @@ def _family(component: str) -> str:
     return component[0].lower()
 
 
-def _phased_term(spec, target, source, axis, sign, coeff, want, ndim):
+def _phased_term(spec, target, source, axis, curl_sign, fam, coeff, want, ndim):
     """A curl term on an axis the block carries as a phase rather than a grid.
 
     There is no difference, so there is no neighbour, no CPML memory and no
@@ -116,6 +134,12 @@ def _phased_term(spec, target, source, axis, sign, coeff, want, ndim):
     nodes. What DOES survive is the trim: the value still has to land on the
     target's psi extent, and a phased source that does not already sit there is
     a staggering error rather than something to pad around.
+
+    ``curl_sign`` comes from the same ``curl_of`` lookup the differenced
+    branch uses, not from ``curl_terms``' rhs sign directly -- the caller used
+    to pass the rhs sign in as ``curl_sign`` too, which is only correct when
+    ``family_sign(target) == +1`` and was never caught because nothing reads a
+    phased term's ``curl_sign``.
     """
     src_shape = field_shape(source, spec.extents, spec.boundaries,
                             origin=spec.origin)
@@ -132,8 +156,8 @@ def _phased_term(spec, target, source, axis, sign, coeff, want, ndim):
                 f"trim of {trim} without a fold")
         else:
             sl[b] = slice(trim // 2, -(trim // 2))
-    return CurlTerm(source=source, axis=axis, sign=sign, diff=None,
-                    curl_sign=sign, centre=tuple(sl), neighbour=tuple(sl),
+    return CurlTerm(source=source, axis=axis, sign=fam * curl_sign, diff=None,
+                    curl_sign=curl_sign, centre=tuple(sl), neighbour=tuple(sl),
                     psi="", coeff="", ghost="", phase=coeff)
 
 
@@ -156,6 +180,13 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
     ndim = len(extents)
     phases = dict(spec.phases)
     curl_of = {(src, ax): g for src, ax, g in curl_signs(target)}
+    # The one family-wide flip, computed once per curl rather than per term --
+    # see CurlTerm.sign. `curl_terms(target)`'s own rhs sign is `fam *
+    # curl_of[(source, axis)]` by construction (`family_sign`'s own
+    # derivation asserts this constant across every term), so it is used below
+    # only to enumerate which (source, axis) pairs exist, never for the value
+    # stored on the term.
+    fam = family_sign(target)
     on_grid = [a for a in phases if AXES.index(a) < ndim]
     if on_grid:
         # A phase only applies to an axis the block does NOT carry. Naming an
@@ -168,8 +199,9 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
             "never both")
     want = psi_extent(target, extents, boundaries, origin=spec.origin)
     out = []
-    for source, axis, sign in curl_terms(target):
+    for source, axis, _rhs_sign in curl_terms(target):
         a = AXES.index(axis)
+        csign = curl_of[(source, axis)]
         if a >= ndim:
             # The axis is not on this block. WHICH WAY it left decides whether
             # the term goes with it: a 2D reduction assumes nothing varies
@@ -179,7 +211,7 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
             # eighth BlockSpec gap.
             if axis not in phases:
                 continue
-            out.append(_phased_term(spec, target, source, axis, sign,
+            out.append(_phased_term(spec, target, source, axis, csign, fam,
                                     phases[axis], want, ndim))
             continue
         src_shape = field_shape(source, extents, boundaries,
@@ -187,12 +219,19 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
         lo, hi = [slice(None)] * ndim, [slice(None)] * ndim
         for b in range(ndim):
             if b == a:
-                # the differenced axis: the difference itself removes the row,
-                # and `stencil_offsets` has already fixed which one
-                lo[b], hi[b] = slice(None, -1), slice(1, None)
-                # a fold hands the difference an extra row at the cut, so the
-                # source is one longer there than its own allocation
-                have = src_shape[b] - 1 + (1 if boundaries[b] is FOLD else 0)
+                if boundaries[b] is PERIODIC:
+                    # the wrap supplies the row the difference would have eaten,
+                    # so nothing is sliced away and nothing is trimmed: the
+                    # offset moves into `wrap` below.
+                    lo[b] = hi[b] = slice(None)
+                    have = src_shape[b]
+                else:
+                    # the difference itself removes the row, and
+                    # `stencil_offsets` has already fixed which one
+                    lo[b], hi[b] = slice(None, -1), slice(1, None)
+                    # a fold hands the difference an extra row at the cut, so
+                    # the source is one longer there than its own allocation
+                    have = src_shape[b] - 1 + (1 if boundaries[b] is FOLD else 0)
             else:
                 have = src_shape[b]
             trim = have - want[b]
@@ -230,14 +269,34 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
         ks = stencil_offsets(delta)
         centre_is_upper = max(ks) == 0
         c_sl, n_sl = ((hi, lo) if centre_is_upper else (lo, hi))
+        # On a wrapped axis the two slices are the same full extent, so the
+        # offset the pair would have encoded has to be carried separately:
+        # centre-upper means the neighbour sits one row BELOW, which is
+        # `roll(f, +1)`; centre-lower means one above, `roll(f, -1)`.
+        wrap = 0
+        if boundaries[a] is PERIODIC:
+            assert c_sl[a] == n_sl[a] == slice(None), (target, source, axis)
+            wrap = 1 if centre_is_upper else -1
+        # the identity the one-term branches rely on, checked where it is
+        # derived rather than restated per branch: verified across all 12 terms
+        # of all 6 components, fam = +1 on E and -1 on H, no exceptions.
+        assert _rhs_sign == fam * csign, (target, source, axis, _rhs_sign, fam, csign)
         out.append(CurlTerm(
-            source=source, axis=axis, sign=sign,
-            curl_sign=curl_of[(source, axis)],
+            source=source, axis=axis, sign=fam * csign,
+            curl_sign=csign,
             diff=compiled_difference(source, axis, target),
             centre=tuple(c_sl), neighbour=tuple(n_sl),
             ghost=(axis if boundaries[a] is FOLD else ""),
-            psi=f"psi_{source}{axis}",
-            coeff=f"{_family(target)}{axis}",
+            wrap=wrap,
+            # A wrapped axis carries no absorber -- a periodic boundary and
+            # a PML are contradictory conditions on the same axis -- so there
+            # is no CPML memory to name and no coefficient family to read.
+            # The psi-free path is DERIVED from the boundary, not declared:
+            # `stepper_bloch2` (all axes periodic) has no psi at all and
+            # `stepper_fv2d` (x walled, y wrapped) has psi on x only, which is
+            # this rule read off two independent steppers.
+            psi=("" if wrap else f"psi_{source}{axis}"),
+            coeff=("" if wrap else f"{_family(target)}{axis}"),
         ))
     if not out:
         raise ValueError(
@@ -261,21 +320,60 @@ def make_curl(spec: BlockSpec, target: str):
 
     The spec work happens HERE, once. The returned closure touches tensors and
     slice objects only.
+
+    THE FAMILY SIGN MATTERS AS AN ASSOCIATION ONLY WHERE TWO STRETCHED TERMS
+    ARE COMPOSED. That is the two-term branch and nowhere else: there the order
+    decides the grouping, and grouping is what bitwise parity is. Measured --
+    ordering that branch by the rhs sign instead of the intrinsic curl sign
+    fails 12 of 48 tests.
+
+    Every other branch uses `t.sign` directly, which IS `family_sign(target) *
+    curl_sign` by construction (asserted in `curl_recipe`). One term has no
+    association to preserve, so splitting the flip into a curl-sign branch plus
+    a family flip would express one negation as two -- the same bits, an extra
+    full-array op, and a second idiom for one rule.
+
+    An earlier version did exactly that in all four branches and needed a
+    comment per branch to say which idiom applied and why the other would
+    double-negate. Reverted on review: eleven honest fields and one rule stated
+    once beats five fields and a legend.
     """
     terms, want = curl_recipe(spec, target)
+    fam = family_sign(target)
+
+    def _src(state, t, fields):
+        return (fields[t.source] if fields and t.source in fields
+                else getattr(state, t.source))
+
+    def _neighbour(f, t):
+        """The other sample, wrapped if the differenced axis is periodic."""
+        if t.wrap:
+            f = torch.roll(f, t.wrap, dims=AXES.index(t.axis))
+        return f[t.neighbour]
 
     def _one(state, coeffs, dx, t, psis, fields):
-        f = fields[t.source] if fields and t.source in fields else getattr(state, t.source)
-        d = t.diff(f[t.centre], f[t.neighbour], dx)
+        f = _src(state, t, fields)
+        d = t.diff(f[t.centre], _neighbour(f, t), dx)
+        if not t.psi:
+            return d, None, None
         p = PSI_NEW(d, getattr(state, t.psi),
                     getattr(coeffs, f"b_{t.coeff}"),
                     getattr(coeffs, f"a_{t.coeff}"))
         psis[t.psi] = p
         return d, p, getattr(coeffs, f"k_{t.coeff}")
 
+    def _stretch(t):
+        """The term's contribution to the curl, resolved at BUILD time.
+
+        An unstretched term is the difference itself, not `d/1 + 0`: the
+        second is two extra full-array ops per step and is not even the same
+        bits at a signed zero.
+        """
+        return (lambda d, p, k: STRETCHED(d, p, k)) if t.psi else (
+            lambda d, p, k: d)
+
     def _phase(state, coeffs, t, fields):
-        f = fields[t.source] if fields and t.source in fields else getattr(state, t.source)
-        return PHASE(f[t.centre], getattr(coeffs, t.phase))
+        return PHASE(_src(state, t, fields)[t.centre], getattr(coeffs, t.phase))
 
     phased = [t for t in terms if t.phase]
     if phased and len(terms) == 1:
@@ -283,11 +381,10 @@ def make_curl(spec: BlockSpec, target: str):
         # since its other driver is differenced along the axis the block does
         # not carry. No difference, no psi, nothing to stretch.
         (t,) = terms
-        sign = t.sign
 
         def curl(state, coeffs, dx, fields=None):
             v = _phase(state, coeffs, t, fields)
-            return (v if sign > 0 else -v), {}
+            return (v if t.sign > 0 else -v), {}
     elif phased:
         # One phased, one differenced -- `stepper_kz`'s Hy. Only the
         # x-derivative is PML-stretched (z is the propagation axis and k_z is
@@ -296,11 +393,11 @@ def make_curl(spec: BlockSpec, target: str):
         # `-i k_z Ex + ce_x` and this `ce_x -+ i k_z Ex` are the same bits;
         # association, not order, is what parity depends on.
         (t_p,), (t_d,) = phased, [t for t in terms if not t.phase]
+        stretch_d = _stretch(t_d)
 
         def curl(state, coeffs, dx, fields=None):
             psis = {}
-            d, p, k = _one(state, coeffs, dx, t_d, psis, fields)
-            out = STRETCHED(d, p, k)
+            out = stretch_d(*_one(state, coeffs, dx, t_d, psis, fields))
             if t_d.sign < 0:
                 out = -out
             v = _phase(state, coeffs, t_p, fields)
@@ -311,15 +408,15 @@ def make_curl(spec: BlockSpec, target: str):
         # and a caller writing `F - dt*stretched` gets the same floats as
         # `F + dt*(-stretched)` -- IEEE negation is exact.
         (t,) = terms
-        sign = t.sign
+        stretch = _stretch(t)
 
         def curl(state, coeffs, dx, fields=None):
             psis = {}
-            d, p, k = _one(state, coeffs, dx, t, psis, fields)
-            out = STRETCHED(d, p, k)
-            return (out if sign > 0 else -out), psis
+            out = stretch(*_one(state, coeffs, dx, t, psis, fields))
+            return (out if t.sign > 0 else -out), psis
     else:
-        compose = compiled_curl_composition(n_terms=2)
+        # Each term's stretch flag goes INTO the derivation, so a bare term
+        # contributes `-d` and never appears as `-d/1 - 0`.
         # Ordered by the INTRINSIC CURL's sign, not the rhs's. meep composes
         # the curl and applies the family minus at the field update -- for an H
         # target those differ, and the difference is an association rather than
@@ -329,13 +426,16 @@ def make_curl(spec: BlockSpec, target: str):
         # was derived, with both psi arrays already bitwise.
         (t_pos,), (t_neg,) = ([t for t in terms if t.curl_sign > 0],
                               [t for t in terms if t.curl_sign < 0])
-        fam = family_sign(target)
+        compose = compiled_curl_composition(
+            n_terms=2, stretched=(bool(t_pos.psi), bool(t_neg.psi)))
+        stretch_p = _stretch(t_pos)
 
         def curl(state, coeffs, dx, fields=None):
             psis = {}
-            dp, pp, kp = _one(state, coeffs, dx, t_pos, psis, fields)
+            first = stretch_p(*_one(state, coeffs, dx, t_pos, psis, fields))
             dn, pn, kn = _one(state, coeffs, dx, t_neg, psis, fields)
-            out = compose(STRETCHED(dp, pp, kp), dn, kn, pn)
+            out = (compose(first, dn, kn, pn) if t_neg.psi
+                   else compose(first, dn))
             # the family minus, applied AFTER the composition exactly where
             # meep applies it. IEEE negation is exact, so `c1*F + c2*(-curl)`
             # and `c1*F - c2*curl` are the same bits.
