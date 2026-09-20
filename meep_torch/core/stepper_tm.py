@@ -244,12 +244,14 @@ def step_db(state: TMState, m: TMCoeffs, ft: str) -> TMState:
 
     psi_Hyx = PSI_NEW(dHy_dx, state.psi_Hyx, m.b_ex, m.a_ex)
     psi_Hxy = PSI_NEW(dHx_dy, state.psi_Hxy, m.b_ey, m.a_ey)
-    # meep's association, (((d1/k1 + psi1) - d2/k2) - psi2), now emitted by
+    # THE STEPPERS' association, (((d1/k1 + psi1) - d2/k2) - psi2), emitted by
     # the derivation rather than typed here: compiled_curl_composition is
     # handed the term order and builds it as nested binary Adds, which is the
     # one structure that survives sympy's printer. Grouping it as
     # (d1/k1 + psi1) - (d2/k2 + psi2) is the same algebra and different floats,
-    # so this is not style -- it is what makes the step bitwise with meep.
+    # so this is not style. It is what keeps the derived kernels bitwise with
+    # the hand-written steppers -- NOT with meep, which has no CPML and sums
+    # its four curl terms flat, scaled once by the Courant number.
     curl = _COMPOSE(STRETCHED(dHy_dx, psi_Hyx, m.k_ex),
                     dHx_dy, m.k_ey, psi_Hxy)
     if m.d1 is not None:

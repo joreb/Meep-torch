@@ -7,7 +7,7 @@ update (19 sites), the ADE Lorentz recurrence (5), and two forms of recovering
 E from the stored or folded D. `core.kernels` derives each once.
 
 Elementwise is the easy half -- no slices, no boundaries, no lattice -- but it
-is not free, because bitwise parity with meep is an ASSOCIATION property and
+is not free, because bitwise parity with the STEPPERS is an ASSOCIATION property and
 sympy sorts `Add` canonically on construction. A plain `lambdify` of the pole
 recurrence emits `(c3 E + c1 P) + c2 P_prev` where every stepper writes
 `(c1 P + c2 P_prev) + c3 E`, and those differ in the last bit. Hence
@@ -56,7 +56,7 @@ def test_ade_pole_is_bitwise():
 def test_ade_pole_needs_the_ordered_sum():
     """And the canonical grouping must NOT be bitwise, or this proves nothing.
 
-    If sympy's own sort ever produced meep's association by luck, the test
+    If sympy's own sort ever produced the steppers' association by luck, the test
     above would pass for any construction and stop being evidence.
     """
     P_cur, P_prev, E, c1, c2, c3 = _rand(6, seed=1)
@@ -66,7 +66,7 @@ def test_ade_pole_needs_the_ordered_sum():
                             s1 * a + s2 * b + s3 * c, "torch")
     got = canonical(P_cur, P_prev, E, c1, c2, c3)
     assert not torch.equal(got, hand), (
-        "the canonical sort reproduced meep's association -- then ordered_sum "
+        "the canonical sort reproduced the steppers' association -- then ordered_sum "
         "is buying nothing here and this kernel's construction is untested")
     assert torch.allclose(got, hand), "they must still be the same number"
 

@@ -4,7 +4,7 @@
 
 Twelve steppers hand-write the same assembly: difference each source along its
 axis, trim the other axes to the target's interior, run the CPML recursion,
-compose in meep's order, and hand the result to the field update. None of that
+compose in the steppers' order, and hand the result to the field update. None
 is a choice --
 
 * WHICH terms, from :func:`~meep_torch.core.symbolic.curl_terms`: the Jacobian
@@ -17,7 +17,8 @@ is a choice --
   the target's psi extent, which is why one trim rule covers them all.
 * WHICH ORDER they combine in, from
   :func:`~meep_torch.core.symbolic.compiled_curl_composition`, because bitwise
-  parity with meep is an association property.
+  parity with the hand-written steppers is an association property. (Parity
+  with MEEP is a tolerance property -- see symbolic's module docstring.)
 
 THE MEASURED CONSTRAINT, and the reason this is a factory rather than a
 generic function: resolve the spec at BUILD time. A version that re-read the

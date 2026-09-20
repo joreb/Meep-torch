@@ -266,7 +266,7 @@ def test_the_composition_is_ordered_and_that_is_what_makes_it_bitwise():
     sympy flattens Add and Mul on construction, so a tree carries algebra and
     not an association -- `a*(d/h)` and `(a*d)/h` are the same object. Nested
     binary `Add(evaluate=False)` is the one structure that survives printing,
-    and `ordered_sum` builds it, so `compiled_curl_composition` emits meep's
+    and `ordered_sum` builds it, so `compiled_curl_composition` emits the steppers'
     grouping instead of sympy's canonical sort.
 
     The pair below is the point: ORDERED is bitwise with the hand-written
@@ -284,7 +284,7 @@ def test_the_composition_is_ordered_and_that_is_what_makes_it_bitwise():
     hand = s0 - d1 / k1 - p1
 
     assert torch.equal(compose(s0, d1, k1, p1), hand), (
-        "the ordered composition is not bitwise with meep's association")
+        "the ordered composition is not bitwise with the steppers' association")
 
     a, b, c, d = sp.symbols("stretched_0 d_1 k_1 psi_1")
     canonical = sp.lambdify((a, b, c, d), a - b / c - d, "torch")

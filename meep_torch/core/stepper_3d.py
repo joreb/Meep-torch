@@ -26,8 +26,8 @@ from .pml import absorber_sigma, cpml_profiles, side_counts
 from .symbolic import (PSI_NEW, STRETCHED,
                        compiled_curl_composition)
 
-#: meep's grouping as `stepper_tm` and `stepper_te` write it:
-#: `((d0/k0 + psi0) - d1/k1) - psi1`. This file used to write
+#: The grouping `stepper_tm` and `stepper_te` write, which is THEIRS and not
+#: meep's: `((d0/k0 + psi0) - d1/k1) - psi1`. This file used to write
 #: `(d0/k0 + psi0) - (d1/k1 + psi1)` instead -- the same algebra, a
 #: different association, and 1.4e-14 apart. Neither grouping is meep's
 #: (meep has no CPML at all), so the tie-break is baselines: tm/te carry

@@ -14,7 +14,7 @@ If the result is bitwise with `stepper_tm.step_db("D")` then all four agree
 with code that was written by hand, and the remaining difference between a
 unified stepper and twelve hand-written ones is plumbing rather than physics.
 
-Bitwise and not merely close: the composition is meep's association, and this
+Bitwise and not merely close: the composition is the steppers' association, and this
 is exactly the property that a canonical `Add` sort would break at 1e-14 while
 every tolerance-based check still passed.
 """
@@ -243,7 +243,7 @@ def test_a_fold_trims_one_end_and_a_wall_trims_two():
 
 
 # ---------------------------------------------------------------------------
-# Phase composition: a whole TM step, in meep's order.
+# Phase composition: a whole TM step, in the steppers' phase order.
 # ---------------------------------------------------------------------------
 
 _STEP_CASES = [

@@ -69,7 +69,7 @@ details carry it, and both are load-bearing:
   bitwise gates run on. Anyone enabling order 4 should re-measure parity rather
   than assume this property carries over; the algebra does and the codegen does
   not.
-* Callers must combine the compiled pieces in meep's own association. A curl
+* Callers must combine the compiled pieces in THE STEPPERS' association. A curl
   written ``d1/k1 + psi1 - d2/k2 - psi2`` and one written
   ``(d1/k1 + psi1) - (d2/k2 + psi2)`` are the same algebra and different
   floats.
@@ -1139,7 +1139,7 @@ def ordered_sum(terms):
 
     Nesting is the one thing that does survive. ``Add(x, y, evaluate=False)``
     keeps its shape through the printer, so building the sum as nested binary
-    nodes in the caller's order emits meep's grouping. sympy still reorders the
+    nodes in the caller's order emits the steppers' grouping. sympy reorders the
     two arguments of each node when printing -- it prints ``-c + (b + a)`` for
     ``((a + b) + c)`` -- and that is harmless, because IEEE addition commutes
     exactly. Only the nesting matters, and the nesting is what was specified.
@@ -1162,12 +1162,12 @@ def ordered_sum(terms):
 
 
 def compiled_curl_composition(n_terms: int = 2):
-    """meep's D-phase curl composition, compiled from derived pieces.
+    """The steppers' D-phase curl composition, compiled from derived pieces.
 
     This is the executable counterpart of :func:`compiled_stretched_curl`. That
     one derives the whole curl as a single expression and is the ORACLE -- one
     ulp from meep, because sympy chooses the association. This one is handed
-    the association and emits meep's:
+    the association and emits the steppers':
 
         (d0/k0 + psi0) - d1/k1 - psi1        for two terms
 

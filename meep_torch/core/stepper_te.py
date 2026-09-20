@@ -140,7 +140,8 @@ def step_db(state: TEState, m, ft: str) -> TEState:
     dEx_dy = _dEx_dy(state.Ex[:, :-1], state.Ex[:, 1:], dx)     # (nx-1, ny-1)
     psi_Eyx = PSI_NEW(dEy_dx, state.psi_Eyx, m.b_hx, m.a_hx)
     psi_Exy = PSI_NEW(dEx_dy, state.psi_Exy, m.b_hy, m.a_hy)
-    # meep's association, left to right -- see stepper_tm's D phase.
+    # the steppers' association, left to right -- see stepper_tm's D phase.
+    # Not meep's: meep has no CPML and no psi to group. Ours.
     # the association is emitted by the derivation, not typed here -- see
     # stepper_tm's D phase. Three terms is where it matters: sympy's canonical
     # Add sort would regroup them, and (a + b) + c is not (a + c) + b in
