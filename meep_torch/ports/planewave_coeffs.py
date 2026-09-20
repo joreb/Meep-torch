@@ -27,7 +27,7 @@ import math
 
 import numpy as np
 
-from ..ports.mode_monitor import dft_fields
+from .mode_monitor import dft_fields
 
 _UNIFORM_RTOL = 1e-9
 

@@ -2269,7 +2269,7 @@ class Simulation:
         Two paths, picked by the monitor: a mode port of an EigenModeSource
         run reports the S-parameter column (see the _run_modes docstring); a
         flux monitor on a Bloch-periodic plane with uniform transverse eps is
-        decomposed into the 0th diffraction order (mp/eig_coeffs.py).
+        decomposed into the 0th diffraction order (ports/planewave_coeffs.py).
         `eig_resolution`/`eig_tolerance` are accepted and ignored (there is no
         iterative mode solver on this path)."""
         if isinstance(bands, DiffractedPlanewave):
@@ -2320,8 +2320,8 @@ class Simulation:
 
     def _planewave_alpha(self, flux, name, bands, eig_parity):
         """Flux-monitor path: 0th diffraction order on a Bloch-periodic plane
-        with uniform transverse eps (mp/eig_coeffs.py)."""
-        from .eig_coeffs import planewave_alpha
+        with uniform transverse eps (ports/planewave_coeffs.py)."""
+        from ..ports.planewave_coeffs import planewave_alpha
         if self._S is not None or self._eig_source is not None:
             raise RuntimeError(
                 f"get_eigenmode_coefficients({name!r}): not a mode port of "
