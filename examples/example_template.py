@@ -172,6 +172,30 @@ def _code_only(src: str) -> str:
     return "\n".join("".join(r) for r in grid)
 
 
+#: The marker scripts/port_upstream_example.py writes into every file it makes.
+GENERATED = "meep-torch example harness preamble (generated"
+
+
+def _is_generated(src: str) -> bool:
+    """A twin emitted by the porter, not a hand-written example.
+
+    THE DISTINCTION IS LOAD-BEARING, not a way to dodge the rules. A generated
+    twin's body is upstream's, unmodified, and that is the whole reason a
+    difference between it and its oracle is evidence about the ENGINE. So the
+    rules that ask the AUTHOR to write something extra into the body -- a CSV
+    beside every figure (4), a closing line carrying a number (7) -- cannot
+    apply: satisfying them means editing the body, which destroys the property
+    the file exists to have.
+
+    The rules about the FILE rather than the body all still apply, and are met
+    by the generated preamble: headless (1), output/ (2), a reported device
+    (3), no private engine attributes (5), the right engine imported (10).
+    `plt.show()` is downgraded to a warning for these, because it is upstream's
+    own line and under Agg it is a no-op.
+    """
+    return GENERATED in src
+
+
 def _engine(src: str):
     """Which engine the file imports: "meep_torch", "meep", or None."""
     code = _code_only(src)
@@ -198,7 +222,8 @@ def _engine_rule(path: pathlib.Path, src: str):
             else "no engine imported")
 
 
-def _rules(path: pathlib.Path, src: str, twin: bool = False):
+def _rules(path: pathlib.Path, src: str, twin: bool = False,
+           generated: bool = False):
     """Yield (level, message) for each rule this file breaks.
 
     ``twin`` marks a `<name>_meep.py` oracle: it runs real pymeep, so the
@@ -222,15 +247,31 @@ def _rules(path: pathlib.Path, src: str, twin: bool = False):
         elif use > pyp:
             yield "error", "rule 1: matplotlib.use() comes after pyplot import"
         if re.search(r"^\s*plt\.show\(", code, re.M):
-            yield "error", "rule 1: plt.show() in a headless example"
+            yield ("warn" if generated else "error",
+                   "rule 1: plt.show()" + (" left in an unmodified upstream body"
+                                           " (a no-op under Agg)" if generated
+                                           else " in a headless example"))
 
     writes = re.findall(r"(savefig|savetxt)\(\s*([^,)]+)", src)
     if writes:
-        if 'OUT = pathlib.Path(__file__).parent / "output"' not in src:
-            yield "error", "rule 2: OUT is not the standard output/ path"
+        # `output` or `output/<experiment>/`: the rule is that OUT lives under
+        # output/, not that it is output/ exactly. A multi-section script and
+        # every generated twin give each experiment its own subdirectory, which
+        # is the examples/10_periodic_mpb layout and what the JSON pairing in
+        # scripts/example_oracle_diff.py keys on.
+        if not re.search(r'OUT\s*=\s*pathlib\.Path\(__file__\)\.parent\s*/\s*"output',
+                         src):
+            yield "error", "rule 2: OUT is not under the standard output/ path"
         if "OUT.mkdir(" not in src:
             yield "error", "rule 2: OUT.mkdir(exist_ok=True) missing"
         for fn, arg in writes:
+            if generated:
+                # A generated twin reaches output/ by chdir-ing into it in the
+                # preamble, precisely so that upstream's own bare relative
+                # paths need no editing. Demanding the literal OUT at each
+                # call site would demand exactly the body edits that break the
+                # twin comparison -- see _is_generated.
+                break
             if "OUT" not in arg:
                 yield "error", f"rule 2: {fn}({arg.strip()}) does not go to OUT"
 
@@ -245,6 +286,11 @@ def _rules(path: pathlib.Path, src: str, twin: bool = False):
 
     n_png = len(re.findall(r"savefig\(", src))
     n_csv = len(re.findall(r"savetxt\(", src))
+    if generated:
+        # Rules 4, 7 and 9 ask the author to add lines to the body. See
+        # _is_generated: for these files that is the one edit that is not
+        # allowed, because it is what makes the twin comparison mean anything.
+        return
     if n_png and not n_csv:
         yield "error", f"rule 4: {n_png} figure(s) and no CSV export"
     for m in re.finditer(r"savetxt\((?:[^()]|\([^()]*\))*\)", src):
@@ -274,7 +320,7 @@ def check(target: pathlib.Path) -> int:
     if not files:
         print(f"no .py files under {target}")
         return 1
-    n_err = n_warn = n_upstream = n_twin = 0
+    n_err = n_warn = n_upstream = n_twin = n_gen = 0
     for f in files:
         src = f.read_text()
         eng = _engine_rule(f, src)
@@ -284,7 +330,10 @@ def check(target: pathlib.Path) -> int:
             continue
         twin = f.stem.endswith("_meep")
         n_twin += twin
-        found = ([eng] if eng else []) + list(_rules(f, src, twin=twin))
+        gen = _is_generated(src)
+        n_gen += gen
+        found = ([eng] if eng else []) + list(
+            _rules(f, src, twin=twin, generated=gen))
         if not found:
             print(f"  ok    {f.relative_to(target.parent if target.is_dir() else f.parent)}")
             continue
@@ -294,7 +343,7 @@ def check(target: pathlib.Path) -> int:
             n_err += level == "error"
             n_warn += level == "warn"
     print(f"\n{len(files)} file(s): {len(files) - n_upstream - n_twin} port(s), "
-          f"{n_twin} oracle twin(s), {n_upstream} upstream; "
+          f"{n_twin} oracle twin(s), {n_upstream} upstream, {n_gen} generated; "
           f"{n_err} error(s), {n_warn} warning(s)")
     return 1 if n_err else 0
 
