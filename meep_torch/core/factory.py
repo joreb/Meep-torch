@@ -113,6 +113,16 @@ class CurlTerm(NamedTuple):
                                  # differenced; "" for an ordinary term. A
                                  # phased term has no diff, no psi and no
                                  # CPML -- see BlockSpec.phases.
+    real_phase: int = 0          # 0: the phase is `i k f` (complex block).
+                                 # +1 / -1: the block stores one polarisation
+                                 # as `i * F` (BlockSpec.imaginary), so the
+                                 # phase is the REAL `+k f` / `-k f` --
+                                 # `i^(a-b+1)` with a/b = target/source
+                                 # imaginary-stored. Separate from `sign`
+                                 # on purpose: `sign` keeps meaning
+                                 # `family_sign * curl_sign` on every branch
+                                 # of make_curl, and this is the extra factor
+                                 # the representation adds on top.
 
 
 def _family(component: str) -> str:
@@ -140,7 +150,24 @@ def _phased_term(spec, target, source, axis, curl_sign, fam, coeff, want, ndim):
     to pass the rhs sign in as ``curl_sign`` too, which is only correct when
     ``family_sign(target) == +1`` and was never caught because nothing reads a
     phased term's ``curl_sign``.
+
+    THE REPRESENTATION lands here and nowhere else. With the target stored as
+    ``i^a F`` and the source as ``i^b G`` (``BlockSpec.imaginary``), the
+    coupling ``sign * i k * G`` becomes ``sign * k * i^(a-b+1) * G'``: real
+    ``+k`` when the SOURCE is the imaginary-stored one, real ``-k`` when the
+    TARGET is, and still complex when both or neither are -- which is a block
+    that asked for real storage and cannot have it, so it raises rather than
+    quietly building a complex step under a real-sounding spec.
     """
+    real_phase = 0
+    if spec.imaginary:
+        a, b = target in spec.imaginary, source in spec.imaginary
+        if a == b:
+            raise ValueError(
+                f"i*{coeff}*{source} at {target}: spec.imaginary stores "
+                f"{'both' if a else 'neither'} side as i*F, so the phase stays "
+                "complex; exactly one polarisation must be imaginary-stored")
+        real_phase = 1 if b else -1
     src_shape = field_shape(source, spec.extents, spec.boundaries,
                             origin=spec.origin)
     sl = [slice(None)] * ndim
@@ -158,7 +185,8 @@ def _phased_term(spec, target, source, axis, curl_sign, fam, coeff, want, ndim):
             sl[b] = slice(trim // 2, -(trim // 2))
     return CurlTerm(source=source, axis=axis, sign=fam * curl_sign, diff=None,
                     curl_sign=curl_sign, centre=tuple(sl), neighbour=tuple(sl),
-                    psi="", coeff="", ghost="", phase=coeff)
+                    psi="", coeff="", ghost="", phase=coeff,
+                    real_phase=real_phase)
 
 
 def curl_recipe(spec: BlockSpec, target: str) -> tuple:
@@ -187,6 +215,10 @@ def curl_recipe(spec: BlockSpec, target: str) -> tuple:
     # only to enumerate which (source, axis) pairs exist, never for the value
     # stored on the term.
     fam = family_sign(target)
+    unknown = [c for c in spec.imaginary if c not in spec.components]
+    if unknown:
+        raise ValueError(
+            f"spec.imaginary names {unknown}, which this block does not carry")
     on_grid = [a for a in phases if AXES.index(a) < ndim]
     if on_grid:
         # A phase only applies to an axis the block does NOT carry. Naming an
@@ -373,7 +405,15 @@ def make_curl(spec: BlockSpec, target: str):
             lambda d, p, k: d)
 
     def _phase(state, coeffs, t, fields):
-        return PHASE(_src(state, t, fields)[t.centre], getattr(coeffs, t.phase))
+        f, k = _src(state, t, fields)[t.centre], getattr(coeffs, t.phase)
+        if not t.real_phase:
+            return PHASE(f, k)
+        # The stored-i representation: `k f` in place of `i k f`, the sign
+        # from which side carries the i. Bitwise with the complex block's
+        # real/imaginary part on the mapped state, since `(a + i b) * i k` is
+        # an exact component swap with one negation and no rounding.
+        v = k * f
+        return v if t.real_phase > 0 else -v
 
     phased = [t for t in terms if t.phase]
     if phased and len(terms) == 1:

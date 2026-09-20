@@ -46,6 +46,41 @@ class CWRamp:
         return math.sin(2 * math.pi * self.fcen * t) * ramp
 
 
+def source_measure(spans, dx: float, ndim: int = 2) -> float:
+    """The measure a source of these spans carries, derived, not typed.
+
+    ``spans`` is the cell count along each axis of the source's own extent.
+    meep's rule is one line, ``src/sources.cpp:501``::
+
+        LOOP_OVER_DIRECTIONS(gv.dim, d)
+          if (where.in_direction(d) == 0.0 && !nosize_direction(d))
+            data.amp *= gv.a;          // a = resolution = 1/dx
+
+    A meep source carries a current DENSITY, so the field it produces depends
+    on the current integrated over its extent divided by the cell volume. Each
+    axis the source is a DELTA in contributes one factor of 1/dx; each axis it
+    EXTENDS along contributes dx of measure against the same 1/dx, cancelling.
+    So the measure is dx^(-n_delta) -- and n_delta is read off the spans rather
+    than declared.
+
+    Deriving it is not tidiness. The same rule was previously typed out in
+    LineSource, and typed out a second time in HLineSource when the horizontal
+    orientation was added; a third copy would have arrived with the first 3D
+    source. Two copies of a rule are two things that can disagree, and this one
+    is invisible when it does -- a wrong measure scales the field smoothly and
+    nothing raises. wiki/bugs/source-normalization-extent.md is the record of
+    what that costs.
+
+        point in 2D  spans (1, 1)   -> 1/dx^2
+        line  in 2D  spans (n, 1)   -> 1/dx
+        plane in 3D  spans (n, m, 1) -> 1/dx
+    """
+    n_delta = sum(1 for n in spans if n <= 1)
+    if len(spans) < ndim:                    # unlisted axes are deltas too
+        n_delta += ndim - len(spans)
+    return dx ** (-n_delta)
+
+
 class LineSource:
     """Soft current source on the vertical segment x=ix, y in [j0, j1)."""
 
@@ -84,8 +119,7 @@ class LineSource:
         # A point and a line genuinely differ in dimension (A/m vs A/m^2 in
         # 2D), so the extent has to enter -- but it enters once, here, and is
         # read off the span rather than declared by a caller.
-        per_cell = grid.dx if (j1 - j0) > 1 else 1.0
-        self.mask = mask * (per_cell / grid.dx ** 2)
+        self.mask = mask * source_measure((j1 - j0, 1), grid.dx)
 
     def amplitude(self, t_idx: int) -> float:
         return self.profile.amplitude((t_idx + 0.5) * self.dt)
@@ -141,6 +175,44 @@ class CustomSource:
         # a mistake rather than the intended convention.
         v = self.fn(t)
         return float(v.real) if isinstance(v, complex) else float(v)
+
+
+class HLineSource:
+    """Soft current source on the HORIZONTAL segment y=jy, x in [i0, i1).
+
+    LineSource's mirror image. It exists because a source line's orientation
+    is not fixed: a beam travelling along +y needs its source extended along x,
+    and meep places no constraint either way.
+
+    THE MEASURE IS THE SAME RULE, read off the extent exactly as LineSource
+    reads it -- dx/dx^2 for a span of more than one cell, 1/dx^2 for a single
+    one. That is the point of putting this here rather than building a mask in
+    the mp shim: two orientations deriving the same measure from one piece of
+    code cannot disagree, and the shim is left with nothing to get wrong.
+    """
+
+    def __init__(self, grid: Grid, jy: int, i0: int, i1: int, profile,
+                 amp_func=None, amps=None):
+        if not 0 <= jy < grid.ny:
+            raise ValueError(f"source jy={jy} outside grid ny={grid.ny}")
+        if not 0 <= i0 < i1 <= grid.nx:
+            raise ValueError(
+                f"source segment i0={i0}, i1={i1} invalid for nx={grid.nx}")
+        self.profile = profile
+        self.dt = grid.dt
+        mask = grid.zeros(grid.nx, grid.ny)
+        if amps is not None:
+            mask[i0:i1, jy] = torch.as_tensor(amps, dtype=grid.dtype,
+                                              device=grid.device)
+        elif amp_func is None:
+            mask[i0:i1, jy] = 1.0
+        else:
+            for i in range(i0, i1):
+                mask[i, jy] = float(amp_func((i + 0.5) * grid.dx))
+        self.mask = mask * source_measure((i1 - i0, 1), grid.dx)
+
+    def amplitude(self, t_idx: int) -> float:
+        return self.profile.amplitude((t_idx + 0.5) * self.dt)
 
 
 class SoftSource:

@@ -1611,51 +1611,40 @@ class Simulation:
             self.fields._register(name, mon)
 
     def _x_line_source(self, jy, i0, i1, prof, amp, amp_func, center, gs, spec):
-        """A soft source on the horizontal segment y=jy, x in [i0, i1).
+        """Wire an x-extended source to the engine's HLineSource.
 
-        meep places no constraint on a source's orientation; a beam along +y
-        needs its source line along x. The engine's LineSource is a COLUMN
-        (x=ix, y in [j0,j1)), so a row is built here as a SoftSource carrying
-        the same measure LineSource derives from its extent -- dx/dx^2 for a
-        span of more than one cell, 1/dx^2 for a single one. Getting that
-        measure from the same rule, rather than by hand, is what keeps a
-        horizontal and a vertical source comparable.
+        No physics here: HLineSource owns the measure, exactly as LineSource
+        does for the y orientation. This converts coordinates and splits a
+        complex amp_func into its quadrature pair, which is wiring.
         """
-        import torch
-        from ..core.sources import SoftSource
+        from ..core.sources import HLineSource
         c = center or Vector3()
-        imag = np.zeros(1)
-        if amp_func is None:
-            w = np.ones(i1 - i0)
-        else:
-            xs = [(i + 0.5) * gs.dx - gs.sx / 2 - c.x for i in range(i0, i1)]
-            w = np.array([complex(amp_func(Vector3(x, 0.0, 0.0))) for x in xs])
-            imag = w.imag
-            w = w.real
-        per_cell = gs.dx if (i1 - i0) > 1 else 1.0
 
-        def _row(vals, profile):
-            m = self.grid.zeros(self.grid.nx, self.grid.ny)
-            m[i0:i1, jy] = torch.as_tensor(vals * (per_cell / gs.dx ** 2),
-                                           dtype=self.grid.dtype,
-                                           device=self.grid.device)
-            m = m * amp
+        def _rel(x_corner):
+            return Vector3(x_corner - gs.sx / 2 - c.x, 0.0, 0.0)
+
+        def _build(part, profile):
+            src = HLineSource(
+                self.grid, jy, i0, i1, profile,
+                amp_func=None if amp_func is None
+                else (lambda x: part(complex(amp_func(_rel(x))))))
+            src.mask = src.mask * amp
             if self._pol == "te":
-                m = m[:, :-1]
-            return SoftSource(self.grid, m, profile)
+                src.mask = src.mask[:, :-1]
+            return src
 
-        extra = []
-        if amp_func is not None and np.abs(imag).max() > 0.0:
-            # complex amplitude on real fields, exactly as the y-line path
-            # does it: meep injects Re[a*s(t)], so the imaginary part rides a
-            # quadrature-shifted carrier as a second soft source.
-            fcen = getattr(spec.src, "frequency", None)
-            if not fcen:
-                raise NotImplementedError(
-                    "complex amp_func needs a source with a carrier frequency")
-            extra.append(_row(imag, _Quadrature(prof, fcen)))
-        return [_row(w, prof)] + extra
-
+        out = [_build((lambda z: z.real), prof)]
+        if amp_func is not None:
+            xs = [(i + 0.5) * gs.dx for i in range(i0, i1)]
+            if max(abs(complex(amp_func(_rel(x))).imag) for x in xs) > 0.0:
+                fcen = getattr(spec.src, "frequency", None)
+                if not fcen:
+                    raise NotImplementedError(
+                        "complex amp_func needs a source with a carrier "
+                        "frequency")
+                out.append(_build((lambda z: z.imag),
+                                  _Quadrature(prof, fcen)))
+        return out
 
     def set_boundary(self, side, direction, condition):
         """meep's ``Simulation.set_boundary``, for the conditions this engine has.

@@ -995,6 +995,21 @@ class BlockSpec(NamedTuple):
     ``folds`` is ``((axis, phase), ...)``; an axis carrying a fold should also
     be marked ``FOLD`` in ``boundaries``, since a cut ends the kept half the
     way a wall does.
+
+    ``imaginary`` is THE REPRESENTATION, the first gap, closed with meep's own
+    answer (``src/step_db.cpp:147-160``). A phased axis makes every coupling
+    across it ``i k f``, which forces complex arrays on the whole block. meep
+    keeps real arrays by storing ``i * F`` for one polarisation, so the
+    ``i``'s cancel: with the target stored as ``i^a F`` and the source as
+    ``i^b G``, the coupling becomes ``sign * k * i^(a - b + 1)``, real iff
+    exactly one of the two is imaginary-stored. Naming the components stored
+    that way here is what a builder needs; the sign falls out (derived in
+    ``core.factory._phased_term``, checked against the conjugated system in
+    ``symbolic_test/test_implicit_i.py``). Empty means the block is stored as
+    it is, complex where a phase makes it so. Flux, energy and every product
+    of two same-polarisation fields are insensitive to the stored ``i``;
+    a raw field of an imaginary-stored component is ``i`` times the physical
+    one.
     """
 
     components: tuple
@@ -1009,6 +1024,7 @@ class BlockSpec(NamedTuple):
     entry: str = "B"
     sources: tuple = ()
     constitutive: tuple = ()
+    imaginary: tuple = ()
 
     def shape(self, component: str) -> tuple:
         return field_shape(component, self.extents, self.boundaries,
@@ -1113,17 +1129,22 @@ class BlockSpec(NamedTuple):
         Named the way the steppers name them: ``psi_<source><axis>``, where the
         source is the component being differentiated and the axis is the
         direction. Two per target in 2D.
+
+        Which (source, axis) pairs exist comes from :func:`curl_terms`, the
+        same derivation the built curl uses, restricted to the axes the block
+        carries as a grid. It used to come from Yee-offset inequality, which
+        is the same set within one polarisation and a superset across two:
+        on a six-component 2D block it allocated ``psi_Hxx`` for ``Ex``, an
+        array no curl term writes, because ``Hx`` and ``Ex`` sit at different
+        x offsets even though no ``dHx/dx`` appears in any curl.
         """
         out = {}
+        ndim = len(self.extents)
         for target in self.components:
             extent = psi_extent(target, self.extents, self.boundaries,
                                 origin=self.origin)
-            for src in self.components:
-                if src == target or src[0] == target[0]:
-                    continue
-                for axis in AXES[:len(self.extents)]:
-                    if YEE[src][AXES.index(axis)] == YEE[target][AXES.index(axis)]:
-                        continue
+            for src, axis, _ in curl_terms(target):
+                if src in self.components and AXES.index(axis) < ndim:
                     out[f"psi_{src}{axis}"] = extent
         return out
 
