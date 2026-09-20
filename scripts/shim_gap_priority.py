@@ -110,15 +110,22 @@ QUESTIONS = {
 
 
 def scan(path: pathlib.Path):
-    """Gaps found in a run log, with the tutorials each one blocks."""
+    """Gaps read from the per-run JSONs, which are the durable record.
+
+    NOT from a run log. A log in /tmp goes stale the moment a gap is fixed, and
+    a stale ranking keeps recommending work that is already done -- this tool
+    listed the mpb porter bug, set_boundary and Mirror as open after all three
+    had been fixed, because it was parsing the log of the run that found them.
+    The JSONs live beside the outputs and are rewritten by every run.
+    """
     gaps = collections.defaultdict(lambda: {"blocks": [], "message": ""})
-    if not path.exists():
-        return {}
-    for line in path.read_text().splitlines():
-        m = re.match(r"\s*(FAIL|----)\s+(\S+?)_mp\.py\s+(.*)", line)
-        if not m:
+    root = path if path.is_dir() else ROOT / "examples/11_upstream"
+    for j in sorted((root / "output").glob("*/*_mp.json")):
+        doc = json.loads(j.read_text())
+        if doc.get("status") in (None, "ok"):
             continue
-        script, msg = m.group(2), m.group(3).strip()
+        script = j.stem[:-len("_mp")]
+        msg = doc.get("error") or doc.get("status", "")
         cap = next((name for pat, name in NORMALISE if re.search(pat, msg)),
                    None)
         if cap is None:
@@ -158,7 +165,9 @@ def unpack(ans, qid):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--log", type=pathlib.Path, default=RUNLOG)
+    ap.add_argument("--log", type=pathlib.Path,
+                    default=ROOT / "examples/11_upstream",
+                    help="experiment tree (reads output/*/*_mp.json)")
     ap.add_argument("--scan", action="store_true", help="list gaps, do not judge")
     ap.add_argument("--markdown", action="store_true")
     args = ap.parse_args(argv)

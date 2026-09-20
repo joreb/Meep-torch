@@ -169,6 +169,11 @@ def run_one(script, timeout=1800, device="cpu"):
         p = subprocess.run(_interp(script) + [script.name] + argv, cwd=script.parent,
                            capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
+        dest = script.parent / "output" / _experiment(script.stem) / f"{script.stem}.json"
+        if dest.exists():
+            d = json.loads(dest.read_text())
+            d["status"], d["error"] = "timeout", f"timeout after {timeout}s"
+            dest.write_text(json.dumps(d, indent=2, sort_keys=True) + "\n")
         return {"script": script.name, "status": "timeout", "kept": 0}
     rows, kept, dropped = parse_stdout(p.stdout)
     status = "ok" if p.returncode == 0 else f"exit {p.returncode}"
@@ -182,6 +187,17 @@ def run_one(script, timeout=1800, device="cpu"):
         "script": stem}
     doc["stdout"] = rows
     doc["status"] = status
+    # The failure REASON, not just the code. Without it the gap taxonomy can
+    # only be rebuilt from whatever run log happens to be lying in /tmp, which
+    # goes stale the moment a gap is fixed -- and a stale ranking quietly keeps
+    # recommending work that is already done.
+    doc.pop("error", None)
+    if status != "ok":
+        tail = [l for l in p.stderr.strip().splitlines() if l.strip()]
+        if tail:
+            doc["error"] = tail[-1][:300]
+        elif status == "timeout":
+            doc["error"] = f"timeout after {timeout}s"
     if argv:
         doc["argv"] = argv          # recorded so the pair can be shown identical
     dest.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
