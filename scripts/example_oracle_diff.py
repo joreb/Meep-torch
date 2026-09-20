@@ -181,6 +181,14 @@ def realign(a: dict, b: dict) -> tuple[dict, dict, list]:
             if not ls or any(l is None for l in ls):
                 labels = None
                 break
+            # FORMAT HERE TOO, so the overlap gate below and the join further
+            # down agree on what "the same label" means. Raw floats made the
+            # gate stricter than the join: two engines printing 0.3 and
+            # 0.30000000000000004 share no raw value, the gate finds no overlap
+            # and bails to ordinal keys -- reviving the row-shift phantom
+            # diffs realign exists to kill, on exactly the rounding the %g join
+            # was chosen to absorb.
+            ls = [f"{l:g}" for l in ls]
             labels[side] = ls
         # A REPEATED LABEL IS NOT A REASON TO GIVE UP. cyl-ellipsoid runs both
         # at_every(0.25, print_stuff) and at_end(print_stuff), so its last time
@@ -204,13 +212,19 @@ def realign(a: dict, b: dict) -> tuple[dict, dict, list]:
             nth = {}
             for i in sorted(rows[side]):
                 cols = rows[side][i]
-                lab = cols[0]
+                # COUNT UNDER THE KEY THAT IS ACTUALLY WRITTEN. %g keeps six
+                # significant digits, so two labels differing past that print
+                # the same; counting occurrences under the raw float gave both
+                # of them n=0 and the second row silently overwrote the first,
+                # dropping it from the diff entirely. Formatting first makes
+                # the occurrence number and the key agree by construction.
+                lab = f"{cols[0]:g}"
                 n = nth.get(lab, 0)
                 nth[lab] = n + 1
                 for j, v in cols.items():
                     dst.pop(f"{tag}[{i}][{j}]", None)
-                    dst[f"{tag}@{lab:g}#{n}[{j}]"] = v
-            seen_counts[side] = {f"{l:g}#{k}"
+                    dst[f"{tag}@{lab}#{n}[{j}]"] = v
+            seen_counts[side] = {f"{l}#{k}"
                                  for l, c in nth.items() for k in range(c)}
         only = seen_counts["a"] ^ seen_counts["b"]
         if only:
