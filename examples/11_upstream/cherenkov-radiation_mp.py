@@ -14,8 +14,11 @@ import os
 import pathlib
 
 import matplotlib
+import numpy as _np
 
 matplotlib.use("Agg")                # rule 1: headless, before any pyplot import
+if not hasattr(_np, "trapz") and hasattr(_np, "trapezoid"):
+    _np.trapz = _np.trapezoid        # upstream predates numpy 2.0, which removed it
 # rule 2. parents=True because output/ itself may not exist yet -- plain
 # exist_ok=True raises FileNotFoundError on the first run of a fresh clone.
 OUT = pathlib.Path(__file__).parent / "output/cherenkov-radiation/"

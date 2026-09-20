@@ -36,6 +36,16 @@ acceptable ending. It is not silently wrong.
 
 ``plt.show()`` is left alone. Under Agg it is a no-op with a warning, and
 deleting it would be a body edit for no gain.
+
+THE numpy-2 SHIM IS IN THE PREAMBLE FOR THE SAME REASON EVERYTHING ELSE IS.
+``np.trapz`` was removed in numpy 2.0 and both environments here are past it
+(2.4.3 and 2.4.6), so one upstream tutorial dies on import with
+``AttributeError: module 'numpy' has no attribute 'trapz'``. It dies on BOTH
+sides identically, so it yields no evidence in either direction -- it is an
+environment mismatch with code written before the removal, not a parity
+finding. Aliasing it in the preamble fixes both twins with the same line, so
+the byte-comparability that makes a twin difference mean anything survives.
+Putting it in the body would not.
 """
 import argparse
 import ast
@@ -59,8 +69,11 @@ import os
 import pathlib
 
 import matplotlib
+import numpy as _np
 
 matplotlib.use("Agg")                # rule 1: headless, before any pyplot import
+if not hasattr(_np, "trapz") and hasattr(_np, "trapezoid"):
+    _np.trapz = _np.trapezoid        # upstream predates numpy 2.0, which removed it
 # rule 2. parents=True because output/ itself may not exist yet -- plain
 # exist_ok=True raises FileNotFoundError on the first run of a fresh clone.
 OUT = pathlib.Path(__file__).parent / "output/{experiment}/"
