@@ -860,9 +860,22 @@ class Simulation:
             src = LineSource(self.grid, ix, j0, j1, profile=prof)
             if amp_func is not None:
                 # overwrite the uniform span mask with the spatial profile across y
+                # RELATIVE TO THE SOURCE CENTRE, which is meep's contract:
+                # "The position argument is *relative* to the `center` of the
+                # current source" (reference/meep/python/source.py:82).
+                #
+                # (j + 0.5) * dx is the corner-origin world y; subtracting
+                # sy/2 puts it in meep's centre-origin frame, and subtracting
+                # c.y makes it relative. The previous line ADDED c.y, so a
+                # source at y = -3 handed amp_func y values centred on -6
+                # instead of on 0. Invisible for a source at the origin, which
+                # is why it survived: every amp_func test placed one there.
+                #
+                # x is 0.0 for the same reason -- the line sits at the source's
+                # own x, so its relative x is zero, not c.x.
                 c = center or Vector3()
-                ys = [c.y - gs.sy / 2 + (j + 0.5) * gs.dx for j in range(j0, j1)]
-                w = np.array([complex(amp_func(Vector3(c.x, y, 0.0))) for y in ys])
+                ys = [(j + 0.5) * gs.dx - gs.sy / 2 - c.y for j in range(j0, j1)]
+                w = np.array([complex(amp_func(Vector3(0.0, y, 0.0))) for y in ys])
                 src.mask = self.grid.zeros(self.grid.nx, self.grid.ny)
                 src.mask[ix, j0:j1] = torch.tensor(w.real, dtype=self.grid.dtype,
                                                 device=self.grid.device)
