@@ -27,6 +27,67 @@ OUT = pathlib.Path(__file__).parent / "output/ring-cyl/"
 OUT.mkdir(exist_ok=True)
 DEVICE = "cuda"
 os.chdir(OUT)         # every relative write upstream makes lands in output/<name>/
+
+
+def _dump_plot_data(_fig, _path):
+    """Write the NUMBERS behind a figure next to it, as <name>.plotdata.json.
+
+    Several tutorials compute a result and only plot it -- binary_grating_
+    phasemap, gaussian-beam and refl-quartz print nothing numeric and write no
+    data file, so a stdout-and-files comparison has nothing to say about them
+    at all. The numbers are right there in the axes.
+
+    This lives in the generated preamble and not in the body, which is the
+    whole point: it is emitted identically into both twins, so the
+    byte-comparability that makes a twin difference mean anything survives. A
+    record() call in the body would not.
+    """
+    import json as _json
+    out, n = {}, 0
+    for ai, ax in enumerate(_fig.get_axes()):
+        for li, ln in enumerate(ax.get_lines()):
+            xs, ys = ln.get_xdata(), ln.get_ydata()
+            if len(xs):
+                out[f"ax{ai}.line{li}.x"] = [float(v) for v in xs]
+                out[f"ax{ai}.line{li}.y"] = [float(v) for v in ys]
+                n += 1
+        for ii, im in enumerate(ax.get_images()):
+            a = im.get_array()
+            if a is not None and a.size:
+                import numpy as _np
+                a = _np.asarray(a, dtype=float)
+                out[f"ax{ai}.image{ii}.shape"] = list(a.shape)
+                out[f"ax{ai}.image{ii}.stats"] = [float(a.min()), float(a.max()),
+                                                  float(a.mean()),
+                                                  float((a ** 2).mean() ** 0.5)]
+                n += 1
+    if n:
+        # PREFIXED WITH THE SCRIPT STEM, because the figure's name comes from
+        # upstream's body and is therefore IDENTICAL on both twins. Without the
+        # prefix both write Ez_angle0.plotdata.json into one directory and the
+        # second run overwrites the first -- the same defect that made the two
+        # mpb twins clobber each other's h5 output.
+        _p = pathlib.Path(str(_path))
+        _p = _p.with_name("ring-cyl_mp-" + _p.stem)
+        _p.with_suffix(".plotdata.json").write_text(
+            _json.dumps(out, indent=1, sort_keys=True))
+
+
+import matplotlib.figure as _mplfig   # submodule, not an attribute of
+                                     # matplotlib until imported
+_savefig = _mplfig.Figure.savefig
+
+
+def _savefig_and_dump(self, fname, *a, **k):
+    r = _savefig(self, fname, *a, **k)
+    try:
+        _dump_plot_data(self, fname)
+    except Exception:
+        pass          # a figure we cannot read must not kill the tutorial
+    return r
+
+
+_mplfig.Figure.savefig = _savefig_and_dump
 # --- end preamble ----------------------------------------------------------
 
 # Calculating 2d ring-resonator modes using cylindrical coordinates,

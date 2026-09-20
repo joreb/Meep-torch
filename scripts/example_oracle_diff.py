@@ -289,6 +289,13 @@ def _arrays_in(path):
                         out[name] = _np.asarray(obj[()])
                 f.visititems(visit)
             return out
+        if path.name.endswith(".plotdata.json"):
+            # Numbers lifted out of a matplotlib figure by the generated
+            # preamble, for tutorials that compute a result and only plot it.
+            import json as _json
+            d = _json.loads(path.read_text())
+            return {k: _np.asarray(v, dtype=float) for k, v in d.items()
+                    if isinstance(v, list) and v}
         if path.suffix in (".csv", ".txt", ".dat"):
             a = _np.loadtxt(path, delimiter="," if path.suffix == ".csv" else None)
             return {"": _np.asarray(a)}
@@ -339,9 +346,11 @@ def file_pairs(d: pathlib.Path):
     """
     name = d.name
     def side(tag):
+        # Excludes the run JSON itself (exactly `<name>_<tag>.json`) but keeps
+        # the `<name>_<tag>-<figure>.plotdata.json` sidecars, which are data.
         return {f.name[len(name) + len(tag) + 1:]: f for f in d.iterdir()
                 if f.is_file() and f.name.startswith(f"{name}_{tag}")
-                and f.suffix != ".json"}
+                and f.name != f"{name}_{tag}.json"}
     a, b = side("mp"), side("meep")
     for suffix in sorted(set(a) & set(b)):
         yield suffix, a[suffix], b[suffix]
