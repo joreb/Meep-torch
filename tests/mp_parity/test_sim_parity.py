@@ -73,8 +73,11 @@ def test_at_every_and_bare_step_function():
     times, calls = [], []
     sim.run(mp.at_every(1.0, lambda s: times.append(s.round_time())),
             lambda s: calls.append(s.round_time()), until=10)
-    assert len(times) == 11, times                # t = 0, 1, ..., 10
-    np.testing.assert_allclose(times, np.arange(11.0))
+    # t = 1, ..., 10 -- NOT t = 0. meep's at_every starts tlast at 0.0 and
+    # fires when t >= tlast + dT - dt/2, so the first firing time is dT.
+    # Measured against pymeep: at_every(1.0) to t=10 gives 10 calls, 1.0..10.0.
+    assert len(times) == 10, times
+    np.testing.assert_allclose(times, np.arange(1.0, 11.0))
     assert len(calls) == round(10 / sim.grid.dt)  # bare callable: every step
     assert abs(sim.round_time() - 10.0) < 1e-9
 

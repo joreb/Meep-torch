@@ -1535,7 +1535,7 @@ class Simulation:
         stop_at = None if n_total is None else start + n_total
         for g in begin:
             _eval_step_func(self, g, "step")
-        fire_scheduled(self, scheduled, start * dt)
+        fire_scheduled(self, scheduled, start * dt, dt)
         while stop_at is None or self._t_step < stop_at:
             t = self._t_step * dt
             left = (stop_at - self._t_step) if stop_at is not None else 10 ** 9
@@ -1547,7 +1547,7 @@ class Simulation:
             self._t_step = f._t
             t = self._t_step * dt
             fire_per_step(self, per_step, t, dt)
-            fire_scheduled(self, scheduled, t)
+            fire_scheduled(self, scheduled, t, dt)
             if conds is not None:
                 flags = [bool(g(self)) for g in conds]   # feed every condition
                 if t >= gate - 1e-9 and any(flags):

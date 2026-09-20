@@ -233,7 +233,7 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
     sim._bloch_state = st
     for gfn in begin:
         _eval_step_func(sim, gfn, "step")
-    fire_scheduled(sim, scheduled, start * dt)
+    fire_scheduled(sim, scheduled, start * dt, dt)
     t_idx = start
     if n_total is not None:
         n_total = start + n_total
@@ -282,7 +282,7 @@ def run_bloch(sim, step_funcs, until, until_after_sources, n_steps):
         sim._t_step = t_idx
         t_now = t_idx * dt
         fire_per_step(sim, per_step, t_now, dt)
-        fire_scheduled(sim, scheduled, t_now)
+        fire_scheduled(sim, scheduled, t_now, dt)
         if conds is not None:
             t = t_idx * dt
             flags = [bool(c(sim)) for c in conds]

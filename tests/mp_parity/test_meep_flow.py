@@ -114,7 +114,9 @@ def test_stepped_run_matches_pre_rearchitecture_golden_flux():
                                                   size=mp.Vector3(0, 4)))
     hooks = []
     sim.run(mp.at_every(5.0, lambda s: hooks.append(s.round_time())), until=40)
-    assert hooks == [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0]
+    # first firing time is dT, not 0 -- measured against pymeep, which gives
+    # exactly these eight times for at_every(5.0) to t = 40.
+    assert hooks == [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0]
     assert mp.get_fluxes(fl) == pytest.approx(GOLDEN_STEPPED, rel=1e-12)
 
 

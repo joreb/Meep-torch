@@ -471,7 +471,7 @@ def plan_hooks(step_funcs, cutoff):
         elif isinstance(f, at_end):
             pass                      # fired by the run-end "finish" pass
         elif isinstance(f, at_time):
-            scheduled.append([f.t, None, f.fns])
+            scheduled.append([f.t, None, f.fns, None])
         elif isinstance(f, at_every):
             # FIRST FIRE AT dT, NOT AT ZERO. meep's at_every starts its closure
             # at tlast = 0.0 and fires when t >= tlast + dT - dt/2, so t = 0 is
@@ -482,7 +482,15 @@ def plan_hooks(step_funcs, cutoff):
             # 15 from t=10, and cyl-ellipsoid the same at t=0 against 0.25.
             # at_every.__call__ below already had meep's rule; only this
             # scheduler path did not.
-            scheduled.append([f.every, f.every, f.fns])
+            # SEED FROM THE HOOK'S OWN tlast, AND WRITE IT BACK (below), so a
+            # hook reused across two run() calls continues where it left off.
+            # meep keeps tlast in the step function's closure, so it survives
+            # the run; rebuilding the schedule from f.every each time restarted
+            # it at zero, and the first fire_scheduled of run 2 saw a due time
+            # far in the past. Measured against pymeep, two run(until=20) calls
+            # sharing one at_every(5.0): meep gives 5,10,15,20 then
+            # 25,30,35,40; this gave a spurious extra 20.0 opening run 2.
+            scheduled.append([f._tlast + f.every, f.every, f.fns, f])
         elif isinstance(f, after_time):
             per_step.extend((g, f.t, math.inf) for g in f.fns)
         elif isinstance(f, before_time):
@@ -509,7 +517,14 @@ def chunk_size(t, dt, steps_left, per_step, scheduled, has_conds):
         if t < a:
             k = min(k, max(1, math.ceil((a - t) / dt - 1e-9)))
     for sch in scheduled:
-        k = min(k, max(1, math.ceil((sch[0] - t) / dt - 1e-9)))
+        # STRIDE TO THE STEP THAT IS DUE, NOT TO THE NOMINAL TARGET. A hook is
+        # due once t >= target - dt/2 (fire_scheduled, meep's rule), so the
+        # deadline is half a step EARLIER than the target. Measuring to the
+        # target alone rounded a due step away: at dT = 0.07 with dt = 0.05,
+        # ceil(0.07/0.05) = 2 jumped from t = 0 straight to 0.1 and never
+        # offered t = 0.05, which is the step meep fires on -- meep sampled
+        # every step there, this sampled every other one.
+        k = min(k, max(1, math.ceil((sch[0] - 0.5 * dt - t) / dt - 1e-9)))
     return max(1, k)
 
 
@@ -519,10 +534,33 @@ def fire_per_step(sim, per_step, t, dt):
             _eval_step_func(sim, g, "step")
 
 
-def fire_scheduled(sim, scheduled, t):
+def fire_scheduled(sim, scheduled, t, dt=None):
+    """Fire the due at_every/at_time hooks, on meep's rule.
+
+    meep's `_at_every` keeps `tlast` and fires when
+
+        t >= tlast + dT - dt/2        then sets   tlast = t
+
+    Two details of that carry, and both were missing here. The tolerance is
+    HALF A TIMESTEP, not 1e-9: a hook whose period is not an exact multiple of
+    dt lands a hair short of its target on the step meep counts as due, so an
+    epsilon-sized window skips it and fires one step late -- once per period,
+    accumulating. And `tlast = t` re-bases on the time the run ACTUALLY reached,
+    not on the nominal grid, so meep's subsequent fires are spaced from the
+    overshoot. Keeping a fixed grid here drifts away from meep by up to one
+    step per period in the opposite direction.
+
+    Re-basing also makes this fire at most once per call, as meep does: after
+    `sch[0] = t + sch[1]` the next target is strictly ahead of `t`.
+
+    `dt=None` keeps the old epsilon for callers that have no timestep to give.
+    """
+    tol = 0.5 * dt if dt else 1e-9
     for sch in scheduled:
-        while sch[0] is not None and t >= sch[0] - 1e-9:
+        while sch[0] is not None and t >= sch[0] - tol:
             for g in sch[2]:
                 _eval_step_func(sim, g, "step")
-            sch[0] = sch[0] + sch[1] if sch[1] else None
+            if sch[3] is not None:
+                sch[3]._tlast = t          # the hook owns its own tlast
+            sch[0] = t + sch[1] if sch[1] else None
     scheduled[:] = [s for s in scheduled if s[0] is not None]
