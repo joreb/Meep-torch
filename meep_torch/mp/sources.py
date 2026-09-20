@@ -277,46 +277,6 @@ def _beam_amp(src_obj):
                          src_obj.beam_x0, freq, idx)
 
 
-def _beam_envelope(beam_E0, beam_w0, beam_kdir=None, beam_x0=None):
-    """Real Gaussian waist envelope exp(-rho^2/w0^2) about the BEAM AXIS.
-
-    rho is the distance from the beam axis, which is meep's own definition --
-    `sources.cpp:624-641` computes
-
-        xrel = x - x0                 relative to the beam focus
-        zhat = kdir / |kdir|          unit propagation direction
-        rho  = |zhat x xrel|          transverse distance from the axis
-
-    and the field goes as exp(-rho^2/w(z)^2) (source.py:695).
-
-    THE PREVIOUS VERSION USED exp(-(p.y^2 + p.z^2)/w0^2), which takes y-z as
-    the transverse plane and is therefore correct ONLY for a beam propagating
-    along x. gaussian-beam.py sets beam_kdir = Vector3(0, 1, 0) -- its own
-    comment reads "(0: +y axis)" -- so its transverse plane is x-z and the
-    envelope was evaluated along the propagation direction instead of across
-    it. A cross product has no preferred axis and is right for any kdir.
-
-    ``p`` arrives relative to the source centre (meep's amp_func contract), and
-    ``beam_x0`` is the focus in that same frame, so xrel = p - beam_x0.
-    """
-    if beam_w0 is None:
-        raise ValueError("GaussianBeamSource requires beam_w0")
-    w0 = float(beam_w0)
-    e0 = max(abs(beam_E0.x), abs(beam_E0.y), abs(beam_E0.z)) or 1.0
-    k = beam_kdir or Vector3(0.0, 0.0, 1.0)
-    kn = math.sqrt(k.x * k.x + k.y * k.y + k.z * k.z) or 1.0
-    zx, zy, zz = k.x / kn, k.y / kn, k.z / kn
-    x0 = beam_x0 or Vector3()
-
-    def envelope(p):
-        rx, ry, rz = p.x - x0.x, p.y - x0.y, p.z - x0.z
-        cx = zy * rz - zz * ry
-        cy = zz * rx - zx * rz
-        cz = zx * ry - zy * rx
-        rho2 = cx * cx + cy * cy + cz * cz
-        return e0 * math.exp(-rho2 / (w0 ** 2))
-
-    return envelope
 
 
 class GaussianBeam3DSource(Source):
