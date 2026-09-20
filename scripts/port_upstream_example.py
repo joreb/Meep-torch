@@ -38,14 +38,20 @@ acceptable ending. It is not silently wrong.
 deleting it would be a body edit for no gain.
 
 THE numpy-2 SHIM IS IN THE PREAMBLE FOR THE SAME REASON EVERYTHING ELSE IS.
-``np.trapz`` was removed in numpy 2.0 and both environments here are past it
-(2.4.3 and 2.4.6), so one upstream tutorial dies on import with
-``AttributeError: module 'numpy' has no attribute 'trapz'``. It dies on BOTH
-sides identically, so it yields no evidence in either direction -- it is an
-environment mismatch with code written before the removal, not a parity
-finding. Aliasing it in the preamble fixes both twins with the same line, so
-the byte-comparability that makes a twin difference mean anything survives.
-Putting it in the body would not.
+numpy 2.0 removed a set of long-deprecated aliases and both environments here
+are past it (2.4.3 and 2.4.6), so upstream tutorials written before the
+removal die on import: ``np.trapz`` in antenna-radiation, ``np.complex_`` in
+solve-cw. Each dies on BOTH sides identically, because the twins share a body,
+so it yields no evidence in either direction -- an environment mismatch, not a
+parity finding. Aliasing them in the preamble fixes both twins with the same
+lines, so the byte-comparability that makes a twin difference mean anything
+survives. Putting it in the body would not.
+
+The list covers the removals upstream actually uses plus the neighbours in the
+same family. It was extended once already: the first version handled only
+``trapz``, because the scan that produced it guessed at which aliases to look
+for instead of enumerating them, and ``complex_`` surfaced two hours later as
+a fresh failure in the oracle run.
 """
 import argparse
 import ast
@@ -72,8 +78,12 @@ import matplotlib
 import numpy as _np
 
 matplotlib.use("Agg")                # rule 1: headless, before any pyplot import
-if not hasattr(_np, "trapz") and hasattr(_np, "trapezoid"):
-    _np.trapz = _np.trapezoid        # upstream predates numpy 2.0, which removed it
+for _old, _new in (("trapz", "trapezoid"), ("complex_", "complex128"),
+                   ("float_", "float64"), ("alltrue", "all"),
+                   ("sometrue", "any"), ("product", "prod"),
+                   ("cumproduct", "cumprod"), ("round_", "round")):
+    if not hasattr(_np, _old) and hasattr(_np, _new):
+        setattr(_np, _old, getattr(_np, _new))   # upstream predates numpy 2.0
 # rule 2. parents=True because output/ itself may not exist yet -- plain
 # exist_ok=True raises FileNotFoundError on the first run of a fresh clone.
 OUT = pathlib.Path(__file__).parent / "output/{experiment}/"

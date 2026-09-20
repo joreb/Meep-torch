@@ -17,8 +17,12 @@ import matplotlib
 import numpy as _np
 
 matplotlib.use("Agg")                # rule 1: headless, before any pyplot import
-if not hasattr(_np, "trapz") and hasattr(_np, "trapezoid"):
-    _np.trapz = _np.trapezoid        # upstream predates numpy 2.0, which removed it
+for _old, _new in (("trapz", "trapezoid"), ("complex_", "complex128"),
+                   ("float_", "float64"), ("alltrue", "all"),
+                   ("sometrue", "any"), ("product", "prod"),
+                   ("cumproduct", "cumprod"), ("round_", "round")):
+    if not hasattr(_np, _old) and hasattr(_np, _new):
+        setattr(_np, _old, getattr(_np, _new))   # upstream predates numpy 2.0
 # rule 2. parents=True because output/ itself may not exist yet -- plain
 # exist_ok=True raises FileNotFoundError on the first run of a fresh clone.
 OUT = pathlib.Path(__file__).parent / "output/absorber-1d/"
