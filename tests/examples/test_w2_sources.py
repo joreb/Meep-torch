@@ -33,8 +33,14 @@ def test_line_source_amp_func_spatial_profile():
     src = LineSource(g, ix=5, j0=10, j1=20, profile=GaussianPulse(1.0, 0.2),
                      amp_func=lambda y: math.exp(-((y - 1.55) ** 2) / 0.02))
     m = src.mask[5, 10:20].cpu().numpy()
+    # Shape is amp_func's: peak at the Gaussian centre, tails below 1% of it.
     assert int(np.argmax(m)) == 5              # j=15 -> y=1.55 (gaussian center)
-    assert abs(m.max() - 1.0) < 1e-6 and m.min() < 0.01
+    assert m.min() / m.max() < 0.01
+    # Scale is the extent's, not amp_func's: a segment spanning more than one
+    # cell is a line and carries the cell measure dx/dx^2 = 1/dx (see
+    # LineSource; oracle-backed against meep), so the peak of a unit amp_func
+    # sits at 1/dx, not at 1.0.
+    assert abs(m.max() * g.dx - 1.0) < 1e-6
 
 
 def test_soft_source_area_launches_field():
