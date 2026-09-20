@@ -76,6 +76,23 @@ TAGGED = re.compile(r"^\s*([A-Za-z][\w-]*):,\s*(.*)$")
 #: inside an identifier (``ldos_1``), because those are names, not results.
 NUMBER = re.compile(r"(?<![\w.])[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?(?![\w.])")
 
+#: Upstream scripts that take REQUIRED positional arguments and exit 2 without
+#: them. Five of the 82 do. Both twins are given the SAME arguments, which is
+#: not a detail: a pair run with different parameters compares two different
+#: experiments and any agreement or disagreement between them is meaningless.
+#:
+#: The values are upstream's own first choice where there is a choices= list,
+#: and a representative position otherwise. They are written out rather than
+#: derived, because "pick the first choice" is a rule that silently picks
+#: something else the day upstream reorders the list.
+SCRIPT_ARGS = {
+    "dipole_in_vacuum_1D": ["x"],                     # choices x, y
+    "dipole_in_vacuum_cyl_on_axis": ["x"],            # choices x, z
+    "dipole_in_vacuum_cyl_off_axis": ["x", "0.5"],    # pol, radial position
+    "edge_emitter_2D": ["x", "0.5"],                  # pol, position from facet
+    "edge_emitter_3D": ["x", "0.5"],
+}
+
 ORACLE_PYTHON = os.environ.get(
     "MEEP_ORACLE_PYTHON",
     str(pathlib.Path.home() / "miniforge3/envs/meep-oracle/bin/python"))
@@ -124,12 +141,20 @@ def _interp(script):
     return ["uv", "run", "python"]
 
 
+def _experiment(stem):
+    for suffix in ("_meep", "_mp"):
+        if stem.endswith(suffix):
+            return stem[:-len(suffix)]
+    return stem
+
+
 def run_one(script, timeout=1800, device="cpu"):
     """Run one script and merge its stdout numbers into its experiment JSON."""
     script = script.resolve()
     env = dict(os.environ, MPLBACKEND="Agg", MEEP_TORCH_DEVICE=device)
+    argv = SCRIPT_ARGS.get(_experiment(script.stem), [])
     try:
-        p = subprocess.run(_interp(script) + [script.name], cwd=script.parent,
+        p = subprocess.run(_interp(script) + [script.name] + argv, cwd=script.parent,
                            capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return {"script": script.name, "status": "timeout", "kept": 0}
@@ -137,12 +162,7 @@ def run_one(script, timeout=1800, device="cpu"):
     status = "ok" if p.returncode == 0 else f"exit {p.returncode}"
 
     stem = script.stem
-    for suffix in ("_meep", "_mp"):
-        if stem.endswith(suffix):
-            experiment = stem[:-len(suffix)]
-            break
-    else:
-        experiment = stem
+    experiment = _experiment(stem)
     dest = script.parent / "output" / experiment / f"{stem}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     doc = json.loads(dest.read_text()) if dest.exists() else {
@@ -150,6 +170,8 @@ def run_one(script, timeout=1800, device="cpu"):
         "script": stem}
     doc["stdout"] = rows
     doc["status"] = status
+    if argv:
+        doc["argv"] = argv          # recorded so the pair can be shown identical
     dest.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
     return {"script": script.name, "status": status, "kept": kept,
             "dropped": dropped, "nums": len(rows), "json": dest,
