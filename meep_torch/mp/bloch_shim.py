@@ -57,11 +57,12 @@ def _quadratures(prof, t):
     quarter-period phase ADVANCE for the Im quadrature (the narrowband
     analytic signal)."""
     f = getattr(prof, "fcen", 0.0)
-    t0, w = getattr(prof, "t0", None), getattr(prof, "w", None)
-    if t0 is not None and w is not None and not hasattr(prof, "_inner"):
-        env = math.exp(-((t - t0) ** 2) / (2 * w * w))
-        ph = 2 * math.pi * f * (t - t0)
-        return env * math.cos(ph), -env * math.sin(ph)
+    # Ask the profile for its own quadrature pair rather than retyping its
+    # envelope and carrier here. A shim wires; the expression belongs to the
+    # source that owns it (core.sources.GaussianPulse.quadrature), where
+    # amplitude() is its real part and the two cannot drift apart.
+    if hasattr(prof, "quadrature") and not hasattr(prof, "_inner"):
+        return prof.quadrature(t)
     c = prof.amplitude(t)
     # ponytail: quarter-period advance approximates the Hilbert quadrature;
     # add exact per-profile pairs if a broadband non-Gaussian source needs them

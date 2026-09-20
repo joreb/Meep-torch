@@ -30,10 +30,26 @@ class GaussianPulse:
         self.t0 = cutoff * self.w
         self.t_end = 2.0 * self.t0
 
+    def quadrature(self, t: float) -> tuple[float, float]:
+        """(Re, Im) of the analytic signal J(t) = env(t) * exp(-i phi(t)).
+
+        meep's source is complex, J(t) = envelope * exp(-i w t); a real-valued
+        engine injects Re[J] and needs Im[J] separately for anything that
+        carries a phase -- the Bloch path, and a complex amp_func.
+
+        Both quadratures come from ONE envelope and ONE phase here, and
+        amplitude() is the real part of this rather than its own formula. The
+        mp Bloch shim used to retype the envelope and the carrier to build the
+        pair, which is the same expression living in two files: they agree
+        until one is edited, and a drifted quadrature shows up as a slow phase
+        error nothing raises on.
+        """
+        ph = 2 * math.pi * self.fcen * (t - self.t0)
+        env = math.exp(-((t - self.t0) ** 2) / (2 * self.w ** 2))
+        return env * math.cos(ph), -env * math.sin(ph)
+
     def amplitude(self, t: float) -> float:
-        return math.cos(2 * math.pi * self.fcen * (t - self.t0)) * math.exp(
-            -((t - self.t0) ** 2) / (2 * self.w**2)
-        )
+        return self.quadrature(t)[0]
 
 
 class CWRamp:
