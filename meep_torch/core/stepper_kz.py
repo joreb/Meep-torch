@@ -167,3 +167,93 @@ def step_kz(state: KzState, c: KzCoeffs, src_amp: float = 0.0,
     if src_ix is not None:
         Ez[src_ix] = Ez[src_ix] - dt * src_amp / c.eps_z[src_ix]
     return KzState(Ex, Ez, Hy, psi_dEz, psi_dHy)
+
+# --- s-polarisation: the same geometry, the other polarisation -------------
+#
+# stepper_kz above is p-pol, {Ex, Ez, Hy}. Its dual on the same 1D-in-x grid
+# with F(x) e^{i k_z z} is s-pol, {Ey, Hx, Hz}, E perpendicular to the (x, z)
+# incidence plane:
+#
+#   eps dEy/dt = i k_z Hx - dHz/dx      Ey at x_i
+#       dHx/dt = i k_z Ey               Hx at x_i   (collocated with Ey:
+#                                        it couples only through i k_z)
+#       dHz/dt = -dEy/dx                Hz at x_{i+1/2}
+#
+# It is NOT reachable by relabelling the p-pol stepper. Under the map
+# Ey<->Hy, Hx<->Ez, Hz<->Ex the three equations match term for term and sign
+# for sign, but `eps` lands on the two H updates instead of the one E update
+# -- the duality swaps eps and mu, and with mu = 1 the dual medium is not the
+# same medium. Writing the equations is smaller than a relabel a reader has to
+# re-derive before trusting.
+
+
+class KzSCoeffs(NamedTuple):
+    dt: float
+    dx: float
+    kz: float
+    eps: torch.Tensor       # (nx,) at x_i (Ey positions)
+    e1: torch.Tensor        # (nx,)   Ey damping
+    e2: torch.Tensor
+    hx1: torch.Tensor       # (nx,)   Hx damping
+    hx2: torch.Tensor
+    hz1: torch.Tensor       # (nx-1,) Hz damping
+    hz2: torch.Tensor
+    pec_lo: bool = False     # Ey = 0 at x_0 (a PEC wall, e.g. a ground plane)
+    pec_hi: bool = False
+
+
+class KzSState(NamedTuple):
+    Ey: torch.Tensor        # (nx,)   complex
+    Hx: torch.Tensor        # (nx,)   complex
+    Hz: torch.Tensor        # (nx-1,) complex
+
+
+def build_kz_s_coeffs(nx: int, dx: float, kz: float, eps=None,
+                      n_abs: int = 0, pec_lo: bool = False,
+                      pec_hi: bool = False, dtype=torch.float64,
+                      device="cpu") -> KzSCoeffs:
+    """s-pol coefficients on the kz geometry. ``n_abs`` is the wave-1
+    matched-sigma absorber depth; ``pec_lo``/``pec_hi`` pin Ey at the ends."""
+    dt = 0.5 * dx
+    e = (eps if isinstance(eps, torch.Tensor)
+         else torch.ones(nx, dtype=dtype, device=device))
+    sig = absorber_sigma(nx, n_abs, dx, dtype=dtype, device=device)
+    sig_h = 0.5 * (sig[:-1] + sig[1:])
+
+    def dpair(s):
+        return ((1 - s * dt / 2) / (1 + s * dt / 2), dt / (1 + s * dt / 2))
+
+    e1, e2 = dpair(sig)
+    hx1, hx2 = dpair(sig)
+    hz1, hz2 = dpair(sig_h)
+    return KzSCoeffs(dt=dt, dx=dx, kz=kz, eps=e, e1=e1, e2=e2,
+                     hx1=hx1, hx2=hx2, hz1=hz1, hz2=hz2,
+                     pec_lo=pec_lo, pec_hi=pec_hi)
+
+
+def init_kz_s_state(nx: int, dtype=torch.complex128,
+                    device="cpu") -> KzSState:
+    z = lambda n: torch.zeros(n, dtype=dtype, device=device)
+    return KzSState(z(nx), z(nx), z(nx - 1))
+
+
+def step_kz_s(state: KzSState, c: KzSCoeffs, src_amp: complex = 0.0,
+              src_ix: int | None = None) -> KzSState:
+    """One s-pol step, meep's H-then-E phase order."""
+    dt, dx = c.dt, c.dx
+    ikz = 1j * c.kz
+
+    dEy = _FWD(state.Ey[:-1], state.Ey[1:], dx)
+    Hz = c.hz1 * state.Hz + c.hz2 * (-dEy)
+    Hx = c.hx1 * state.Hx + c.hx2 * (ikz * state.Ey)
+
+    curl = torch.zeros_like(state.Ey)
+    curl[1:-1] = -_BWD(Hz[1:], Hz[:-1], dx)
+    Ey = (c.e1 * state.Ey * c.eps + c.e2 * (ikz * Hx + curl)) / c.eps
+    if src_ix is not None:
+        Ey[src_ix] = Ey[src_ix] - dt * src_amp / c.eps[src_ix]
+    if c.pec_lo:
+        Ey[0] = 0.0
+    if c.pec_hi:
+        Ey[-1] = 0.0
+    return KzSState(Ey, Hx, Hz)
