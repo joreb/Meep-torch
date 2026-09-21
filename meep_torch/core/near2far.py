@@ -2,10 +2,17 @@
 # Copyright (C) 2026 meep-torch contributors (original code)
 """2D near-to-far-field transform (surface equivalence, exact Hankel kernels).
 
-Phasor convention: the DFT monitors accumulate int s(t) exp(-i w t) dt of the
-real FDTD signal, which is the e^{+i w t} (engineering) phasor — outgoing
-waves are Hankel H^(2). All kernels below follow that convention; meep's
-green2d uses e^{-i w t}/H^(1), i.e. the complex conjugate.
+Phasor convention: these kernels are the e^{+i w t} (engineering) phasor,
+outgoing waves Hankel H^(2); meep's green2d uses e^{-i w t}/H^(1), i.e. the
+complex conjugate.
+
+The DFT monitors USED to accumulate int s(t) exp(-i w t) dt, which is that
+phasor directly. Since the monitors moved to meep's unitary convention they
+accumulate exp(+i w t), so the stored phasor is now the CONJUGATE of what
+these kernels expect and `faces_from_monitors` conjugates it back on the way
+in. Conjugating a propagator reverses the outgoing wave, so getting this
+wrong is an ANGULAR error, not a scale one: an Ez dipole that must be
+isotropic came back 40 % anisotropic.
 
 Far H is taken from the local plane-wave relation H = R_hat x E (TM; dual for
 TE), exact to O(1/kR) — fine for radiation patterns at kR >> 1.
@@ -173,8 +180,8 @@ def faces_from_accs(grid, mons, accs):
 
     mons entries are (monitor, normal) [TM: points inferred from the monitor
     indices] or (monitor, normal, pts). acc layout per monitor:
-    (nfreq, 4, N) = dt-summed (ReE, ImE, ReH, ImH); Re + i Im is directly
-    the e^{+i w t} phasor these kernels expect.
+    (nfreq, 4, N) = dt-summed (ReE, ImE, ReH, ImH); Re - i Im is the phasor
+    these kernels expect (the monitors store meep's conjugate).
     """
     dx = grid.dx
     faces = []
@@ -191,8 +198,10 @@ def faces_from_accs(grid, mons, accs):
         a = acc.detach().cpu().numpy() if hasattr(acc, "detach") else np.asarray(acc)
         quad = np.ones(len(pts))
         quad[0] = quad[-1] = 0.5
-        Fz = a[:, 0] + 1j * a[:, 1]          # monitor E slot (Ez TM / Ey|Ex TE)
-        Ft = a[:, 2] + 1j * a[:, 3]          # monitor H slot (Hy|Hx TM / Hz TE)
+        # conj: the monitors store meep's e^{+i w t}; these kernels are
+        # e^{-i w t}/H^(2). See the module docstring.
+        Fz = a[:, 0] - 1j * a[:, 1]          # monitor E slot (Ez TM / Ey|Ex TE)
+        Ft = a[:, 2] - 1j * a[:, 3]          # monitor H slot (Hy|Hx TM / Hz TE)
         if not hasattr(mon, "x_normal"):     # TE: Face.E = out-of-plane Hz
             Fz, Ft = Ft, Fz
         faces.append(Face(pts=pts, normal=normal, dl=dx, E=Fz, H=Ft, w=quad))

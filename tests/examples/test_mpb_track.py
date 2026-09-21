@@ -17,6 +17,15 @@ from meep_torch.modes.harminv import harminv
 DATA = pathlib.Path(__file__).parent / "data"
 
 
+# These are BAND TRACKERS: they excite a structure broadband and peak-find.
+# They want every band excited comparably, which is the envelope, not meep's
+# injected current -- `FT(current) = (f/fcen) FT(envelope)` tilts the spectrum
+# by a factor of two across a `fwidth = 2 fcen` pulse, so the low bands fall
+# under harminv's amplitude floor and simply go missing. `amplitude` is meep's
+# current and belongs to FDTD sources; `envelope_amplitude` is for callers
+# that are not meep.
+
+
 def holey_bands_at(kx_meep, res=10):
     """meep frame -> ours: meep x (periodic, k) = our y; meep y (PML) = our x."""
     ref = json.load(open(DATA / "holey_bands.json"))
@@ -59,7 +68,7 @@ def holey_bands_at(kx_meep, res=10):
     probes = [(ic + 2, ny // 3), (ic - 3, 2 * ny // 3), (ic + 1, ny // 5)]
     series = np.empty((len(probes), n_steps), dtype=complex)
     for t in range(n_steps):
-        a = pulse.amplitude((t + 0.5) * grid.dt)
+        a = pulse.envelope_amplitude((t + 0.5) * grid.dt)
         st = step_bloch_te(st, coeffs, eps_x, eps_y, ky,
                            src_c=a, src_s=0.0, src_mask=mask)
         for p, (pi, pj) in enumerate(probes):
@@ -116,7 +125,7 @@ def _bloch2_bands(eps, kx, ky, dt, dx, fmax, t_end=300.0):
               (g.nx // 2 - 2, 0), (g.nx - 3, g.ny // 3)]
     series = np.empty((len(probes), n_steps), dtype=complex)
     for t in range(n_steps):
-        a = pulse.amplitude((t + 0.5) * dt)
+        a = pulse.envelope_amplitude((t + 0.5) * dt)
         st = step_bloch2_tm(st, eps, dt, dx, kx, ky, src_c=a, src_s=0.0,
                             src_mask=mask)
         for p, (pi, pj) in enumerate(probes):
@@ -331,7 +340,7 @@ def test_hole_slab_zeven_K_vs_mpb():
     probes = [(nx // 3 + 1, ny // 5 + 2), (2 * nx // 3, ny // 2 + 1)]
     series = np.empty((len(probes), n_steps), dtype=complex)
     for t in range(n_steps):
-        st = step_bloch3(st, c, pulse.amplitude((t + 0.5) * c.dt), src)
+        st = step_bloch3(st, c, pulse.envelope_amplitude((t + 0.5) * c.dt), src)
         for p, (pi, pj) in enumerate(probes):
             series[p, t] = st.Ey[pi, pj, nz // 2].item()
     t0 = int(round(50.0 / c.dt))
@@ -388,7 +397,7 @@ def diamond_bands_at(kx, ky, kz, res=20, fmax=0.7, t_end=400.0):
               (n // 2, 2 * n // 3, n // 4 + 1)]
     series = np.empty((len(probes), n_steps), dtype=complex)
     for t in range(n_steps):
-        st = step_bloch3(st, c, pulse.amplitude((t + 0.5) * c.dt), src)
+        st = step_bloch3(st, c, pulse.envelope_amplitude((t + 0.5) * c.dt), src)
         for p, (pi, pj, pk) in enumerate(probes):
             series[p, t] = st.Ey[pi, pj, pk].item()
     t0 = int(round(60.0 / c.dt))
@@ -446,7 +455,7 @@ def _bloch2_te_bands(eps, kx, ky, dt, dx, fmax, t_end=600.0):
     series = np.empty((len(probes), n_steps), dtype=complex)
     for t in range(n_steps):
         st = step_bloch2_te(st, eps_x, eps_y, dt, dx, kx, ky,
-                            src_c=pulse.amplitude((t + 0.5) * dt), src_s=0.0,
+                            src_c=pulse.envelope_amplitude((t + 0.5) * dt), src_s=0.0,
                             src_mask=mask)
         for p, (pi, pj) in enumerate(probes):
             series[p, t] = complex(st.Hz_c[pi, pj].item(), st.Hz_s[pi, pj].item())

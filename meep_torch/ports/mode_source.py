@@ -7,6 +7,7 @@ Forward-only: mode profiles are detached (fd1d solves in numpy).
 import torch
 
 from ..core.grid import Grid
+from ..core.sources import bind_dt
 from ..modes.fd1d import select_mode
 from .port import Port, SRC_OFFSET
 
@@ -25,6 +26,7 @@ class ModeSourceTM:
         # y_mirror=+1, port.lo at the cut plane) -- the solver returns the
         # upper half of the even mode.
         self.profile, self.dt, self.d = profile, grid.dt, port.direction
+        bind_dt(profile, grid.dt)
         dx = grid.dx
         if port.axis == "x":
             eps_line = coeffs.eps_inf[port.index, port.lo:port.hi].detach()
@@ -93,6 +95,7 @@ class ModeSourceTE:
         if port.axis != "x":
             raise NotImplementedError("TE y-normal not supported (FluxMonitorTE is x-normal only)")
         self.profile, self.dt, self.d = profile, grid.dt, port.direction
+        bind_dt(profile, grid.dt)
         dx = grid.dx
         # eps at Ey nodes (nx, ny-1): coeffs.eps_y is already the half-y average.
         eps_line = coeffs.eps_y[port.index, port.lo:port.hi].detach()

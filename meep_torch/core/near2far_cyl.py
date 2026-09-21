@@ -16,6 +16,8 @@ m != 0 generalization (J_m / J_m' integrals) is W7.9.
 """
 import numpy as np
 from scipy.special import j0, j1
+from .monitors import dft_time_offset
+from .sources import bind_dt
 
 
 def run_bor_dft(state, c, n_steps, *, src, src_profile, freqs):
@@ -24,12 +26,13 @@ def run_bor_dft(state, c, n_steps, *, src, src_profile, freqs):
     Returns {comp: (nfreq, ...) complex}."""
     from .stepper_bor import step_bor
     freqs = np.asarray(freqs, dtype=float)
+    bind_dt(src_profile, c.dt)          # meep's own forward difference
     acc = {k: None for k in ("Er", "Ez", "Ephi", "Hr", "Hphi", "Hz")}
     for t in range(n_steps):
         state = step_bor(state, c, src_profile.amplitude((t + 0.5) * c.dt), src)
         for comp in acc:
             F = getattr(state, comp)
-            off = 1.0 if comp.startswith("E") else 0.5
+            off = dft_time_offset(comp)
             ph = np.exp(-2j * np.pi * freqs * (t + off) * c.dt) * c.dt
             contrib = F.cpu().numpy()[None, ...] * ph.reshape((-1,) + (1,) * F.dim())
             acc[comp] = contrib if acc[comp] is None else acc[comp] + contrib

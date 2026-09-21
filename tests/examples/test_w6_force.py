@@ -55,10 +55,16 @@ def test_radiation_pressure():
         refl = np.trapezoid((sr_m - sr_0) * kern, t)
         R = abs(refl / inc) ** 2
         # incident spectral Poynting density at the left face from the
-        # no-mirror planes: <S_x> = -1/2 Re[Ez conj(Hy)] (TM convention)
+        # no-mirror planes: <S_x> = -Re[Ez conj(Hy)] in MEEP's normalisation.
+        # No 1/2: meep's dft_flux::flux() (src/dft.cpp:551) and stress_sum
+        # (src/stress.cpp:90) both sum real(F1 conj(F2)) with none, and the
+        # engine follows them. This line is the engine's flux convention
+        # rewritten by hand, so it has to follow too -- when force dropped its
+        # 1/2 to match meep and this private copy kept one, `got` and `want`
+        # stopped scaling together and the ratio went to 2.
         ez = planes_0["Ez"][k][280, 4]
         hy = 0.5 * (planes_0["Hy"][k][279, 4] + planes_0["Hy"][k][280, 4])
-        s_inc = -0.5 * np.real(ez * np.conj(hy))
+        s_inc = -np.real(ez * np.conj(hy))
         want = (1 + R) * s_inc * ly
         got = fx[k]
         assert abs(got - want) / abs(want) < 0.05, \

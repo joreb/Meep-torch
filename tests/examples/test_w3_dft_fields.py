@@ -17,8 +17,14 @@ class _FakeState:
 
 
 def test_standing_wave_area_dft():
-    # Ez(x,y,t) = P(x,y) cos(2 pi f0 tE): the area DFT at f0 recovers P*T/2
-    # (Re part), and ~0 at a well-separated frequency.
+    # Ez(x,y,t) = P(x,y) cos(2 pi f0 tE): the area DFT at f0 recovers
+    # P * T/2 / sqrt(2 pi) (Re part), and ~0 at a well-separated frequency.
+    #
+    # The 1/sqrt(2 pi) is meep's UNITARY DFT weight, `dt / sqrt(2 pi)` per step
+    # (src/dft.cpp:225); the monitors carry it so that every absolute DFT and
+    # flux value matches meep rather than being pi out. Without it this test
+    # pins the plain convention and reads 0.399 = 1/sqrt(2 pi) of what it
+    # expects.
     grid = Grid(nx=16, ny=12, dx=0.1)
     f0, f1 = 0.8, 1.6
     mon = DFTFieldsMonitor(grid, [f0, f1], component="Ez")
@@ -30,7 +36,7 @@ def test_standing_wave_area_dft():
         tE = (t + 1.0) * grid.dt                # TM: Ez advanced to (t+1)*dt
         acc = acc + mon.sample(_FakeState(P * math.cos(2 * math.pi * f0 * tE)), t)
     re0, im0 = acc[0, 0], acc[0, 1]
-    scale = T / 2.0
+    scale = T / 2.0 / math.sqrt(2.0 * math.pi)   # meep's unitary weight
     assert torch.allclose(re0, P * scale, rtol=1e-2, atol=1e-3 * scale), \
         f"max err {(re0 - P * scale).abs().max()}"
     assert im0.abs().max() < 1e-2 * scale

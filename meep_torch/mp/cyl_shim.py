@@ -40,6 +40,7 @@ from ..core.stepper_cyl import (build_cyl_coeffs, init_cyl_state,
 from .run_control import (_eval_step_func, fire_per_step,
                           fire_scheduled, plan_hooks)
 from .vec import Vector3
+from ..core.monitors import dft_time_offset
 
 # meep enum / component sentinels for the cylindrical coordinate system
 # (mp.visualization uses the same CYLINDRICAL = -2 literal).
@@ -248,7 +249,7 @@ class CylRun:
         f = self.dft_freqs
         for comp in ("Er", "Ez", "Ephi", "Hr", "Hphi", "Hz"):
             F = getattr(self.state, comp).cpu().numpy()
-            off = 1.0 if comp.startswith("E") else 0.5
+            off = dft_time_offset(comp)
             ph = np.exp(-2j * np.pi * f * (self.t - 1 + off) * self.c.dt) * self.c.dt
             contrib = F[None, ...] * ph.reshape((-1,) + (1,) * F.ndim)
             self.dft[comp] = contrib if self.dft[comp] is None \
@@ -355,6 +356,30 @@ def _radial_source(sim, g: CylGrid):
     return i, prof
 
 
+def _cyl_centres(arr, comp, target):
+    """A cylindrical component array on the grid meep reports it on.
+
+    meep has no ``get_array_metadata`` in cylindrical, so the grid was
+    measured rather than read: probing ``get_field_point`` puts every
+    component on the CELL-CENTRE grid, r = (i + 0.5) dr and
+    z = (j + 0.5) dr - sz/2, to 1e-15 for all six -- the same convention
+    ``mp/simulation.py`` already applies to cartesian runs. An axis where
+    ``_OFF`` is 0.0 holds nodes and is averaged onto the midpoints; an axis
+    already at the half cell is left alone. Either way the axis comes out one
+    short of meep's length, so the outer row is edge-clamped, as ``_to_centres``
+    does.
+    """
+    import torch
+    for ax, off in enumerate(_OFF[comp][:arr.dim()]):
+        if off == 0.0:
+            n = arr.shape[ax] - 1
+            arr = 0.5 * (arr.narrow(ax, 0, n) + arr.narrow(ax, 1, n))
+    for ax, n in enumerate(target):
+        while arr.shape[ax] < n:
+            arr = torch.cat([arr, arr.narrow(ax, arr.shape[ax] - 1, 1)], dim=ax)
+    return arr
+
+
 def cyl_array(sim, component, center=None, size=None):
     """meep ``Simulation.get_array`` on a cylindrical run.
 
@@ -390,7 +415,13 @@ def cyl_array(sim, component, center=None, size=None):
     if name in _FIELD:
         if run is None:
             raise RuntimeError("run() before get_array(fields)")
-        return getattr(run.state, _FIELD[name]).detach().cpu().numpy()
+        arr = getattr(run.state, _FIELD[name])
+        g = run.g
+        if g.radial:
+            return _cyl_centres(arr, name, (g.nr,)).detach().cpu().numpy()
+        # meep returns the (r, z) array z-major -- shape (nz, nr), measured
+        # against an asymmetric cell so the two lengths cannot be confused.
+        return _cyl_centres(arr, name, (g.nr, g.nz)).T.detach().cpu().numpy()
     raise _NIE(f"cylindrical get_array: component {component!r} is not "
                "carried by the state (Dielectric / Er / Ep / Ez / Hr / Hp / Hz)")
 

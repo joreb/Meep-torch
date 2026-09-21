@@ -25,7 +25,7 @@ from ...core.coeffs import build_te_coeffs, build_tm_coeffs
 from ...core.grid import Grid
 from ...core.monitors import DFTFieldsMonitor, FluxMonitorTM
 from ...core.pml import absorber_sigma
-from ...core.run import _run_chunk
+from ...core.run import _check_finite, _run_chunk
 from ...core.sources import SoftSource, cw_amplitude
 from ...core import stepper_tm as _tm_phases
 from ...core import stepper_te as _te_phases
@@ -657,6 +657,12 @@ class fields:
         self._state = self.step_once(self._state, self._sources)
         if self._state_im is not None:
             self._state_im = self.step_once(self._state_im, [])
+        # meep src/step.cpp:138 ends every fields::step by reading one point
+        # and aborting on NaN/Inf. Without it a diverged run returns NaN
+        # arrays and every flux, DFT and printed number inherits them with
+        # nothing raising -- meep and meep-torch diverge on the same inputs,
+        # only one of them says so.
+        _check_finite(self._state, f"step {self._t}")
         t = self._t
         for name, (mon, _) in list(self._monitors.items()):
             smp = mon.sample(self._state, t)

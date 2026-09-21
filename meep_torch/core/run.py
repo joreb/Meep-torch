@@ -7,6 +7,75 @@ from .stepper_tm import TMState, step_tm
 from .stepper_te import TEState, step_te
 
 
+def _nonfinite(state):
+    """meep's divergence check, deferred rather than dropped.
+
+    `src/step.cpp:138` reads ONE point every step -- the energy density at the
+    cell centre -- and aborts: "simulation fields are NaN or Inf". Without it a
+    diverged run returns NaN arrays and every flux, DFT and printed number
+    downstream inherits them with nothing raising. meep and meep-torch diverge
+    on the same inputs (SiO2's Sellmeier poles against the ADE stability limit
+    at coarse dt, measured); only one of them says so.
+
+    ponytail: checked at chunk boundaries and at run end, not per step -- a
+    per-step `.item()` serialises the CUDA pipeline. The cost is that we name
+    the chunk where it happened where meep names the step.
+    """
+    with torch.no_grad():
+        probes = [x.detach().reshape(-1)[x.numel() // 2]
+                  for x in state if torch.is_tensor(x) and x.numel()]
+        if not probes:
+            return False
+        # every carried field, not just the first: a divergence can start in
+        # the ADE polarizations or a CPML memory and reach E a few steps later
+        return not bool(torch.isfinite(torch.stack(probes)).all())
+
+
+def _check_finite(state, where=""):
+    if _nonfinite(state):
+        raise FloatingPointError(
+            "simulation fields are NaN or Inf" + (f" ({where})" if where else "")
+            + " -- the run diverged; meep aborts on the same condition "
+              "(src/step.cpp:138)")
+
+
+def _integrated(source):
+    """True when this source is meep's is_integrated: a dipole, not a current.
+
+    meep's `step_source(D)` defaults `including_integrated = false`
+    (`meep.hpp:2261`), so an integrated source contributes NOTHING to D; it is
+    subtracted as a polarization at the D-to-E step instead
+    (`update_eh.cpp:130`). The two paths algebraically telescope to the same
+    expression in a lossless cell and differ by `cndinv` wherever the source
+    cell carries loss -- 45 % for a line into PML, measured.
+    """
+    prof = getattr(source, "profile", None)
+    return bool(getattr(prof, "is_integrated", False))
+
+
+def _step_source(step_fn, state, coeffs, source, t_idx):
+    """One step with `source` injected the way its `is_integrated` says."""
+    h_masks = getattr(source, "h_masks", None)
+    if h_masks:
+        return step_fn(state, coeffs, source.amplitude(t_idx), source.mask,
+                       source.h_amplitude(t_idx), **h_masks)
+    if _integrated(source):
+        dip = source.profile.dipole((t_idx + 0.5) * source.dt).real
+        return step_fn(state, coeffs, 0.0, source.mask, src_dipole_amp=dip)
+    return step_fn(state, coeffs, source.amplitude(t_idx), source.mask)
+
+
+def _check_integrated(step_fn, source):
+    import inspect
+    if source is None or not _integrated(source):
+        return
+    if "src_dipole_amp" not in inspect.signature(step_fn).parameters:
+        raise NotImplementedError(
+            "is_integrated=True needs the source polarization term at the "
+            "D-to-E step (meep update_eh.cpp:130); "
+            f"{getattr(step_fn, '__name__', step_fn)} does not carry it yet")
+
+
 def _run_chunk(step_fn, state, coeffs, step0: int, k: int, source, monitors):
     # sum-reduce monitors (DFT accumulators) fold in-place: storing every
     # step's sample first (old torch.stack path) held O(n_steps) copies --
@@ -15,22 +84,22 @@ def _run_chunk(step_fn, state, coeffs, step0: int, k: int, source, monitors):
     for s in range(k):
         t_idx = step0 + s
         if source is not None:
-            h_masks = getattr(source, "h_masks", None)
-            if h_masks:
-                state = step_fn(
-                    state, coeffs, source.amplitude(t_idx), source.mask,
-                    source.h_amplitude(t_idx), **h_masks,
-                )
-            else:
-                state = step_fn(state, coeffs, source.amplitude(t_idx), source.mask)
+            state = _step_source(step_fn, state, coeffs, source, t_idx)
         else:
             state = step_fn(state, coeffs)
+        # A whole run is often ONE chunk, so a check only at the boundary is a
+        # check at the end -- a diverged run would still burn its full time
+        # where meep aborts at the step. 1024 bounds that to one sync per
+        # thousand steps.
+        if s and not s % 1024:
+            _check_finite(state, f"steps {step0}..{t_idx}")
         for i, mon in enumerate(monitors):
             smp = mon.sample(state, t_idx)
             if mon.reduce == "sum":
                 partials[i] = smp if partials[i] is None else partials[i] + smp
             else:
                 partials[i].append(smp)
+    _check_finite(state, f"steps {step0}..{step0 + k - 1}")
     outs = []
     for mon, ps in zip(monitors, partials):
         if mon.reduce == "sum":
@@ -63,6 +132,7 @@ def _make_runner(step_fn, state_cls):
                     acc[i] = torch.cat([acc[i], out])
 
         if checkpoint_every <= 0:
+            _check_integrated(step_fn, source)
             state, outs = _run_chunk(step_fn, state, coeffs, 0, n_steps, source, monitors)
             absorb(outs)
             return state, acc
@@ -137,13 +207,10 @@ def run_until_decayed(step_fn, state, coeffs, source, monitors, probe_fn,
     acc = [None] * len(monitors)
     peak = 0.0
     decay_run = 0
+    _check_integrated(step_fn, source)
     for t in range(max_steps):
-        h_masks = getattr(source, "h_masks", None) if source is not None else None
-        if h_masks:
-            state = step_fn(state, coeffs, source.amplitude(t), source.mask,
-                            source.h_amplitude(t), **h_masks)
-        elif source is not None:
-            state = step_fn(state, coeffs, source.amplitude(t), source.mask)
+        if source is not None:
+            state = _step_source(step_fn, state, coeffs, source, t)
         else:
             state = step_fn(state, coeffs)
         outs = [mon.sample(state, t) for mon in monitors]
@@ -155,6 +222,16 @@ def run_until_decayed(step_fn, state, coeffs, source, monitors, probe_fn,
             else:
                 acc[i] = torch.cat([acc[i], out])
         v = float(probe_fn(state))
+        # This loop already syncs every step for the decay test, so meep's
+        # per-step check (src/step.cpp:138) costs nothing extra here. A NaN
+        # probe also silently defeats the decay test itself: every comparison
+        # against NaN is False, so decay_run never advances and the run grinds
+        # to max_steps instead of stopping.
+        if v != v or v in (float("inf"), float("-inf")):
+            raise FloatingPointError(
+                f"simulation fields are NaN or Inf at step {t} -- the run "
+                "diverged; meep aborts on the same condition "
+                "(src/step.cpp:138)")
         if v > peak:
             peak = v
             decay_run = 0

@@ -23,6 +23,25 @@ def cw_amplitude(src, t_idx: int) -> complex:
     return prof.camplitude((t_idx + 0.5) * dt)
 
 
+def bind_dt(profile, dt):
+    """Give a profile the grid's dt, so it can inject meep's OWN current.
+
+    meep's `src_time::current` is the forward difference
+    `(dipole(t+dt) - dipole(t)) / dt` of the TRUNCATED dipole
+    (`meep.hpp:989`). The closed form in `GaussianPulse.current` is the
+    derivative of the UNtruncated one, and the two differ exactly at the
+    cutoff edge -- where truncating after differentiating leaves a larger
+    step than differentiating after truncating. That step is broadband, so
+    it rings: `tests/examples/test_w5_absorber.py` measures a late-time
+    ringdown floor and the closed form raised it from 1e-20 to 8.8e-16.
+
+    Returns the profile so constructors can chain.
+    """
+    if dt and hasattr(profile, "current"):
+        profile.dt = dt
+    return profile
+
+
 class GaussianPulse:
     def __init__(self, fcen: float, fwidth: float, cutoff: float = 5.0):
         self.fcen = fcen
@@ -30,8 +49,69 @@ class GaussianPulse:
         self.t0 = cutoff * self.w
         self.t_end = 2.0 * self.t0
 
+    def dipole(self, t: float) -> complex:
+        """meep's ``gaussian_src_time::dipole``: the INTEGRATED current.
+
+        meep does not inject the envelope. ``src/sources.cpp`` builds the
+        dipole with an explicit ``1 / (-2 pi i f)`` and says why -- "correction
+        factor so that current amplitude (= d(dipole)/dt) is ~ 1 near the peak"
+        -- and ``src_time::current`` (``meep.hpp:989``) then injects
+        ``(dipole(t+dt) - dipole(t)) / dt``. The envelope is what the current
+        APPROACHES for a narrow pulse, not what meep injects.
+        """
+        tt = t - self.t0
+        if abs(tt) > self.t0:
+            return 0.0 + 0.0j
+        ph = 2 * math.pi * self.fcen * tt
+        env = math.exp(-tt * tt / (2 * self.w ** 2))
+        return complex(env * math.cos(ph), -env * math.sin(ph)) / complex(
+            0.0, -2 * math.pi * self.fcen)
+
+    def current(self, t: float) -> complex:
+        """d(dipole)/dt, meep's injected current.
+
+        With ``self.dt`` set, meep's own forward difference; otherwise the
+        closed form it converges to,
+
+            current(t) = g(t) * [1 + (t - t0) / (2 pi i f w^2)],   g = env e^-i phi
+
+        which differs from meep by O(dt) and from the bare envelope by a term
+        of relative size ~1/(2 pi f w) -- 0.45 at ``fwidth = 1``, ``f = 0.35``.
+        """
+        dt = getattr(self, "dt", None)
+        if dt:
+            return (self.dipole(t + dt) - self.dipole(t)) / dt
+        tt = t - self.t0
+        if abs(tt) > self.t0:
+            return 0.0 + 0.0j
+        ph = 2 * math.pi * self.fcen * tt
+        env = math.exp(-tt * tt / (2 * self.w ** 2))
+        g = complex(env * math.cos(ph), -env * math.sin(ph))
+        return g * (1.0 + tt / complex(0.0, 2 * math.pi * self.fcen * self.w ** 2))
+
+    def envelope_amplitude(self, t: float) -> float:
+        """The bare cos-modulated Gaussian, for callers that are NOT meep.
+
+        `amplitude` is meep's injected current and carries the `1/(-2 pi i f)`
+        correction, whose spectrum is TILTED: `FT(current) = (f/fcen) FT(env)`.
+        That is right for an FDTD source and wrong for a broadband band
+        tracker, which wants every band excited comparably -- at
+        `fwidth = 2 fcen` the tilt is a factor of 2 across the band range and
+        the weakly-excited low bands drop under the peak-finder. The MPB
+        backend solves eigenvalues; it has no meep-source-parity requirement,
+        so it asks for this instead.
+        """
+        tt = t - self.t0
+        if abs(tt) > self.t0:
+            return 0.0
+        ph = 2 * math.pi * self.fcen * tt
+        return math.exp(-tt * tt / (2 * self.w ** 2)) * math.cos(ph)
+
+    def camplitude(self, t: float) -> complex:
+        return self.current(t)
+
     def quadrature(self, t: float) -> tuple[float, float]:
-        """(Re, Im) of the analytic signal J(t) = env(t) * exp(-i phi(t)).
+        """(Re, Im) of meep's injected current J(t) = d(dipole)/dt.
 
         meep's source is complex, J(t) = envelope * exp(-i w t); a real-valued
         engine injects Re[J] and needs Im[J] separately for anything that
@@ -44,9 +124,8 @@ class GaussianPulse:
         until one is edited, and a drifted quadrature shows up as a slow phase
         error nothing raises on.
         """
-        ph = 2 * math.pi * self.fcen * (t - self.t0)
-        env = math.exp(-((t - self.t0) ** 2) / (2 * self.w ** 2))
-        return env * math.cos(ph), -env * math.sin(ph)
+        c = self.current(t)
+        return c.real, c.imag
 
     def amplitude(self, t: float) -> float:
         return self.quadrature(t)[0]
@@ -108,6 +187,7 @@ class LineSource:
             raise ValueError(f"source segment j0={j0}, j1={j1} invalid for ny={grid.ny}")
         self.profile = profile
         self.dt = grid.dt
+        bind_dt(getattr(self, 'profile', None) or profile, grid.dt)
         mask = grid.zeros(grid.nx, grid.ny)
         if amps is not None:              # per-cell weights (IndexedSource)
             mask[ix, j0:j1] = torch.as_tensor(amps, dtype=grid.dtype,
@@ -216,6 +296,7 @@ class HLineSource:
                 f"source segment i0={i0}, i1={i1} invalid for nx={grid.nx}")
         self.profile = profile
         self.dt = grid.dt
+        bind_dt(getattr(self, 'profile', None) or profile, grid.dt)
         mask = grid.zeros(grid.nx, grid.ny)
         if amps is not None:
             mask[i0:i1, jy] = torch.as_tensor(amps, dtype=grid.dtype,
@@ -242,6 +323,7 @@ class SoftSource:
         self.mask = mask
         self.profile = profile
         self.dt = grid.dt
+        bind_dt(getattr(self, 'profile', None) or profile, grid.dt)
 
     def amplitude(self, t_idx: int) -> float:
         return self.profile.amplitude((t_idx + 0.5) * self.dt)
@@ -264,6 +346,7 @@ class ObliqueLineSource:
         self.ix, self.j0, self.j1 = ix, j0, j1
         self.profile = profile
         self.dt = grid.dt
+        bind_dt(getattr(self, 'profile', None) or profile, grid.dt)
         self.fcen = float(fcen if fcen is not None else getattr(profile, "fcen", 0.0))
         self.ky = 2.0 * math.pi * self.fcen * math.sin(theta)
         self.omega = 2.0 * math.pi * self.fcen

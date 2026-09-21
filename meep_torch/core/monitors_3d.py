@@ -11,6 +11,8 @@ from typing import Sequence
 import torch
 
 from .stepper_3d import step_3d
+from .monitors import dft_time_offset
+from .sources import bind_dt
 
 _COMP_NODE = {"Ex": "Ex", "Ey": "Ey", "Ez": "Ez", "Hx": "Hx", "Hy": "Hy", "Hz": "Hz"}
 
@@ -43,6 +45,7 @@ class PlaneSource:
             mask[tuple(sel)] = window
         self.profile = profile
         self.dt = dt
+        bind_dt(profile, dt)
         self.src = (comp, mask)
 
     def amplitude(self, t_idx: int) -> float:
@@ -60,6 +63,7 @@ class PointSource3D:
         if comp not in self._COMP:
             raise ValueError(f"PointSource3D comp must be Ex/Ey/Ez, got {comp!r}")
         self.dt = dt
+        bind_dt(profile, dt)
         self.profile = profile
         self.src = (comp, int(i), int(j), int(k))
 
@@ -87,7 +91,7 @@ class DFTFieldsMonitor3D:
             F = F[tuple(sl)]
         if self.freqs.device != F.device or self.freqs.dtype != F.dtype:
             self.freqs = self.freqs.to(device=F.device, dtype=F.dtype)
-        off = 1.0 if self.component.startswith("E") else 0.5
+        off = dft_time_offset(self.component)
         t = (t_idx + off) * self.dt
         shape = [1, 1] + [1] * F.ndim
         w = (2 * math.pi * self.freqs).reshape(shape)

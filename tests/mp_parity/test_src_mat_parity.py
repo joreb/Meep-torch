@@ -78,20 +78,68 @@ def test_start_time_zero_keeps_bare_engine_profile():
                       GaussianPulse)
 
 
-def test_is_integrated_stored_and_raises_at_profile():
+def test_is_integrated_travels_to_the_profile():
+    """The flag reaches the engine instead of refusing at the shim.
+
+    It used to raise here. `is_integrated` is not a property of the WAVEFORM,
+    it is which term of meep's update the source enters: a current into D
+    (`step.cpp:303`) or a polarization at the D-to-E step
+    (`update_eh.cpp:130`). So it travels to the profile and `core/run.py`
+    routes on it, and the refusal now lives next to the stepper that lacks
+    the term rather than in front of every stepper.
+    """
     s = GaussianSource(frequency=1.0, fwidth=0.2, is_integrated=True)
     assert s.is_integrated is True
-    with pytest.raises(NotImplementedError):
-        s.profile()
-    assert GaussianSource(frequency=1.0, fwidth=0.2).is_integrated is False
+    assert s.profile().is_integrated is True
+    plain = GaussianSource(frequency=1.0, fwidth=0.2)
+    assert plain.is_integrated is False
+    assert getattr(plain.profile(), "is_integrated", False) is False
+
+
+def test_is_integrated_refuses_only_where_the_term_is_missing():
+    """A stepper without the polarization term must RAISE, not drop it.
+
+    Dropping it silently would inject the dipole as a current: a plausible
+    field, the wrong one, and nothing to mark it.
+    """
+    from meep_torch.core.run import _check_integrated
+
+    class _Src:
+        def __init__(self, prof):
+            self.profile = prof
+
+    src = _Src(GaussianSource(frequency=1.0, fwidth=0.2,
+                              is_integrated=True).profile())
+
+    def without_the_term(state, coeffs, amp, mask):
+        return state
+
+    def with_the_term(state, coeffs, amp, mask, src_dipole_amp=0.0):
+        return state
+
+    with pytest.raises(NotImplementedError, match="polarization"):
+        _check_integrated(without_the_term, src)
+    _check_integrated(with_the_term, src)          # must not raise
+    _check_integrated(without_the_term, None)      # no source, nothing to check
 
 
 # --- GaussianSource.fourier_transform ---
 
 def test_fourier_transform_matches_sampled_profile():
-    """meep analytic FT (exp(+i*omega*t) convention, complex profile) vs a
-    Riemann-sum FT of the sampled real engine profile: the real cos profile
-    transforms as 0.5*(F(f) + conj(F(-f)))."""
+    """meep analytic FT against a Riemann sum of the sampled engine profile.
+
+    The profile is now meep's injected CURRENT, `d(dipole)/dt`, not the bare
+    envelope, so the two differ by a factor that is derived rather than fitted.
+    `dipole = envelope * exp(-i phi) / (-2 pi i fcen)` -- the constant uses
+    FCEN, not the running frequency -- and differentiating multiplies by
+    `i omega`, so
+
+        FT(current)(f) = (omega / omega0) * FT(envelope)(f) = (f / fcen) * F(f)
+
+    Measured before this factor was applied: 0.9000528 at f = 0.9 against a
+    predicted 0.9. The real cos profile still transforms as
+    0.5 * (F(f) + conj(F(-f))).
+    """
     src = GaussianSource(frequency=1.0, fwidth=0.2)
     prof = src.profile()
     dt = 1e-3
@@ -100,8 +148,9 @@ def test_fourier_transform_matches_sampled_profile():
     scale = abs(src.fourier_transform(src.frequency))     # peak magnitude
     for f in (0.9, 1.0, 1.08):
         num = np.sum(g * np.exp(2j * np.pi * f * ts)) * dt
-        exact = 0.5 * (src.fourier_transform(f) + np.conj(src.fourier_transform(-f)))
-        assert abs(num - exact) <= 1e-4 * scale, f"f={f}: {num} vs {exact}"
+        env = 0.5 * (src.fourier_transform(f) + np.conj(src.fourier_transform(-f)))
+        exact = (f / src.frequency) * env
+        assert abs(num - exact) <= 1e-3 * scale, f"f={f}: {num} vs {exact}"
 
 
 def test_fourier_transform_peak_value():

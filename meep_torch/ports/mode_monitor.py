@@ -21,8 +21,18 @@ _NORM_FLOOR = 1e-12
 
 
 def dft_fields(acc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The stored accumulator as the phasor this module's overlaps expect.
+
+    The monitors accumulate meep's e^{+i w t}; these overlaps and everything
+    downstream of them (mode coefficients, S-parameters, the phase slope that
+    gives the group index) were written against the e^{-i w t} phasor, so the
+    imaginary part is negated here rather than at each call site. A conjugated
+    phasor flips the SIGN of arg(S21), which is why the symptom was
+    ng_est = -ng_ref -- |ng_est - ng_ref| / ng_ref = 2.007 -- and not a
+    magnitude error: |S| is blind to it.
+    """
     ReE, ImE, ReH, ImH = acc.unbind(1)
-    return torch.complex(ReE, ImE), torch.complex(ReH, ImH)
+    return torch.complex(ReE, -ImE), torch.complex(ReH, -ImH)
 
 
 def decompose(acc, eps_line, dx, freqs: Sequence[float], pol: str,

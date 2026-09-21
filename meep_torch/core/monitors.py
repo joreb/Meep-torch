@@ -21,6 +21,36 @@ class PointProbe:
         return state.Ez[self.ix, self.iy].clone()
 
 
+DFT_SCALE = 1.0 / math.sqrt(2.0 * math.pi)
+"""meep's DFT weight per step, `src/dft.cpp:225`::
+
+    data.dt_factor = dt / sqrt(2.0 * pi) * decimation_factor;
+
+meep is self-consistently UNITARY; the plain convention we used is
+self-consistently PLAIN, and neither is mathematically wrong. Parity is the
+mandate, so meep's wins. Consequences, all measured before the change:
+every flux we reported was exactly `pi` times meep's (3.141597 / 3.141587 /
+3.141612 at fcen 0.5 / 1.0 / 2.0), because flux squares the DFT for `2 pi`
+and meep's `dft_flux::flux()` (`dft.cpp:551`) carries no 1/2 where we carried
+one. Field DFTs were `sqrt(2 pi)` large, so `Im(conj(E) D)` was `2 pi` large.
+"""
+
+
+def dft_time_offset(component: str) -> float:
+    """Where in the step this component's DFT sample sits, in units of dt.
+
+    Field TYPE, not first letter. The electric family is E AND D, the magnetic
+    family H AND B; meep stamps each family with one time. Four call sites
+    wrote `1.0 if component.startswith("E") else 0.5`, which silently gives D
+    the MAGNETIC half-step. Measured in vacuum, where D/E must be exactly
+    1 + 0j, that returned 0.99692 + 0.07846j -- a phase of omega*dt/2 to six
+    digits. Nothing raises on it, and it is ruinous for absorbed power
+    Im(conj(E) D): SiO2's Im(eps)/|eps| is 4.6e-4, so the phase error is ~68x
+    the signal it competes with.
+    """
+    return 0.5 if component[0] in "HB" else 1.0
+
+
 class DFTFieldsMonitor:
     """Running DFT of one full-grid field component at a set of frequencies.
 
@@ -39,11 +69,11 @@ class DFTFieldsMonitor:
 
     def sample(self, state, t_idx: int) -> torch.Tensor:
         F = getattr(state, self.component)
-        off = 1.0 if self.component.startswith("E") else 0.5
+        off = dft_time_offset(self.component)
         t = (t_idx + off) * self.dt
         w = 2 * math.pi * self.freqs[:, None, None]
-        return self.dt * torch.stack(
-            [torch.cos(w * t) * F, -torch.sin(w * t) * F], dim=1)
+        return self.dt * DFT_SCALE * torch.stack(
+            [torch.cos(w * t) * F, torch.sin(w * t) * F], dim=1)
 
 
 class FluxMonitorTM:
@@ -84,12 +114,12 @@ class FluxMonitorTM:
         tE = (t_idx + 1.0) * self.dt
         tH = (t_idx + 0.5) * self.dt
         w = 2 * math.pi * self.freqs[:, None]
-        return self.dt * torch.stack(
+        return self.dt * DFT_SCALE * torch.stack(
             [
                 torch.cos(w * tE) * E,
-                -torch.sin(w * tE) * E,
+                torch.sin(w * tE) * E,
                 torch.cos(w * tH) * H,
-                -torch.sin(w * tH) * H,
+                torch.sin(w * tH) * H,
             ],
             dim=1,
         )
@@ -97,7 +127,7 @@ class FluxMonitorTM:
     def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
         ReE, ImE, ReH, ImH = acc.unbind(1)
         s = (ReE * ReH + ImE * ImH).sum(-1) * dx      # Re(Ê Ĥ*) integrated
-        return -0.5 * s if self.x_normal else 0.5 * s
+        return -s if self.x_normal else s  # meep's dft_flux::flux() (dft.cpp:551) sums real(E conj(H)) with NO 1/2
 
 
 class FluxMonitorTE:
@@ -117,13 +147,13 @@ class FluxMonitorTE:
         tE = (t_idx + 0.5) * self.dt
         tH = (t_idx + 1.0) * self.dt
         w = 2 * torch.pi * self.freqs[:, None]
-        return self.dt * torch.stack(
-            [torch.cos(w * tE) * E, -torch.sin(w * tE) * E,
-             torch.cos(w * tH) * H, -torch.sin(w * tH) * H], dim=1)
+        return self.dt * DFT_SCALE * torch.stack(
+            [torch.cos(w * tE) * E, torch.sin(w * tE) * E,
+             torch.cos(w * tH) * H, torch.sin(w * tH) * H], dim=1)
 
     def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
         ReE, ImE, ReH, ImH = acc.unbind(1)
-        return 0.5 * (ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sx = +Ey*Hz
+        return (ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sx = +Ey*Hz  # meep's dft_flux::flux() (dft.cpp:551) sums real(E conj(H)) with NO 1/2
 
 
 class FluxMonitorTEY:
@@ -146,10 +176,10 @@ class FluxMonitorTEY:
         tE = (t_idx + 0.5) * self.dt
         tH = (t_idx + 1.0) * self.dt
         w = 2 * torch.pi * self.freqs[:, None]
-        return self.dt * torch.stack(
-            [torch.cos(w * tE) * E, -torch.sin(w * tE) * E,
-             torch.cos(w * tH) * H, -torch.sin(w * tH) * H], dim=1)
+        return self.dt * DFT_SCALE * torch.stack(
+            [torch.cos(w * tE) * E, torch.sin(w * tE) * E,
+             torch.cos(w * tH) * H, torch.sin(w * tH) * H], dim=1)
 
     def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
         ReE, ImE, ReH, ImH = acc.unbind(1)
-        return -0.5 * (ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sy = -Ex*Hz
+        return -(ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sy = -Ex*Hz

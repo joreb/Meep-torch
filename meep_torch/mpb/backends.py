@@ -26,7 +26,7 @@ import torch
 from .eigensolver import bloch_bands_2d, lattice_gradients
 from .parity import (EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z,
                      PARITY_NAMES)
-from ..core.sources import GaussianPulse
+from ..core.sources import GaussianPulse, bind_dt
 from ..core.stepper_bloch2 import init_bloch2_state, step_bloch2_tm
 from ..modes.harminv import harminv
 from ..mp.geometry import reciprocal_to_cartesian
@@ -65,14 +65,14 @@ class BackendMixin:
         st = init_bloch2_state(g)
         mask = torch.zeros(*eps.shape, dtype=torch.float64)
         mask[g.nx // 3 + 1, g.ny // 5 + 2] = 1.0
-        pulse = GaussianPulse(fmax / 2, fmax)
+        pulse = bind_dt(GaussianPulse(fmax / 2, fmax), dt)
         n_steps = int(round(self.t_end / dt))
         probes = [(g.nx // 3 + 1, g.ny // 5 + 2),
                   (2 * g.nx // 3, g.ny // 2 + 1),
                   (g.nx // 2 - 2, 0), (g.nx - 3, g.ny // 3)]
         series = np.empty((len(probes), n_steps), dtype=complex)
         for t in range(n_steps):
-            a = pulse.amplitude((t + 0.5) * dt)
+            a = pulse.envelope_amplitude((t + 0.5) * dt)
             st = step_bloch2_tm(st, eps, dt, dx, kx, ky, src_c=a, src_s=0.0,
                                 src_mask=mask)
             for p, (pi, pj) in enumerate(probes):
@@ -87,7 +87,7 @@ class BackendMixin:
         nx, ny, nz = eps.shape
         c = build_bloch3_coeffs(eps, dx, kx, ky, n_abs_z=0, kz=kz)
         st = init_bloch3_state(nx, ny, nz)
-        pulse = GaussianPulse(fmax / 2, fmax)
+        pulse = bind_dt(GaussianPulse(fmax / 2, fmax), c.dt)
         src = ("Ey", nx // 3 + 1, ny // 5 + 2, nz // 2)
         n_steps = int(round(self.t_end / c.dt))
         probes = [(nx // 3 + 1, ny // 5 + 2, nz // 2),
@@ -95,7 +95,7 @@ class BackendMixin:
                   (nx // 2, 2 * ny // 3, nz // 4 + 1)]
         series = np.empty((len(probes), n_steps), dtype=complex)
         for t in range(n_steps):
-            st = step_bloch3(st, c, pulse.amplitude((t + 0.5) * c.dt), src)
+            st = step_bloch3(st, c, pulse.envelope_amplitude((t + 0.5) * c.dt), src)
             for p, (pi, pj, pk) in enumerate(probes):
                 series[p, t] = st.Ey[pi, pj, pk].item()
         return self._harvest(series, c.dt, fmax)

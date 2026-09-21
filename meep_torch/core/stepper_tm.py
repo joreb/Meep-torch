@@ -303,7 +303,8 @@ def update_pols(state: TMState, m: TMCoeffs) -> TMState:
     return _replaced(state, P_cur=P_new, P_prev=state.P_cur)
 
 
-def update_eh(state: TMState, m: TMCoeffs, ft: str) -> TMState:
+def update_eh(state: TMState, m: TMCoeffs, ft: str, dipole=0.0,
+              dipole_mask: torch.Tensor | None = None) -> TMState:
     """meep update_eh(ft): ft="H" forms H = B - sum M (magnetic Lorentz ADE;
     identity when B = mu H is folded into step_db). ft="E" solves E from
     D - P (instantaneous chi2/chi3 via fixed point -- fusion load-bearing,
@@ -322,6 +323,14 @@ def update_eh(state: TMState, m: TMCoeffs, ft: str) -> TMState:
                               My_cur=My_new, My_prev=state.My_cur)
     # D = eps*E + chi2*E^2 + chi3*E^3  ->  E = rhs / (eps + chi2*E + chi3*E^2)
     P_sum = state.P_cur.sum(0)
+    # meep update_eh.cpp:130 -- an is_integrated source is a POLARIZATION, not
+    # a current. It never enters D; f_minus_p = D - P_material - dipole(t) is
+    # formed fresh each step and E solved from that. So no dt here and no d2:
+    # step_source scales its current by the conductivity inverse (step.cpp:303)
+    # and the subtracted dipole is not scaled, which is the whole measurable
+    # difference between the two paths wherever the source cell carries loss.
+    if dipole_mask is not None and dipole:
+        P_sum = P_sum + dipole * dipole_mask
     Ez = EH_FROM_D(state.Dz, P_sum, m.eps_inf)
     if m.has_kerr or m.has_chi2:
         rhs = state.Dz - P_sum
@@ -338,6 +347,7 @@ def step_tm(
     src_h_amp: float = 0.0,
     src_hy_mask: torch.Tensor | None = None,
     src_hx_mask: torch.Tensor | None = None,
+    src_dipole_amp=0.0,
 ) -> TMState:
     """One TM step, composed of the phases in meep's fields::step order:
     step_db(B) -> step_source(B) -> update_eh(H) -> step_db(D) ->
@@ -350,4 +360,5 @@ def step_tm(
     state = step_db(state, m, "D")
     state = step_source(state, m, "D", src_amp, src_mask=src_mask)
     state = update_pols(state, m)
-    return update_eh(state, m, "E")
+    return update_eh(state, m, "E", dipole=src_dipole_amp,
+                     dipole_mask=src_mask)

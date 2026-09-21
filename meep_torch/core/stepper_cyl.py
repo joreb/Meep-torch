@@ -20,6 +20,7 @@ from typing import NamedTuple
 import torch
 
 from .pml import absorber_sigma
+from .sources import bind_dt
 
 
 class CylCoeffs(NamedTuple):
@@ -108,6 +109,7 @@ def step_cyl(state: CylState, c: CylCoeffs, src_amp: float = 0.0,
 def run_cyl(state: CylState, c: CylCoeffs, n_steps: int, *, src_ix: int,
             src_profile, probe_ix: int):
     import numpy as np
+    bind_dt(src_profile, c.dt)
     series = np.empty(n_steps, dtype=complex)
     for t in range(n_steps):
         state = step_cyl(state, c, src_profile.amplitude((t + 0.5) * c.dt), src_ix)

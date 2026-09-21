@@ -106,20 +106,27 @@ class _Windowed:
 
 
 class SourceTime:
-    """meep source.py SourceTime: ``is_integrated`` only (stored; True raises
-    NotImplementedError at profile() -- the engine injects soft current
-    sources, there is no integrated d(current)/dt path). Subclasses supply
-    ``_base_profile()`` and start/end-time gating via profile()."""
+    """meep source.py SourceTime: ``is_integrated`` only, passed to the engine
+    profile so ``core/run.py`` can route it into meep's polarization term.
+    Subclasses supply ``_base_profile()`` and start/end-time gating via
+    profile()."""
 
     def __init__(self, is_integrated=False):
         self.is_integrated = is_integrated
 
     def _checked_base_profile(self):
+        """The engine profile, carrying the flag rather than refusing on it.
+
+        `is_integrated` is not a property of the waveform, it is which term of
+        meep's update the source enters: a current into D (`step.cpp:303`) or
+        a polarization at the D-to-E step (`update_eh.cpp:130`). So the flag
+        travels to the profile and `core/run.py` routes on it; the refusal now
+        lives where the capability does, next to the stepper that lacks it.
+        """
+        prof = self._base_profile()
         if self.is_integrated:
-            raise NotImplementedError(
-                "is_integrated=True is not supported: the engine injects soft "
-                "current sources only (no integrated d(current)/dt path)")
-        return self._base_profile()
+            prof.is_integrated = True
+        return prof
 
 
 class GaussianSource(SourceTime):

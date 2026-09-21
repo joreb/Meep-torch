@@ -17,7 +17,7 @@ import pytest
 import torch
 
 from meep_torch.core.monitors_3d import FluxMonitor3D, PlaneSource, run_3d
-from meep_torch.core.sources import GaussianPulse
+from meep_torch.core.sources import GaussianPulse, bind_dt
 from meep_torch.core.stepper_3d import build_3d_coeffs, init_3d_state, step_3d
 
 
@@ -146,7 +146,12 @@ def _ringdown(cpml: bool):
                                   absorber_m=3, absorber_R0=1e-6,
                                   pml_alpha=0.0)
     st = init_3d_state(R_NX, R_NY, R_NZ, npml=R_NPML)
-    pulse = GaussianPulse(R_FCEN, R_FW, cutoff=R_CUTOFF)
+    # The engine binds the grid dt to every profile it drives (core.sources
+    # bind_dt), so a profile built by hand has to be configured the same way
+    # or it injects the closed-form current instead of meep's forward
+    # difference -- which differs exactly at the cutoff edge, and a step there
+    # is broadband, which is what a ringdown measures.
+    pulse = bind_dt(GaussianPulse(R_FCEN, R_FW, cutoff=R_CUTOFF), coeffs.dt)
     src_z = R_NZ // 2
     mask = torch.zeros(R_NX - 1, R_NY, R_NZ, dtype=torch.float64)
     mask[:, :, src_z] = 1.0                       # uniform transverse planewave

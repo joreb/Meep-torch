@@ -5,8 +5,10 @@
 Time-averaged stress from DFT phasors (e^{+i w t} convention of the
 DFT monitors):
 
-  <T_ij> = 1/2 Re[ E_i conj(E_j) - delta_ij |E|^2 / 2
-                 + H_i conj(H_j) - delta_ij |H|^2 / 2 ]
+  <T_ij> = Re[ E_i conj(E_j) - delta_ij |E|^2 / 2
+             + H_i conj(H_j) - delta_ij |H|^2 / 2 ]
+
+(meep's normalisation: no outer 1/2, matching src/stress.cpp:90)
 
 F = closed-contour sum of <T> . n_hat dl, outward normals, trapezoid
 corner weights (same closure as near2far). TM fields: E = Ez z_hat,
@@ -42,9 +44,15 @@ def mst_force_tm(planes, grid, *, ix0, ix1, iy0, iy1):
             hx, hy = _h_at_nodes(planes, k, ii, jj)
             e2 = np.abs(ez) ** 2
             h2 = np.abs(hx) ** 2 + np.abs(hy) ** 2
-            txx = 0.5 * (np.abs(hx) ** 2 - 0.5 * (e2 + h2))
-            tyy = 0.5 * (np.abs(hy) ** 2 - 0.5 * (e2 + h2))
-            txy = 0.5 * np.real(hx * np.conj(hy))
+            # No outer 1/2: meep's stress_sum (src/stress.cpp:90) sums
+            # real(w * F1 * conj(F2)) with none, exactly as dft_flux::flux()
+            # carries none. The inner 1/2 is the stress tensor's own
+            # delta_ij |F|^2 / 2 and stays. Dropping this was forced by the
+            # DFT moving to meep's unitary weight: |E|^2 picked up 1/(2 pi)
+            # while flux picked up 1/pi, so force/flux slipped by exactly 2.
+            txx = np.abs(hx) ** 2 - 0.5 * (e2 + h2)
+            tyy = np.abs(hy) ** 2 - 0.5 * (e2 + h2)
+            txy = np.real(hx * np.conj(hy))
             return txx, tyy, txy
 
         for idx, lo, hi, normal, axis in (
