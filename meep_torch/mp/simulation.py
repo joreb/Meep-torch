@@ -2419,12 +2419,13 @@ class Simulation:
                 "the monitor line itself")
         bands = list(bands)
         name = dft_name(flux)
+        kdom = []
         if self._S is not None and name in self._port_index:
             alpha = self._mode_port_alpha(name, bands)
         else:
-            alpha = self._planewave_alpha(flux, name, bands, eig_parity)
+            alpha, kdom = self._planewave_alpha(flux, name, bands, eig_parity)
         nb, nf, _ = alpha.shape
-        return EigCoeffsResult(alpha, np.zeros(nb * nf), [], [],
+        return EigCoeffsResult(alpha, np.zeros(nb * nf), [], kdom,
                                np.zeros(nb * nf))
 
     def _mode_port_alpha(self, name, bands):
@@ -2472,17 +2473,13 @@ class Simulation:
         # has several modes and a parity really does select among them. Here
         # there is nothing to select, and refusing broke
         # test_eig_coeffs_planewave for both polarisations.
-        if bands != [1]:
-            raise NotImplementedError(
-                f"get_eigenmode_coefficients(bands={bands}) on a flux "
-                "monitor: only band 1 (the 0th/specular diffraction order) is "
-                "implemented; the band -> order map for higher bands is "
-                "parity- and degeneracy-dependent (meep_torch/ports/orders.py)")
         k = self.k_point
-        if k not in (False, None) and (abs(k.y) > 1e-12 or abs(k.x) > 1e-12):
+        ky = 2.0 * math.pi * float(k.y) if k not in (False, None) else 0.0
+        if k not in (False, None) and abs(k.x) > 1e-12:
             raise NotImplementedError(
-                f"get_eigenmode_coefficients at oblique incidence (k_point="
-                f"{k}): the planewave basis is built at k_transverse = 0")
+                f"get_eigenmode_coefficients with k_point.x={k.x}: the "
+                "monitor normal is x, so a Bloch phase along it is not a "
+                "transverse order (k_point.y is the periodic direction)")
         if name not in self._last_acc:
             raise RuntimeError(
                 f"get_eigenmode_coefficients({name!r}): no accumulated fields "
@@ -2494,10 +2491,27 @@ class Simulation:
                 "implemented (x-normal monitor planes only)")
         eps = (self._rm.eps_tm if self._pol == "tm" else self._rm.eps_te_yy)
         eps_line = eps[meta["idx"], meta["lo"]:meta["hi"]].detach().cpu().numpy()
-        a_p, a_m = planewave_alpha(acc, eps_line, self.gs.dx, self._pol)
-        alpha = np.zeros((1, a_p.shape[0], 2), dtype=np.complex128)
-        alpha[0, :, 0], alpha[0, :, 1] = a_p, a_m
-        return alpha
+        if bands == [1] and abs(ky) <= 1e-12:
+            # the 0th order at normal incidence: the original path, kept
+            # because it is what test_eig_coeffs_planewave pins against meep
+            a_p, a_m = planewave_alpha(acc, eps_line, self.gs.dx, self._pol)
+            alpha = np.zeros((1, a_p.shape[0], 2), dtype=np.complex128)
+            alpha[0, :, 0], alpha[0, :, 1] = a_p, a_m
+            n0 = float(np.sqrt(eps_line.mean()))
+            kd = [Vector3(n0 * f, 0.0, 0.0) for f in mon_freqs(self, name)]
+            return alpha, kd
+        # higher orders (and any oblique incidence) go through the projection
+        # ports/orders.py has had all along; only the band -> order map was
+        # missing, and it is a sort on the longitudinal wavenumber.
+        from ..ports.orders import order_kdom, orders_alpha
+        period = float(self.cell_size.y)
+        freqs = list(mon_freqs(self, name))
+        n0 = float(np.sqrt(eps_line.mean()))
+        alpha = orders_alpha(acc, eps_line, self.gs.dx, self._pol, ky, period,
+                             freqs, bands)
+        kd = [Vector3(*v) for v in order_kdom(
+            bands, ky, 2.0 * math.pi / period, freqs, n0)]
+        return alpha, kd
 
     def _subvolume(self, arr, center, size):
         """Restrict a full-cell array to meep's (center, size) box.

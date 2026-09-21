@@ -14,10 +14,12 @@ Two monitor flavours reach ``Simulation.get_eigenmode_coefficients``:
   (tests/mp_parity/test_eig_coeffs_planewave.py).
 
 This module implements the second. meep's normalization is
-``|alpha_+|**2 - |alpha_-|**2 == the monitor flux`` (checked on the oracle:
-grating |a+|^2 - |a-|^2 == get_fluxes(mon) to 1e-9 relative), so the
-projected amplitudes are scaled by sqrt(0.5 * n_x) (TM) / sqrt(0.5 / n_x)
-(TE) to land in the same units as ``FluxMonitor*.flux``.
+``|alpha_+|**2 - |alpha_-|**2 == the monitor flux``, so the projected
+amplitudes are scaled by sqrt(n_x) (TM) / sqrt(1 / n_x) (TE) to land in the
+same units as ``FluxMonitor*.flux``. The scale was sqrt(0.5 n_x) while the
+flux carried its own 1/2; both lost it together when the DFT moved to meep's
+unitary convention, and the identity is pinned by a test rather than a
+comment now.
 
 Sign conventions follow ``ports/mode_monitor.decompose``: an x-normal TM
 monitor stores (Ez, Hy) with Hy = -n_x Ez for a +x wave; an x-normal TE
@@ -64,10 +66,14 @@ def planewave_alpha(acc, eps_line, dx: float, pol: str):
     u = 1.0 / math.sqrt(npts * dx)          # constant profile, sum(u^2 dx) = 1
     e = E.sum(-1).detach().cpu().numpy() * dx * u
     h = H.sum(-1).detach().cpu().numpy() * dx * u
+    # No 0.5 under the root: meep's identity is |a+|^2 - |a-|^2 == the monitor
+    # flux, and the flux lost its own 1/2 when the DFT moved to meep's unitary
+    # convention (dft_flux::flux(), src/dft.cpp:551, carries none). With
+    # sqrt(0.5 n) the identity measured 0.5000 instead of 1.
     if pol == "tm":                          # (Ez, Hy), Hy = -n Ez forward
         a_p, a_m = 0.5 * (e - h / n), 0.5 * (e + h / n)
-        s = math.sqrt(0.5 * n)
+        s = math.sqrt(n)
     else:                                    # (Ey, Hz), Ey = +(n/eps) Hz forward
         a_p, a_m = 0.5 * (h + e * n), 0.5 * (h - e * n)
-        s = math.sqrt(0.5 / n)
+        s = math.sqrt(1.0 / n)
     return s * a_p, s * a_m

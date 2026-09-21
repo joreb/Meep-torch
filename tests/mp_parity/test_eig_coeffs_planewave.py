@@ -98,18 +98,48 @@ def test_named_raises():
         sim.get_eigenmode_coefficients(mon, [1], direction=mp.NO_DIRECTION)
     with pytest.raises(NotImplementedError, match="eig_vol"):
         sim.get_eigenmode_coefficients(mon, [1], eig_vol=mp.Volume(size=mp.Vector3(0, GP)))
-    with pytest.raises(NotImplementedError, match="0th/specular"):
-        sim.get_eigenmode_coefficients(mon, [1, 2])
+    # bands beyond 1 USED to raise "only the 0th/specular order". The
+    # projection for order m was in ports/orders.py the whole time; only the
+    # band -> order map was missing, and it is a sort on the longitudinal
+    # wavenumber. Higher bands now return coefficients.
+    a = sim.get_eigenmode_coefficients(mon, [1, 2, 3]).alpha
+    assert a.shape[0] == 3
+    # at normal incidence with a uniform line, all the power is specular:
+    # bands 2 and 3 are the +/-1 orders and carry nothing here
+    assert abs(a[0, 0, 0]) > 0.0
+    assert abs(a[1, 0, 0]) < 1e-6 * abs(a[0, 0, 0])
+    assert abs(a[2, 0, 0]) < 1e-6 * abs(a[0, 0, 0])
     with pytest.raises(ValueError, match="eig_parity implies"):
         sim.get_eigenmode_coefficients(mon, [1], eig_parity=mp.EVEN_Z)
 
 
-def test_oblique_and_structured_line_raise():
+def test_oblique_now_works_and_a_structured_line_still_raises():
+    # oblique incidence used to raise: the planewave basis was built at
+    # k_transverse = 0. It is now built at k_y = 2 pi k_point.y, which is what
+    # lifts the +/-m degeneracy in the band -> order map.
     sim, mon = _run(k_point=mp.Vector3(0, 0.2))
-    with pytest.raises(NotImplementedError, match="oblique incidence"):
-        sim.get_eigenmode_coefficients(mon, [1], eig_parity=mp.ODD_Z)
+    a = sim.get_eigenmode_coefficients(mon, [1], eig_parity=mp.ODD_Z).alpha
+    assert a.shape == (1, a.shape[1], 2) and np.isfinite(a).all()
     # a guided monitor (structured transverse eps) has no flux-monitor path
     wg = [mp.Block(size=mp.Vector3(mp.inf, 0.2, mp.inf), material=mp.Medium(epsilon=12))]
     sim, mon = _run(geometry=wg)
     with pytest.raises(NotImplementedError, match="not uniform"):
         sim.get_eigenmode_coefficients(mon, [1], eig_parity=mp.ODD_Z)
+
+
+def test_meep_normalisation_identity():
+    """|a+|^2 - |a-|^2 == the monitor flux, which is meep's whole contract.
+
+    `planewave_coeffs` stated this in a docstring and nothing asserted it, so
+    when the DFT moved to meep's unitary convention the flux lost its 1/2 and
+    the amplitude scale did not -- the identity read 0.5000 for an unknown
+    number of runs, halving every mode coefficient, and the shape-and-
+    finiteness tests above stayed green throughout.
+    """
+    sim, mon = _run()
+    a = sim.get_eigenmode_coefficients(mon, [1], eig_parity=mp.ODD_Z).alpha
+    flux = np.asarray(mp.get_fluxes(mon))
+    ident = np.abs(a[0, :, 0]) ** 2 - np.abs(a[0, :, 1]) ** 2
+    live = np.abs(flux) > 1e-20 * np.abs(flux).max()
+    assert live.any()
+    np.testing.assert_allclose(ident[live], flux[live], rtol=2e-3)
