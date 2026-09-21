@@ -140,8 +140,17 @@ _savefig = _mplfig.Figure.savefig
 
 
 def _savefig_and_dump(self, fname, *a, **k):
-    r = _savefig(self, fname, *a, **k)
+    # SUFFIXED WITH THE TWIN TAG, for the same reason the plotdata above is
+    # prefixed with the stem: the figure's name comes from upstream's body and
+    # is therefore identical on both twins, so `_mp` and `_meep` were writing
+    # the same PNG into one directory and whichever ran second won. The JSON
+    # beside it was already disambiguated; the image was not.
+    _p = pathlib.Path(str(fname))
+    r = _savefig(self, _p.with_name(_p.stem + "{twin}" + _p.suffix), *a, **k)
     try:
+        # the ORIGINAL name: the plotdata is already disambiguated by the
+        # "<stem>-" prefix, and tagging it twice would rename files the
+        # comparison tooling reads.
         _dump_plot_data(self, fname)
     except Exception:
         pass          # a figure we cannot read must not kill the tutorial
@@ -315,6 +324,7 @@ def port(upstream, into, force=False, dry_run=False):
         text = head + PREAMBLE.format(upstream=upstream.as_posix(),
                                       experiment=experiment, note=note,
                                       stem=f"{experiment}{suffix}",
+                                      twin=suffix,
                                       device_line=device_line) + transform(body)
         if not dry_run:
             into.mkdir(parents=True, exist_ok=True)

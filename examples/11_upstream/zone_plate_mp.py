@@ -80,8 +80,14 @@ _savefig = _mplfig.Figure.savefig
 
 
 def _savefig_and_dump(self, fname, *a, **k):
-    r = _savefig(self, fname, *a, **k)
+    # SUFFIXED WITH THE TWIN TAG, for the same reason the plotdata is prefixed
+    # with the stem: the figure's name comes from upstream's body and is
+    # identical on both twins, so `_mp` and `_meep` wrote the same PNG into one
+    # directory and whichever ran second won.
+    _p = pathlib.Path(str(fname))
+    r = _savefig(self, _p.with_name(_p.stem + "_mp" + _p.suffix), *a, **k)
     try:
+        # the ORIGINAL name: the plotdata already carries the "<stem>-" prefix
         _dump_plot_data(self, fname)
     except Exception:
         pass          # a figure we cannot read must not kill the tutorial
