@@ -261,7 +261,8 @@ def main(argv=None):
     ap.add_argument("--only", choices=("meep", "torch"), default=None,
                     help="run only the oracle side or only the meep-torch side")
     ap.add_argument("--timeout", type=int, default=1800)
-    ap.add_argument("--device", default=os.environ.get("MEEP_TORCH_DEVICE", "cpu"))
+    ap.add_argument("--device",
+                    default=os.environ.get("MEEP_TORCH_DEVICE", "cuda"))
     ap.add_argument("--resume", action="store_true",
                     help="skip scripts already recorded ok on this device")
     args = ap.parse_args(argv)
