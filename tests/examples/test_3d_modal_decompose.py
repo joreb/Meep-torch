@@ -79,8 +79,10 @@ def _splitter2d():
 
 def _run(eps3, mons):
     nx, ny, nz = eps3.shape
+    # eps3 lands on the default device (conftest sets it), so the
+    # coefficients have to follow it rather than being pinned to the CPU.
     c = build_lean(nx, ny, nz, DX, eps3, NPML, dtype=torch.float64,
-                   device="cpu")
+                   device=eps3.device)
     src = ModePlaneSourceX(eps3, DX, IX_SRC, FCEN,
                            GaussianPulse(FCEN, FWIDTH), c.dt)
     _, accs = run_3d_lean(c, int(round(T_RUN / c.dt)), source=src,

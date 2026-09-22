@@ -35,6 +35,7 @@ from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.stepper_tm import init_tm_state, step_tm
 from meep_torch.core.symbolic import component_transform
+from meep_torch.core.grid import to_numpy
 
 N_CELL = 12
 _COMPONENTS = ("Ez", "Hx", "Hy")
@@ -81,7 +82,7 @@ def system():
     n = off
 
     def pack(s):
-        return np.concatenate([getattr(s, c).numpy().ravel() for c in _COMPONENTS])
+        return np.concatenate([to_numpy(getattr(s, c)).ravel() for c in _COMPONENTS])
 
     def unpack(v):
         fields = {}

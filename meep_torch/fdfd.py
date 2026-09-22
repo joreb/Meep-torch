@@ -99,14 +99,23 @@ class _FDFDSolve(torch.autograd.Function):
             torch_sla = _import_torch_sla()
             A = _assemble(eps_np, dx, omega, npml).tocoo()
             n = A.shape[0]
-            row = torch.from_numpy(A.row.astype(np.int64)).to(eps.device)
-            col = torch.from_numpy(A.col.astype(np.int64)).to(eps.device)
-            val = torch.from_numpy(A.data).to(eps.device)
+            # The matrix comes out of scipy, so it is already on the host --
+            # the only thing that ever put it on the GPU was matching
+            # eps.device, and torch_sla's CUDA path does not survive the trip
+            # ("matrix_create_csr() takes exactly 13 positional arguments
+            # (10 given)", a binding mismatch against the installed torch,
+            # not something this file does wrong). Solve where the matrix
+            # already lives and move only the answer back.
+            # ponytail: host solve; revisit if torch_sla ships a working
+            # CUDA path and the transfer shows up in a profile.
+            row = torch.from_numpy(A.row.astype(np.int64))
+            col = torch.from_numpy(A.col.astype(np.int64))
+            val = torch.from_numpy(A.data)
             ctx.row, ctx.col, ctx.val, ctx.n = row, col, val, n
-            b = torch.from_numpy(b_np).to(eps.device)
+            b = torch.from_numpy(b_np)
             E = torch_sla.solve(torch_sla.SparseTensor(val, row, col, (n, n)), b)
             ctx.E = E.detach()
-            return E.reshape(nx, ny)
+            return E.reshape(nx, ny).to(eps.device)
         elif backend == "pardiso":
             # MKL PARDISO (pypardiso): multithreaded CPU factorization,
             # ~12x scipy SuperLU measured at 120k unknowns. Real-only
@@ -161,7 +170,9 @@ class _FDFDSolve(torch.autograd.Function):
             AT = torch_sla.SparseTensor(ctx.val, ctx.col, ctx.row, (ctx.n, ctx.n))
             # torch_sla's scipy backend calls .numpy() on b, which fails on a
             # lazy conj()-view tensor -- resolve_conj() materializes it first.
-            lam = torch_sla.solve(AT, g.reshape(-1).conj().resolve_conj())
+            # ctx.row/col/val stayed on the host in forward, so the
+            # cotangent has to join them.
+            lam = torch_sla.solve(AT, g.cpu().reshape(-1).conj().resolve_conj())
             E = ctx.E.reshape(-1)
         grad_eps = (-ctx.omega ** 2 * (lam * E).real).reshape(ctx.shape).to(torch.float64)
         # source gradient: E is HOLOMORPHIC in jz (E = -i*omega*A^-1 jz),
@@ -172,7 +183,10 @@ class _FDFDSolve(torch.autograd.Function):
         # first version's flipped sign passed); the single-solve FD gate
         # in test_fdfd is the one that pins the sign.
         grad_jz = ((1j * ctx.omega) * lam.conj()).reshape(ctx.shape)
-        return grad_eps, grad_jz, None, None, None, None
+        # torch-sla solves on the host; the other backends already land on
+        # ctx.device, so this is a no-op for them.
+        return (grad_eps.to(ctx.device), grad_jz.to(ctx.device),
+                None, None, None, None)
 
 
 def solve_fdfd_tm(eps: torch.Tensor, dx: float, freq: float, jz: torch.Tensor,

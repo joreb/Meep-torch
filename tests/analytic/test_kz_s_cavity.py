@@ -35,9 +35,11 @@ def _spectrum(kz, eps_r):
     dx = 1.0 / RES
     nx = int(round(L / dx)) + 1
     eps = torch.full((nx,), eps_r, dtype=torch.float64)
+    # eps lands on the default device (conftest sets it), so the coefficients
+    # and the state have to follow it rather than being pinned to the CPU.
     c = build_kz_s_coeffs(nx, dx, kz, eps=eps, n_abs=0,
-                          pec_lo=True, pec_hi=True, device="cpu")
-    st = init_kz_s_state(nx, device="cpu")
+                          pec_lo=True, pec_hi=True, device=eps.device)
+    st = init_kz_s_state(nx, device=eps.device)
     src_ix, probe = int(0.37 * nx), int(0.61 * nx)
     series = np.empty(NSTEPS, dtype=complex)
     w, t0 = 0.6, 3.0

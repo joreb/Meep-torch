@@ -25,8 +25,9 @@ def test_lean_matches_reference():
     st, _ = run_3d(init_3d_state(nx, ny, nz, npml=npml), cref, 400,
                    source=src, monitors=[])
 
+    # eps lands on the default device; the coefficients follow it.
     clean = build_lean(nx, ny, nz, dx, eps, npml, dtype=torch.float64,
-                       device="cpu")
+                       device=eps.device)
     src2 = PlaneSource(nx, ny, nz, clean.dt, "Ey", 0, 14, pulse)
     view, _ = run_3d_lean(clean, 400, source=src2, monitors=[])
 
@@ -53,7 +54,8 @@ def test_lean_psi_actually_lives_in_the_shells():
     """
     n, npml = 48, 6
     eps = torch.ones(n, n, n, dtype=torch.float64)
-    c = build_lean(n, n, n, 0.05, eps, npml, dtype=torch.float64, device="cpu")
+    c = build_lean(n, n, n, 0.05, eps, npml, dtype=torch.float64,
+                   device=eps.device)
 
     for ax in range(3):
         for kind, axes in (("H", c.axH), ("E", c.axE)):

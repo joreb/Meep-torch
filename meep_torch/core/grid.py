@@ -4,6 +4,7 @@ import math
 import os
 from dataclasses import dataclass, field
 
+import numpy as np
 import torch
 
 
@@ -33,6 +34,26 @@ def default_device() -> str:
     if env:
         return env
     return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def to_numpy(x, dtype=None):
+    """A tensor or array on the host, for code that must hand it to numpy.
+
+    ``np.asarray`` raises on a CUDA tensor by design -- "can't convert cuda:0
+    device type tensor to numpy" -- and that is the single largest failure
+    kind once CUDA is the default device. It does NOT show up in a search for
+    ``.numpy()``: the conversion is implicit, through ``np.asarray(t)``,
+    ``np.array(t)`` or any numpy ufunc handed a tensor.
+
+    This is for a REAL host boundary -- a scipy sparse solve, an MPB
+    eigensolver, a matplotlib call -- where the work genuinely happens in
+    numpy. It is not a device-mismatch escape hatch: a stepper whose
+    coefficients and state disagree should still raise, because moving them
+    silently hides the bug and pays a transfer every step.
+    """
+    if isinstance(x, torch.Tensor):
+        x = x.detach().cpu()
+    return np.asarray(x, dtype=dtype) if dtype is not None else np.asarray(x)
 
 
 @dataclass(frozen=True)

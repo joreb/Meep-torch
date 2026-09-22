@@ -6,6 +6,7 @@ import math
 import torch
 
 from .grid import Grid
+from .grid import default_device
 
 
 def cw_amplitude(src, t_idx: int) -> complex:
@@ -381,10 +382,14 @@ class RandomSource:
         self.mask = mask
         self.dt = grid.dt
         self.amp = float(amplitude)
-        self.gen = torch.Generator().manual_seed(seed)
+        # torch.Generator() is a CPU generator, but torch.randn below
+        # follows the DEFAULT device -- "Expected a 'cuda' device type
+        # for generator" once CUDA is the default.
+        self.gen = torch.Generator(device=default_device()).manual_seed(seed)
 
     def amplitude(self, t_idx: int) -> float:
-        return self.amp * float(torch.randn(1, generator=self.gen).item())
+        return self.amp * float(torch.randn(
+            1, generator=self.gen, device=self.gen.device).item())
 
 # --- Gaussian beam -------------------------------------------------------
 #

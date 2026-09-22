@@ -23,6 +23,7 @@ import torch
 
 from .pml import absorber_sigma
 from .symbolic import compiled_uniform_difference
+from .grid import default_device
 
 # Differences derived in core.symbolic rather than written here. The Bloch
 # steppers take their neighbour by periodic `torch.roll` rather than by
@@ -68,7 +69,8 @@ def build_bloch3_coeffs(eps: torch.Tensor, dx: float, kx: float, ky: float,
                         de1=de1, de2=de2, dh1=de1.clone(), dh2=de2.clone())
 
 
-def init_bloch3_state(nx, ny, nz, device="cpu") -> Bloch3State:
+def init_bloch3_state(nx, ny, nz, device=None) -> Bloch3State:
+    device = device or default_device()
     z = lambda: torch.zeros(nx, ny, nz, dtype=torch.complex128, device=device)
     return Bloch3State(z(), z(), z(), z(), z(), z())
 

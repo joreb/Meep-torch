@@ -76,7 +76,8 @@ def test_optimization_problem_gradient_and_ascent():
     fs = [f0]
     for _ in range(5):
         with torch.no_grad():
-            opt.rho += 0.15 * torch.from_numpy(g / (np.abs(g).max() + 1e-30))
+            opt.rho += 0.15 * torch.from_numpy(
+                g / (np.abs(g).max() + 1e-30)).to(opt.rho.device)
             opt.rho.clamp_(0.0, 1.0)
         f, g = opt()
         fs.append(f)
@@ -123,7 +124,8 @@ def test_robust_minimax_gradient_and_worstcase_ascent():
     worst0 = min(opt.scenario_values())
     for _ in range(5):
         with torch.no_grad():
-            opt.rho += 0.15 * torch.from_numpy(g / (np.abs(g).max() + 1e-30))
+            opt.rho += 0.15 * torch.from_numpy(
+                g / (np.abs(g).max() + 1e-30)).to(opt.rho.device)
             opt.rho.clamp_(0.0, 1.0)
         _, g = opt()
     # worst-case trend is landscape-dependent in 5 steps; the hard gate is

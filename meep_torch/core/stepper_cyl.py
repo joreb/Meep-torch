@@ -21,6 +21,7 @@ import torch
 
 from .pml import absorber_sigma
 from .sources import bind_dt
+from .grid import default_device
 
 
 class CylCoeffs(NamedTuple):
@@ -48,7 +49,8 @@ class CylState(NamedTuple):
 
 def build_cyl_coeffs(nr: int, dr: float, m: int, eps=1.0,
                      n_absorber: int = 0, dtype=torch.float64,
-                     device="cpu") -> CylCoeffs:
+                     device=None) -> CylCoeffs:
+    device = device or default_device()
     if m == 0:
         raise NotImplementedError("m = 0 axis update lands with W7.5")
     dt = 0.5 * dr
@@ -79,7 +81,8 @@ def build_cyl_coeffs(nr: int, dr: float, m: int, eps=1.0,
                      hp1=hp1, hp2=hp2)
 
 
-def init_cyl_state(nr: int, dtype=torch.complex128, device="cpu") -> CylState:
+def init_cyl_state(nr: int, dtype=torch.complex128, device=None) -> CylState:
+    device = device or default_device()
     z = lambda n: torch.zeros(n, dtype=dtype, device=device)
     return CylState(z(nr), z(nr), z(nr - 1), z(nr))
 

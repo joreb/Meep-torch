@@ -23,6 +23,7 @@ import torch
 
 from .coeffs import _pole_recurrence
 from .pml import absorber_sigma, cpml_profiles, side_counts
+from .grid import default_device
 from .symbolic import (PSI_NEW, STRETCHED,
                        compiled_curl_composition)
 
@@ -196,6 +197,7 @@ def _psi_e_shapes(nx, ny, nz, pmc=()):
 
 def _prof(n, npml, offset, dt, dx, dtype, device, pml_alpha=None):
     """``pml_alpha=None`` defers to ``cpml_profiles``' own default."""
+    device = device or default_device()
     return cpml_profiles(n, npml, offset, dt, dx, dtype=dtype, device=device,
                          **({} if pml_alpha is None else {"alpha_max": pml_alpha}))
 
@@ -212,6 +214,7 @@ def _ident(n, ax, dtype, device):
     """Identity CPML profile (b=0, a=0, k=1): the recursion ``psi'=b*psi+a*d``
     then keeps ``psi=0`` and ``ce=d/k+psi=d`` -- a plain derivative. Used on
     axes handled by the matched-sigma absorber in mixed mode."""
+    device = device or default_device()
     sh = [1, 1, 1]
     sh[ax] = n
     z = torch.zeros(sh, dtype=dtype, device=device)
@@ -229,7 +232,7 @@ def _axis_sides3(v):
 def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
                     npml=0, n_abs=0, absorber_axes=(),
                     sigma_d=None, sigma_b=None, poles=(), pole_masks=None,
-                    dtype=torch.float64, device="cpu", absorber_m: int = 2,
+                    dtype=torch.float64, device=None, absorber_m: int = 2,
                     absorber_R0: float = 1e-15, pmc_axes=(),
                     pml_alpha: float | None = None) -> Coeffs3D:
     """Boundary modes: full CPML (``npml>0``, ``n_abs=0``), full matched-sigma
@@ -247,6 +250,7 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
     ``npml`` / ``n_abs``: an int puts the same layer on every face; a
     3-sequence of int-or-(lo, hi) pairs sets each axis end independently
     (0 = plain PEC wall there, mp.PML direction/side semantics)."""
+    device = device or default_device()
     dt = 0.5 * dx / math.sqrt(3.0)
     e = (eps if isinstance(eps, torch.Tensor)
          else torch.ones(nx, ny, nz, dtype=dtype, device=device))
@@ -349,10 +353,11 @@ def build_3d_coeffs(nx: int, ny: int, nz: int, dx: float, eps=None,
 
 
 def init_3d_state(nx: int, ny: int, nz: int, npml: int = 0, n_poles: int = 0,
-                  dtype=torch.float64, device="cpu", pmc=()) -> State3D:
+                  dtype=torch.float64, device=None, pmc=()) -> State3D:
     """``pmc`` must match ``build_3d_coeffs``'s ``pmc_axes``: a PMC wall keeps
     the tangential E alive, which widens the E-update CPML memories by one
     cell at each end of that axis (see ``_psi_e_shapes``)."""
+    device = device or default_device()
     z = lambda *s: torch.zeros(*s, dtype=dtype, device=device)
     psi = {}
     if npml > 0:

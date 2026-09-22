@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+from ..core.grid import to_numpy
 
 __all__ = ["bend_dwdz", "apply_bend", "angled_eps_tensor"]
 
@@ -81,7 +82,7 @@ def apply_bend(eps_cc, dx: float, radius: float, center_x: float):
     cell-center diagnostic helper; the double-scaling hazard is documented here
     rather than dropping the function.
     """
-    eps_np = np.asarray(eps_cc, dtype=np.float64)
+    eps_np = to_numpy(eps_cc, dtype=np.float64)
     Nx, Ny = eps_np.shape
     dwdz = bend_dwdz(Nx, Ny, dx, radius, center_x)
     out = eps_np * dwdz
@@ -99,7 +100,7 @@ def angled_eps_tensor(eps_cc, theta: float, phi: float) -> torch.Tensor:
     diagonal -> ``det(J) = 1``. Returns a ``torch.Tensor`` of dtype matching the
     input (default float64).
     """
-    eps_np = np.asarray(eps_cc, dtype=np.float64)
+    eps_np = to_numpy(eps_cc, dtype=np.float64)
     Nx, Ny = eps_np.shape
     t = np.tan(theta)
     J = np.array(

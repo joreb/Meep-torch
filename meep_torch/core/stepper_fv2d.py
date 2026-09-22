@@ -21,6 +21,7 @@ import torch.nn.functional as F
 
 from ..geometry.smoothing import blend_tensor_tau
 from .pml import cpml_profiles
+from .grid import default_device
 
 
 class FV2DCoeffs(NamedTuple):
@@ -67,7 +68,7 @@ def _kottke_y(eps6):
 
 
 def build_fv2d_coeffs(eps6, dx: float, npml: int = 0,
-                      dtype=torch.float64, device="cpu",
+                      dtype=torch.float64, device=None,
                       eps_at_nodes: bool = False) -> FV2DCoeffs:
     """eps6 = (exx, exy, exz, eyy, eyz, ezz), each (nx, ny).
 
@@ -78,6 +79,7 @@ def build_fv2d_coeffs(eps6, dx: float, npml: int = 0,
     mean across an interface is first-order and measured WORSE than leaving the
     eps where it was. See `symbolic_test/kottke.py` for the derivation.
     """
+    device = device or default_device()
     exx, exy, exz, eyy, eyz, ezz = eps6
     dt = 0.5 * dx / (2 ** 0.5)
     if eps_at_nodes:
@@ -99,7 +101,8 @@ def build_fv2d_coeffs(eps6, dx: float, npml: int = 0,
                       k_ex=k_e[1:-1, None])
 
 
-def init_fv2d_state(nx, ny, dtype=torch.float64, device="cpu") -> FV2DState:
+def init_fv2d_state(nx, ny, dtype=torch.float64, device=None) -> FV2DState:
+    device = device or default_device()
     z = lambda *s: torch.zeros(*s, dtype=dtype, device=device)
     return FV2DState(z(nx, ny), z(nx, ny), z(nx, ny),
                      z(nx, ny), z(nx, ny), z(nx, ny),

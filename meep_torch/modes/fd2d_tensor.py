@@ -45,6 +45,7 @@ from .fd2d import (
     fp_eps,
 )
 from .transforms import angled_eps_tensor
+from ..core.grid import to_numpy
 
 TOL_EIGS = fp_eps / 10
 
@@ -232,7 +233,7 @@ def solve_2d_tensor(
     it via ``_apply_max_pmc``, matching ``solve_2d``). For diagonal input this
     reproduces ``solve_2d`` to machine precision.
     """
-    eps_np = np.asarray(eps_tensor).astype(np.complex128)
+    eps_np = to_numpy(eps_tensor).astype(np.complex128)
     Nx, Ny = eps_np.shape[2], eps_np.shape[3]
     N = Nx * Ny
     k0 = 2 * np.pi * f

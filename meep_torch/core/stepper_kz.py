@@ -30,6 +30,7 @@ import torch
 
 from .pml import absorber_sigma, cpml_profiles
 from .symbolic import compiled_uniform_difference
+from .grid import default_device
 
 # Differences derived in core.symbolic rather than written here. The Bloch
 # steppers take their neighbour by periodic `torch.roll` rather than by
@@ -69,13 +70,14 @@ class KzState(NamedTuple):
 
 def build_kz_coeffs(nx: int, dx: float, kz: float, eps=None,
                     n_abs: int = 0, npml: int = 0, dtype=torch.float64,
-                    device="cpu", pml_m: int = 3, pml_R0: float = 1e-6,
+                    device=None, pml_m: int = 3, pml_R0: float = 1e-6,
                     pml_alpha: float = 0.05) -> KzCoeffs:
     """Build the 2.5D stepper coefficients. ``n_abs`` selects the wave-1
     matched-sigma absorber; ``npml`` selects the kz-aware CFS-CPML (the two
     are mutually exclusive -- pass exactly one). ``pml_*`` tune the CFS
     profile (polynomial grade ``m``, target reflection ``R0``, CFS
     ``alpha_max``); defaults match ``cpml_profiles``."""
+    device = device or default_device()
     if n_abs > 0 and npml > 0:
         raise ValueError("kz stepper: pass n_abs OR npml, not both")
     dt = 0.5 * dx
@@ -120,7 +122,8 @@ def build_kz_coeffs(nx: int, dx: float, kz: float, eps=None,
 
 
 def init_kz_state(nx: int, npml: int = 0, dtype=torch.complex128,
-                  device="cpu") -> KzState:
+                  device=None) -> KzState:
+    device = device or default_device()
     z = lambda n: torch.zeros(n, dtype=dtype, device=device)
     psi_dEz = z(nx - 1) if npml > 0 else None
     psi_dHy = z(nx - 2) if npml > 0 else None
@@ -211,9 +214,10 @@ class KzSState(NamedTuple):
 def build_kz_s_coeffs(nx: int, dx: float, kz: float, eps=None,
                       n_abs: int = 0, pec_lo: bool = False,
                       pec_hi: bool = False, dtype=torch.float64,
-                      device="cpu") -> KzSCoeffs:
+                      device=None) -> KzSCoeffs:
     """s-pol coefficients on the kz geometry. ``n_abs`` is the wave-1
     matched-sigma absorber depth; ``pec_lo``/``pec_hi`` pin Ey at the ends."""
+    device = device or default_device()
     dt = 0.5 * dx
     e = (eps if isinstance(eps, torch.Tensor)
          else torch.ones(nx, dtype=dtype, device=device))
@@ -232,7 +236,8 @@ def build_kz_s_coeffs(nx: int, dx: float, kz: float, eps=None,
 
 
 def init_kz_s_state(nx: int, dtype=torch.complex128,
-                    device="cpu") -> KzSState:
+                    device=None) -> KzSState:
+    device = device or default_device()
     z = lambda n: torch.zeros(n, dtype=dtype, device=device)
     return KzSState(z(nx), z(nx), z(nx - 1))
 

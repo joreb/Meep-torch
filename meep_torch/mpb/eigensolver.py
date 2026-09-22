@@ -39,6 +39,7 @@ import scipy.linalg as sla
 import scipy.sparse as sp
 import scipy.sparse.linalg as spl
 import torch
+from ..core.grid import to_numpy
 
 __all__ = ["bloch_bands_2d", "bloch_d_matrices", "te_edge_inv_eps",
            "lattice_gradients", "dual_vectors"]
@@ -156,8 +157,8 @@ def te_edge_inv_eps(eps: np.ndarray, eps_te=None):
     edges, not on cell centres.
     """
     exx, eyy = (eps, eps) if eps_te is None else eps_te
-    exx = np.asarray(exx, dtype=float)
-    eyy = np.asarray(eyy, dtype=float)
+    exx = to_numpy(exx, dtype=float)
+    eyy = to_numpy(eyy, dtype=float)
     return 1.0 / _avg_forward(eyy, axis=0), 1.0 / _avg_forward(exx, axis=1)
 
 

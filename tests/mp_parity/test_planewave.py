@@ -37,6 +37,7 @@ import pathlib
 import numpy as np
 import pytest
 import torch
+from meep_torch.core.grid import to_numpy
 
 from meep_torch.geometry.smoothing import blend_te_supersampled
 from meep_torch.mpb import planewave as pw
@@ -121,7 +122,7 @@ def test_square_rods_te_vs_mpb():
     ref = json.load(open(DATA / "sq_tut_te_mpb.json"))
     blocks = _square_blocks(ref)
     eps = blocks.mean(axis=(1, 3))
-    eps_te = tuple(np.asarray(e) for e in blend_te_supersampled(blocks))
+    eps_te = tuple(to_numpy(e) for e in blend_te_supersampled(blocks))
     worst = {None: 0.0, "kottke": 0.0}
     for kp, want in zip(ref["k"], ref["bands"]):
         kc = 2 * np.pi * np.array(kp[:2])
@@ -256,13 +257,13 @@ def test_differentiable_path_matches_numpy_path():
     """
     blocks = _rod_blocks(16, 16, (1, 0), (0, 1), [(0.0, 0.0)], 0.2, 12.0, ss=8)
     eps = blocks.mean(axis=(1, 3))
-    eps_te = tuple(np.asarray(e) for e in blend_te_supersampled(blocks))
+    eps_te = tuple(to_numpy(e) for e in blend_te_supersampled(blocks))
     kc = 2 * np.pi * np.array([0.3, 0.1])
     for pol, te in (("tm", None), ("te", None), ("te", eps_te)):
-        a = np.asarray(planewave_bands_2d(eps, (1, 0), (0, 1), kc, 4, pol,
-                                          eps_te=te))
-        b = planewave_bands_2d(eps, (1, 0), (0, 1), kc, 4, pol, eps_te=te,
-                               differentiable=True).detach().numpy()
+        a = to_numpy(planewave_bands_2d(eps, (1, 0), (0, 1), kc, 4, pol,
+                                        eps_te=te))
+        b = to_numpy(planewave_bands_2d(eps, (1, 0), (0, 1), kc, 4, pol,
+                                        eps_te=te, differentiable=True))
         assert np.allclose(a, b, atol=1e-12), f"{pol} eps_te={te is not None}"
 
 
@@ -271,7 +272,7 @@ def test_differentiable_path_matches_numpy_path():
 def _generic_case(pol, use_te=False, n=24):
     blocks = _rod_blocks(n, n, (1, 0), (0, 1), [(0.0, 0.0)], 0.2, 12.0, ss=8)
     eps = blocks.mean(axis=(1, 3))
-    eps_te = (tuple(np.asarray(e) for e in blend_te_supersampled(blocks))
+    eps_te = (tuple(to_numpy(e) for e in blend_te_supersampled(blocks))
               if use_te else None)
     kc = 2 * np.pi * np.array([0.3, 0.17])
     freqs, coeffs = planewave_bands_2d(eps, (1, 0), (0, 1), kc, 3, pol,

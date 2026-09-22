@@ -22,6 +22,7 @@ import torch
 
 from .derivatives import C_0, ETA_0, create_d_matrices as d_mats, create_s_matrices as s_mats
 from .transforms import bend_dwdz
+from ..core.grid import to_numpy
 
 # Numerical tolerances (ported from tidy3d.components.mode.solver).
 fp_eps = np.finfo(np.float32).eps
@@ -397,7 +398,7 @@ def solve_2d(
     (``eps_xx /= dwdz``, ``eps_yy /= dwdz``, ``eps_zz *= dwdz``, mu likewise).
     ``bend_center`` defaults to the domain center ``Nx * dx / 2``.
     """
-    eps_np = np.asarray(eps_cc)
+    eps_np = to_numpy(eps_cc)
     if eps_np.dtype == np.float64:
         eps_np = eps_np.astype(np.complex128)
     else:

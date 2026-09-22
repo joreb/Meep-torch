@@ -3,6 +3,7 @@
 import math
 
 import torch
+from .grid import default_device
 
 
 def side_counts(n_or_pair) -> tuple[int, int]:
@@ -71,6 +72,7 @@ def cpml_profiles(
     so any alpha at all makes that an unfair comparison rather than a
     measurement.
     """
+    device = device or default_device()
     n_lo, n_hi = side_counts(npml)
     x = torch.arange(n, dtype=dtype, device=device) + offset
     u = torch.zeros(n, dtype=dtype, device=device)
@@ -98,11 +100,12 @@ def cpml_profiles(
 
 
 def absorber_sigma(n: int, nabs, dx: float, *, R0: float = 1e-15,
-                   m: int = 2, dtype=torch.float64, device="cpu") -> torch.Tensor:
+                   m: int = 2, dtype=torch.float64, device=None) -> torch.Tensor:
     """meep mp.Absorber profile: quadratic sigma ramp on the edges of an
     axis (length n), peak set like the PML profile for asymptotic
     reflection R0. ``nabs`` is an int (both edges) or a (lo, hi) pair of
     cell counts. Matched sigma_d = sigma_b uses this same curve."""
+    device = device or default_device()
     n_lo, n_hi = side_counts(nabs)
     p = torch.zeros(n, dtype=dtype, device=device)
 

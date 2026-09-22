@@ -135,8 +135,11 @@ def test_lean_parity_dispersive():
     st, _ = run_3d(init_3d_state(nx, ny, nz, npml=npml, n_poles=1),
                    cref, 400, source=src, monitors=[])
 
+    # eps lands on the default device (conftest sets it); the coefficients
+    # have to follow it rather than being pinned to the CPU.
     clean = build_lean(nx, ny, nz, dx, eps, npml, poles=[pole],
-                       pole_masks=[mask], dtype=torch.float64, device="cpu")
+                       pole_masks=[mask], dtype=torch.float64,
+                       device=eps.device)
     src2 = PlaneSource(nx, ny, nz, clean.dt, "Ey", 0, 14, pulse)
     view, _ = run_3d_lean(clean, 400, source=src2, monitors=[])
 

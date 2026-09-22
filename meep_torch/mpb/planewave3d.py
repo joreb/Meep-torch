@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import numpy as np
 import scipy.linalg as sla
+from ..core.grid import default_device
 
 __all__ = ["reciprocal_duals_3d", "lattice_grid_3d", "kvectors_3d",
            "transverse_frame", "ThetaOperator", "assemble_dense_3d",
@@ -186,7 +187,8 @@ class ThetaOperator:
     into ``scipy.sparse.linalg.LinearOperator``.
     """
 
-    def __init__(self, eps_inv, K: np.ndarray, grid_shape, device="cpu"):
+    def __init__(self, eps_inv, K: np.ndarray, grid_shape, device=None):
+        device = device or default_device()
         self.device = str(device)
         self.grid = tuple(int(s) for s in grid_shape)
         self.n_g = int(np.prod(self.grid))
@@ -512,6 +514,7 @@ def planewave_bands_3d(eps_inv, a1, a2, a3, kc, num_bands: int,
     size of the wanted set has no room to separate a degenerate cluster
     from the next one up.
     """
+    device = device or default_device()
     from scipy.sparse.linalg import LinearOperator, lobpcg
     import warnings
 

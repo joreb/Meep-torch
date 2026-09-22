@@ -18,6 +18,7 @@ from typing import NamedTuple
 import torch
 
 from .pml import absorber_sigma
+from .grid import default_device
 
 
 class BORCoeffs(NamedTuple):
@@ -55,7 +56,8 @@ def _davg_z(v):
 
 def build_bor_coeffs(nr: int, nz: int, dr: float, m: int, eps=None,
                      n_abs_r: int = 0, n_abs_z: int = 0,
-                     dtype=torch.float64, device="cpu") -> BORCoeffs:
+                     dtype=torch.float64, device=None) -> BORCoeffs:
+    device = device or default_device()
     dt = 0.5 * dr / math.sqrt(2.0)
     # Coerce at the boundary: a caller-supplied eps may live anywhere, and
     # every coefficient built below lands on `device`. Trusting the caller
@@ -95,7 +97,8 @@ def build_bor_coeffs(nr: int, nz: int, dr: float, m: int, eps=None,
 
 
 def init_bor_state(nr: int, nz: int, dtype=torch.complex128,
-                   device="cpu") -> BORState:
+                   device=None) -> BORState:
+    device = device or default_device()
     z = lambda *s: torch.zeros(*s, dtype=dtype, device=device)
     return BORState(z(nr - 1, nz), z(nr, nz), z(nr, nz - 1),
                     z(nr, nz - 1), z(nr - 1, nz - 1), z(nr - 1, nz))
