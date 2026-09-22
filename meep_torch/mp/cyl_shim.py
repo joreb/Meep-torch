@@ -33,14 +33,14 @@ import torch
 
 from ..core.ldos import ldos_spectrum
 from ..core.near2far_cyl import farfield_bor_m_complex
-from ..core.sources import source_measure
+from ..core.sources import bind_dt, source_measure
 from ..core.stepper_bor import build_bor_coeffs, init_bor_state, step_bor
 from ..core.stepper_cyl import (build_cyl_coeffs, init_cyl_state,
                                 step_cyl)
 from .run_control import (_eval_step_func, fire_per_step,
                           fire_scheduled, plan_hooks)
 from .vec import Vector3
-from ..core.monitors import dft_time_offset
+from ..core.monitors import DFT_SCALE, dft_time_offset
 
 # meep enum / component sentinels for the cylindrical coordinate system
 # (mp.visualization uses the same CYLINDRICAL = -2 literal).
@@ -208,6 +208,23 @@ class CylRun:
                                   device=dev)
         self.state = init_bor_state(g.nr, g.nz, device=dev)
         self.terms, self.prof = _src_terms(sim, g)
+        # A meep source carries a current DENSITY, so a point source is a
+        # delta in BOTH grid axes and picks up 1/dr per axis
+        # (src/sources.cpp:501, `data.amp *= gv.a`). Without it the injected
+        # current was dr^2 too weak -- 1/625 at resolution 25 -- and nothing
+        # raised, because every cylindrical test compares a NORMALISED
+        # radiation pattern. It belongs here and not in _src_terms because the
+        # radial (step_cyl) path shares that validation and applies the same
+        # derivation itself, on its own spans.
+        meas = source_measure((1, 1), g.dr, ndim=2)
+        self.terms = [(c, i, j, f * meas) for c, i, j, f in self.terms]
+        # A cylindrical run carries COMPLEX fields, so it must be driven by
+        # meep's complex current J(t) = d(dipole)/dt, not by Re[J]. Re[J] is
+        # (J + conj J) / 2, which superposes the m and the -m solution: the
+        # two interfere, the radiated field collapses towards the quasi-static
+        # near field and a flux monitor a wavelength out reads ~1e-3 of meep.
+        # bind_dt puts `current` on meep's own forward difference.
+        self.prof = bind_dt(self.prof, self.c.dt)
         self.cutoff = sim._source_cutoff()
         self.t = 0
         self.j_series = []          # source current, for LDOS
@@ -233,8 +250,10 @@ class CylRun:
         # every step, the run completed, the fields stayed exactly zero and
         # nothing raised. The cartesian path does not gate on this at all,
         # which is why only cylindrical runs were affected.
-        amp = (self.prof.amplitude(tt)
-               if (not self.cutoff or tt < self.cutoff) else 0.0)
+        live = (not self.cutoff or tt < self.cutoff)
+        camp = getattr(self.prof, "camplitude", None)
+        amp = ((camp(tt) if camp is not None else self.prof.amplitude(tt))
+               if live else 0.0)
         self.state = step_bor(self.state, self.c, amp, self.terms)
         self.t += 1
         self._sample(amp)
@@ -243,14 +262,21 @@ class CylRun:
         if self.ldos is not None:
             comp, pt = self.ldos[1], self.ldos[2]
             self.ldos[3].append(self.field(comp, pt).real)
-            self.j_series.append(amp)
+            self.j_series.append(complex(amp).real)
         if self.dft_freqs is None:
             return
         f = self.dft_freqs
         for comp in ("Er", "Ez", "Ephi", "Hr", "Hphi", "Hz"):
             F = getattr(self.state, comp).cpu().numpy()
             off = dft_time_offset(comp)
-            ph = np.exp(-2j * np.pi * f * (self.t - 1 + off) * self.c.dt) * self.c.dt
+            # meep's DFT carries e^{+i w t} and the UNITARY weight
+            # dt / sqrt(2 pi) per step (src/dft.cpp:225). The sign is not
+            # cosmetic here: a cylindrical run is driven by the COMPLEX
+            # current J ~ e^{-i w t}, so its fields go as e^{-i w t} and a
+            # e^{-i w t} kernel integrates them to ~zero rather than to the
+            # amplitude -- the DFT peaked at 4e-6 while the field was 0.13.
+            ph = (np.exp(2j * np.pi * f * (self.t - 1 + off) * self.c.dt)
+                  * self.c.dt * DFT_SCALE)
             contrib = F[None, ...] * ph.reshape((-1,) + (1,) * F.ndim)
             self.dft[comp] = contrib if self.dft[comp] is None \
                 else self.dft[comp] + contrib
@@ -323,8 +349,10 @@ class CylRunRadial(CylRun):
         # every step, the run completed, the fields stayed exactly zero and
         # nothing raised. The cartesian path does not gate on this at all,
         # which is why only cylindrical runs were affected.
-        amp = (self.prof.amplitude(tt)
-               if (not self.cutoff or tt < self.cutoff) else 0.0)
+        live = (not self.cutoff or tt < self.cutoff)
+        camp = getattr(self.prof, "camplitude", None)
+        amp = ((camp(tt) if camp is not None else self.prof.amplitude(tt))
+               if live else 0.0)
         self.state = step_cyl(self.state, self.c, amp * self.measure,
                               self.src_ix)
         self.t += 1
@@ -573,12 +601,21 @@ def add_near2far(sim, fcen, df, nfreq, *regions):
     run = getattr(sim, "_cyl", None)
     if run is None:
         run = sim._cyl = CylRun(sim)
-    if run.dft_freqs is not None:
-        raise _NIE("one near2far monitor per cylindrical run is supported")
     freqs = np.array([fcen]) if nfreq == 1 else \
         np.linspace(fcen - df / 2, fcen + df / 2, nfreq)
-    run.dft_freqs = freqs
-    run.dft = {k: None for k in ("Er", "Ez", "Ephi", "Hr", "Hphi", "Hz")}
+    if run.dft_freqs is None:
+        run.dft_freqs = freqs
+        run.dft = {k: None for k in ("Er", "Ez", "Ephi", "Hr", "Hphi", "Hz")}
+    elif len(run.dft_freqs) != len(freqs) or not np.allclose(run.dft_freqs, freqs):
+        # The DFT is ONE accumulation over the whole (r, z) plane, shared by
+        # every monitor, so two monitors may coexist when they ask for the
+        # same frequencies -- which is what a tutorial adding both a flux and
+        # a near2far does -- and cannot when they do not.
+        raise _NIE(
+            "a cylindrical run accumulates one DFT over the whole (r, z) "
+            "plane, shared by every monitor, so monitors must agree on the "
+            f"frequencies (have {list(np.atleast_1d(run.dft_freqs)[:3])}..., "
+            f"asked for {list(freqs[:3])}...)")
     g = run.g
     rs, zs = [], []
     for reg in regions:
@@ -614,7 +651,18 @@ def get_farfield(sim, n2f, point, tol=None):
     theta = math.atan2(r, z)
     ir, jz0, jz1 = run.n2f_box
     k = 2 * math.pi * float(run.dft_freqs[0])
-    Et, Epf = farfield_bor_m_complex(run.dft, run.c, int(sim.m), ir=ir,
+    # The stored DFT carries meep's e^{+i w t} kernel, so a phasor here goes
+    # as e^{-i k R} outward. farfield_bor_m_complex and the `i k e^{i k R}`
+    # prefactor below were both written for the opposite (e^{-i w t} kernel)
+    # phasor, and the surface-integral phases e^{-i k r' . rhat} inside it do
+    # NOT conjugate along with the fields -- so feeding the raw DFT mixes the
+    # two conventions and the radiation pattern stops being sin^2 / cos^2.
+    # Conjugating the input restores the convention the propagator expects.
+    # The conjugate of an m mode IS the -m mode, so the azimuthal order has to
+    # flip with it: keeping +m here is invisible at m = 0 (the sin^2 gate
+    # still passed) and wrecks the |m| = 1 cos^2 pattern.
+    src = {kk: np.conj(vv) for kk, vv in run.dft.items()}
+    Et, Epf = farfield_bor_m_complex(src, run.c, -int(sim.m), ir=ir,
                                      jz0=jz0, jz1=jz1,
                                      thetas=np.array([theta]), k=k)
     Et, Epf = Et[0, 0], Epf[0, 0]
@@ -623,3 +671,64 @@ def get_farfield(sim, n2f, point, tol=None):
     Ht, Hpf = -Epf, Et
     ct, st = math.cos(theta), math.sin(theta)
     return [Et * ct, Epf, -Et * st, Ht * ct, Hpf, -Ht * st]
+
+
+# ------------------------------------------------------------------ flux
+def cyl_add_flux(sim, fcen, df, nfreq, regions):
+    """meep ``Simulation.add_flux`` for a cylindrical run.
+
+    Reuses the DFT the near2far path already accumulates over the whole
+    (r, z) plane -- a flux needs no extra sampling, only the right surface
+    element, and that lives in ``core/monitors.cyl_flux``.
+    """
+    run = getattr(sim, "_cyl", None)
+    if run is None:
+        run = sim._cyl = CylRun(sim)
+    freqs = (np.array([fcen]) if nfreq == 1
+             else np.linspace(fcen - df / 2, fcen + df / 2, nfreq))
+    if run.dft_freqs is None:
+        run.dft_freqs = freqs
+        run.dft = {k: None for k in ("Er", "Ez", "Ephi", "Hr", "Hphi", "Hz")}
+    elif len(run.dft_freqs) != len(freqs) or not np.allclose(run.dft_freqs, freqs):
+        raise _NIE(
+            "a cylindrical run accumulates ONE DFT over the whole (r, z) "
+            "plane, shared by every monitor, so two monitors must ask for "
+            "the same frequencies (got "
+            f"{list(np.atleast_1d(run.dft_freqs)[:3])}... and "
+            f"{list(freqs[:3])}...)")
+    g = run.g
+    out = []
+    for reg in regions:
+        c, s = reg.center, (reg.size or Vector3())
+        w = float(getattr(reg, "weight", 1.0) or 1.0)
+        if abs(float(s.z)) < 1e-12:            # z-normal disc
+            jz = int(round((float(c.z) + g.sz / 2) / g.dr))
+            lo = int(round((float(c.x) - float(s.x) / 2) / g.dr))
+            hi = int(round((float(c.x) + float(s.x) / 2) / g.dr))
+            out.append(("z", jz, max(0, lo), hi, 0.0, w))
+        elif abs(float(s.x)) < 1e-12:          # r-normal cylinder
+            ir = int(round(float(c.x) / g.dr))
+            lo = int(round((float(c.z) - float(s.z) / 2 + g.sz / 2) / g.dr))
+            hi = int(round((float(c.z) + float(s.z) / 2 + g.sz / 2) / g.dr))
+            out.append(("r", ir, max(0, lo), hi, float(c.x), w))
+        else:
+            raise _NIE(
+                "a cylindrical FluxRegion must be a z-normal disc (size.z = 0) "
+                f"or an r-normal cylinder (size.x = 0); got size={s}")
+    run.flux_regions = getattr(run, "flux_regions", []) + [out]
+    return len(run.flux_regions) - 1
+
+
+def cyl_get_fluxes(sim, handle):
+    """The flux of the region group registered by ``cyl_add_flux``."""
+    from ..core.monitors import cyl_flux
+    run = getattr(sim, "_cyl", None)
+    if run is None or not getattr(run, "flux_regions", None):
+        raise RuntimeError("no cylindrical flux monitor was added")
+    g = run.g
+    total = None
+    for kind, idx, lo, hi, r0, w in run.flux_regions[handle]:
+        f = cyl_flux(run.dft, z_normal=(kind == "z"), idx=idx,
+                     dr=g.dr, dz=g.dr, lo=lo, hi=hi, r0=r0)
+        total = w * f if total is None else total + w * f
+    return list(np.atleast_1d(total))

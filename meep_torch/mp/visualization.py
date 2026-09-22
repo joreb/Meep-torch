@@ -462,6 +462,26 @@ def _sample_eps(sim, xtics, ytics, ztics) -> np.ndarray:
     """
     gs = sim.gs
 
+    if gs is None:
+        # Cylindrical: there is no cartesian GridSpec. The (r, z) plane IS the
+        # plot plane, r running from 0 (not centred like a cartesian axis), and
+        # `get_array(Dielectric)` comes back (nz, nr) -- meep's own ordering,
+        # see mp/cyl_shim._cyl_centres -- so the transpose puts r first to
+        # match the (xtics, ytics) the caller passes as (r, z).
+        run = getattr(sim, "_cyl", None)
+        from .cyl_shim import CylGrid
+        g = run.g if run is not None else CylGrid(sim)
+        eps = np.asarray(sim.get_array(component=Dielectric))
+        if eps.ndim == 2:
+            eps = eps.T                       # (nz, nr) -> (nr, nz)
+        else:
+            eps = eps[:, None]                # radial run: one z column
+        ii = np.clip(np.round(np.asarray(xtics) / g.dr - 0.5).astype(int),
+                     0, eps.shape[0] - 1)     # r starts at 0
+        jj = np.clip(np.round(np.asarray(ytics) / g.dr + g.sz / (2 * g.dr)
+                              - 0.5).astype(int), 0, eps.shape[1] - 1)
+        return eps[np.ix_(ii, jj)]
+
     def idx(tics, span, n):
         return np.clip(np.round(np.asarray(tics) / gs.dx
                                 + span / (2 * gs.dx) - 0.5).astype(int), 0, n - 1)

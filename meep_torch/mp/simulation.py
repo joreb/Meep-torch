@@ -49,6 +49,23 @@ from ..ports.mode_monitor import decompose
 # direction constants (meep swig enum values; visualization.py uses the same)
 X, Y, Z, R, P = 0, 1, 2, 3, 4
 
+
+class CylFluxHandle:
+    """What ``add_flux`` returns on a cylindrical run.
+
+    A cartesian run gets a ``DftFlux`` holding its own monitors; a
+    cylindrical run accumulates ONE DFT over the whole (r, z) plane and every
+    monitor reads it, so the handle is just an index into the registered
+    regions plus the frequencies for ``get_flux_freqs``.
+    """
+
+    def __init__(self, handle, name, freqs):
+        self.handle, self.name, self.freqs = handle, name, list(freqs)
+
+    @property
+    def nfreqs(self):
+        return len(self.freqs)
+
 _SYM_TODO = "see wiki/tasks/port_symmetry-system.md"
 
 
@@ -1819,6 +1836,18 @@ class Simulation:
 
     def _add_flux(self, freqs, fluxes, name):
         if self.dimensions == CYLINDRICAL:
+            # The surface element is derived in core/monitors.cyl_flux
+            # (2 pi r dr dz, and the midpoint rule is exact for int r dr over
+            # a cell centred at r), so it no longer has to be guessed.
+            from .cyl_shim import cyl_add_flux
+            fcen = 0.5 * (freqs[0] + freqs[-1])
+            df = float(freqs[-1] - freqs[0])
+            h = cyl_add_flux(self, fcen, df, len(freqs), list(fluxes))
+            nm = name or f"cylflux{h}"
+            self._cyl_flux = getattr(self, "_cyl_flux", {})
+            self._cyl_flux[nm] = h
+            return self, nm, freqs      # the DftObj contract
+        if False:
             raise NotImplementedError(
                 "flux monitors in a cylindrical run are not supported: the "
                 "surface element on an (r, z) cell is 2*pi*r dr dz, not dr "
@@ -2310,6 +2339,10 @@ class Simulation:
 
     def get_fluxes(self, name):
         name = dft_name(name)
+        h = getattr(self, "_cyl_flux", {}).get(name)
+        if h is not None:
+            from .cyl_shim import cyl_get_fluxes
+            return cyl_get_fluxes(self, h)
         parts = getattr(self, "_flux_parts", {}).get(name)
         if parts:
             return [sum(v) for v in zip(*(self.get_fluxes(p) for p in parts))]

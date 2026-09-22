@@ -183,3 +183,82 @@ class FluxMonitorTEY:
     def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
         ReE, ImE, ReH, ImH = acc.unbind(1)
         return -(ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sy = -Ex*Hz
+
+
+def cyl_flux(dft, *, z_normal: bool, idx: int, dr: float, dz: float,
+             lo: int = 0, hi: int | None = None, r0: float = 0.0):
+    """Poynting flux through a z-normal disc or an r-normal cylinder (BOR).
+
+    ``dft`` maps the six BOR components to their DFT arrays, each with the
+    leading axis over frequency and the Yee shapes of ``core/stepper_bor``::
+
+        Er(i+1/2, j)   Ephi(i, j)          Ez(i, j+1/2)
+        Hr(i, j+1/2)   Hphi(i+1/2, j+1/2)  Hz(i+1/2, j)
+
+    BOTH terms of the Poynting component are summed::
+
+        S_z = Er conj(Hphi) - Ephi conj(Hr)
+        S_r = Ephi conj(Hz) - Ez conj(Hphi)
+
+    An ``Er`` source at m != 0 drives the second pair as hard as the first, so
+    keeping only one term reads as very nearly zero rather than as a factor.
+
+    The surface element is derived, not guessed. A BOR field is
+    ``F(r, z) e^{i m phi}`` and a Poynting component is a product
+    ``F conj(G)``, so the phi dependence cancels and
+
+        int_0^{2 pi} e^{i m phi} e^{-i m phi} dphi = 2 pi      for EVERY m,
+
+    while over a radial cell CENTRED at r,
+
+        int_{r - dr/2}^{r + dr/2} rho drho = r dr               exactly,
+
+    so the midpoint rule carries no error and needs no gradient correction.
+    (meep carries a second ``dV1`` term at ``loop_in_chunks.cpp:511`` because
+    its loop is corner-indexed; sampling at cell centres removes it.)
+
+    Each term is evaluated at ITS OWN radius, because the Yee layout puts the
+    two pairs half a cell apart -- ``Er``/``Hphi`` at ``r_{i+1/2}``,
+    ``Ephi``/``Hr`` at ``r_i`` -- and the H member is averaged from its two
+    half-cell neighbours onto the E member's position along the normal.
+    """
+    import numpy as np
+
+    def _avg_to_int(a, axis, k):
+        """H sampled at half indices, averaged onto integer index ``k``."""
+        n = a.shape[axis] - 1
+        k = min(max(k - 1, 0), n - 1)
+        sl = [slice(None)] * a.ndim
+        sl[axis] = k
+        lo_ = tuple(sl)
+        sl[axis] = k + 1
+        return 0.5 * (a[lo_] + a[tuple(sl)])
+
+    def _term(E, H, r):
+        """sum over the surface of Re(E conj(H)) * 2 pi r dl."""
+        k = min(E.shape[-1], H.shape[-1], (hi if hi is not None else 10**9) - lo)
+        a, b, w = E[..., lo:lo + k], H[..., lo:lo + k], r[lo:lo + k]
+        return (np.real(a * np.conj(b)) * w).sum(-1)
+
+    if z_normal:
+        # lo:hi index r. Er/Hphi live at r_{i+1/2}, Ephi/Hr at r_i.
+        nh = dft["Er"].shape[1]
+        r_half = (np.arange(nh) + 0.5) * dr * dr * 2.0 * np.pi
+        r_int = np.arange(dft["Ephi"].shape[1]) * dr * dr * 2.0 * np.pi
+        er = dft["Er"][:, :, idx]
+        hp = _avg_to_int(dft["Hphi"], 2, idx)
+        ep = dft["Ephi"][:, :, idx]
+        hr = _avg_to_int(dft["Hr"], 2, idx)
+        return _term(er, hp, r_half) - _term(ep, hr, r_int)
+
+    # r-normal at integer r index ``idx``; lo:hi index z. Both pairs sit at
+    # the same radius r0, so the weight is the constant 2 pi r0 dz.
+    w_p = np.full(dft["Ephi"].shape[2], 2.0 * np.pi * r0 * dz)
+    w_z = np.full(dft["Ez"].shape[2], 2.0 * np.pi * r0 * dz)
+    ep = dft["Ephi"][:, idx, :]
+    hz = _avg_to_int(dft["Hz"], 1, idx)
+    ez = dft["Ez"][:, idx, :]
+    hp = _avg_to_int(dft["Hphi"], 1, idx)
+    return _term(ep, hz, w_p) - _term(ez, hp, w_z)
+
+
