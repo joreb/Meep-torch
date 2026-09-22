@@ -492,8 +492,19 @@ class PML(metaclass=_PMLMeta):
         self.mean_stretch = mean_stretch
         self.pml_profile = pml_profile
         name = type(self).__name__
-        if direction not in (ALL, 0, 1, 2):     # mp.X/Y/Z (R needs cylindrical)
-            raise ValueError(f"{name}.direction must be mp.X/Y/Z or mp.ALL, "
+        # mp.X/Y/Z/R and mp.ALL. R (3) is the radial direction of a
+        # cylindrical run, and `mp/cyl_shim.py:_absorber_cells` has always
+        # understood it -- this constructor was rejecting it before the
+        # Simulation ever saw it, which is why four cylindrical tutorials
+        # died here with the capability already present.
+        #
+        # Whether a direction is MEANINGFUL for a given cell is not knowable
+        # here: a PML is built before the Simulation it belongs to. The enum
+        # is validated here, the combination in `Simulation` -- a cartesian
+        # run given direction=R still raises, from `_layer_axes`, with
+        # "boundary layer direction 3 has no extent in a 2D cell".
+        if direction not in (ALL, 0, 1, 2, 3):
+            raise ValueError(f"{name}.direction must be mp.X/Y/Z/R or mp.ALL, "
                              f"got {direction}")
         if side not in (ALL, Low, High):
             raise ValueError(f"{name}.side must be mp.Low/High or mp.ALL, "

@@ -94,6 +94,34 @@ def _savefig_and_dump(self, fname, *a, **k):
 
 
 _mplfig.Figure.savefig = _savefig_and_dump
+
+
+# plt.show() IS A FIGURE TOO. Several tutorials build a figure and only call
+# show(): upstream is interactive, the harness is headless, and under Agg
+# show() is a no-op, so the figure -- and the numbers in it -- vanished. Those
+# scripts scored "no comparable output" in the parity sweep while actually
+# having plenty to compare. Route show() through the same savefig hook so they
+# emit a PNG and a .plotdata.json like everything else.
+import matplotlib.pyplot as _plt
+
+_pltshow = _plt.show
+_shown = set()
+
+
+def _show_and_dump(*a, **k):
+    for _i, _num in enumerate(_plt.get_fignums()):
+        _f = _plt.figure(_num)
+        if id(_f) in _shown:
+            continue      # already written by an explicit savefig
+        _shown.add(id(_f))
+        try:
+            _savefig_and_dump(_f, f"figure{_i}.png")
+        except Exception:
+            pass          # a figure we cannot write must not kill the tutorial
+    return None
+
+
+_plt.show = _show_and_dump
 # --- end preamble ----------------------------------------------------------
 
 import meep_torch.mp as mp
