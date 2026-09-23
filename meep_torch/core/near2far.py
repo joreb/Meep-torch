@@ -151,30 +151,6 @@ def near2far_monitors_tm(grid, freqs, *, ix0, ix1, iy0, iy1):
     ]
 
 
-def near2far_monitors_te(grid, freqs, *, ix0, ix1, iy0, iy1):
-    """TE dual of near2far_monitors_tm: (monitor, outward_normal, pts) faces.
-
-    TE Yee positions are half-cell staggered: x-normal faces sample Ey+Hz at
-    (ix, (j+1/2) dx), y-normal Ex+Hz at ((i+1/2) dx, iy)."""
-    from .monitors import FluxMonitorTE, FluxMonitorTEY
-    dx = grid.dx
-
-    def xpts(ix, lo, hi):
-        j = np.arange(lo, hi)
-        return np.stack([np.full(len(j), ix * dx), (j + 0.5) * dx], axis=1)
-
-    def ypts(iy, lo, hi):
-        i = np.arange(lo, hi)
-        return np.stack([(i + 0.5) * dx, np.full(len(i), iy * dx)], axis=1)
-
-    return [
-        (FluxMonitorTE(grid, freqs, ix=ix1, lo=iy0, hi=iy1 + 1), (+1, 0), xpts(ix1, iy0, iy1 + 1)),
-        (FluxMonitorTE(grid, freqs, ix=ix0, lo=iy0, hi=iy1 + 1), (-1, 0), xpts(ix0, iy0, iy1 + 1)),
-        (FluxMonitorTEY(grid, freqs, iy=iy1, lo=ix0, hi=ix1 + 1), (0, +1), ypts(iy1, ix0, ix1 + 1)),
-        (FluxMonitorTEY(grid, freqs, iy=iy0, lo=ix0, hi=ix1 + 1), (0, -1), ypts(iy0, ix0, ix1 + 1)),
-    ]
-
-
 def faces_from_accs(grid, mons, accs):
     """Assemble Face objects from near2far_monitors_* + run accumulators.
 
@@ -202,7 +178,13 @@ def faces_from_accs(grid, mons, accs):
         # e^{-i w t}/H^(2). See the module docstring.
         Fz = a[:, 0] - 1j * a[:, 1]          # monitor E slot (Ez TM / Ey|Ex TE)
         Ft = a[:, 2] - 1j * a[:, 3]          # monitor H slot (Hy|Hx TM / Hz TE)
-        if not hasattr(mon, "x_normal"):     # TE: Face.E = out-of-plane Hz
+        # TE: Face.E is the out-of-plane Hz, so the two slots swap. Keyed on
+        # an EXPLICIT marker: this was `not hasattr(mon, "x_normal")`, i.e. an
+        # attribute's ABSENCE carrying the polarisation. Merging the two TE
+        # monitors into one class gave them an `x_normal` and silently stopped
+        # the swap -- the antenna pattern went from rms 0.006 to 0.279 against
+        # cos^2 with no error anywhere.
+        if getattr(mon, "pol", "tm") == "te":
             Fz, Ft = Ft, Fz
         faces.append(Face(pts=pts, normal=normal, dl=dx, E=Fz, H=Ft, w=quad))
     return faces

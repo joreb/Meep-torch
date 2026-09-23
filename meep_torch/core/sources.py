@@ -480,14 +480,3 @@ def beam_amplitude(E0, kdir, w0, x0, freq, index=1.0):
         return amp0 * (w0 / w) * math.exp(-(r * r) / (w * w)) * cmath.exp(-1j * phase)
 
     return amplitude
-
-
-def beam_amp_func(E0, kdir, w0, x0, freq, component_index=2, index=1.0):
-    """Scalar amplitude for the one component a 2D soft source drives.
-
-    ``component_index`` is accepted for call compatibility and unused: the
-    paraxial amplitude is a scalar on the source plane, and which component it
-    drives is the caller's choice. A full vector beam needs the
-    equivalent-current sheet, not a per-component scale factor.
-    """
-    return beam_amplitude(E0, kdir, w0, x0, freq, index=index)

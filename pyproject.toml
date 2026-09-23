@@ -2,7 +2,10 @@
 name = "meep-torch"
 version = "0.1.0"
 description = "Differentiable FDTD/FDFD engine in PyTorch (meep-inspired)"
-license = "MIT"
+# A GPL-2.0-or-later file ships in the package (core/bicgstab.py, derived
+# from meep). The distribution is therefore subject to GPL terms even
+# though every MIT file stays independently MIT -- see LICENSE.md.
+license = "MIT AND GPL-2.0-or-later"
 requires-python = ">=3.12,<3.13"
 # torch pinned to a cu128 build: cuDSS via nvmath[cu12] and cupy-cuda12x
 # are ABI/runtime-tied to CUDA 12.x -- cu130 torch has no matching

@@ -308,8 +308,6 @@ def system_matrix(reduce_axes: tuple = ()):
 #: The 2D block structure, for reference and for tests that want to name it.
 #: NOT used to decide membership -- :func:`decoupled_blocks` derives that from
 #: the reduced matrix. Kept because "Ez, Hx, Hy" is how people refer to it.
-BLOCK_A = ("Ez", "Hx", "Hy")
-BLOCK_B = ("Hz", "Ex", "Ey")
 
 
 def _submatrix(M, rows, cols):
@@ -1477,18 +1475,3 @@ def component_sign(kind: str, component: str) -> int:
             f"{component} has no sign under {kind}: it maps to {image}. "
             f"Use component_transform and carry the mixing.")
     return int(t[component])
-
-
-def describe() -> None:
-    """Print the derivation: 3D system, 2D reduction, and the two blocks."""
-    print("3D system  d(F)/dt = M F,  F =", COMPONENTS)
-    sp.pprint(system_matrix())
-    print("\nafter d/dz = 0:")
-    sp.pprint(system_matrix(("z",)))
-    for name, blk in sorted(polarisation_blocks().items()):
-        print(f"\n{name.upper()} block {blk['components']}:")
-        sp.pprint(blk["matrix"])
-
-
-if __name__ == "__main__":
-    describe()

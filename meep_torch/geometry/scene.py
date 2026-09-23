@@ -13,7 +13,7 @@ from typing import NamedTuple, Sequence, Union
 
 import torch
 
-from ..core.coeffs import build_te_coeffs
+from ..core.coeffs import _avg_to_ey, build_te_coeffs
 from ..core.grid import Grid
 from ..core.materials import LorentzPole, Material
 from .polygons import Polygon
@@ -32,11 +32,6 @@ class RasterizedMaterials(NamedTuple):
     poles: list                # list[LorentzPole], union over all materials
     pole_masks: list           # list[Tensor (nx, ny)], coverage-weighted
     chi3: torch.Tensor         # (nx, ny) Kerr coefficient
-
-
-def _avg_to_ey(v: torch.Tensor) -> torch.Tensor:
-    """Cell centers (nx, ny) -> Ey positions (nx, ny-1): same two-point average as coeffs.py."""
-    return 0.5 * (v[:, :-1] + v[:, 1:])
 
 
 def _material_value(m):

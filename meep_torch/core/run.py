@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 meep-torch contributors (original code)
+import math
+
 import torch
 from torch.utils.checkpoint import checkpoint
 
@@ -227,7 +229,7 @@ def run_until_decayed(step_fn, state, coeffs, source, monitors, probe_fn,
         # probe also silently defeats the decay test itself: every comparison
         # against NaN is False, so decay_run never advances and the run grinds
         # to max_steps instead of stopping.
-        if v != v or v in (float("inf"), float("-inf")):
+        if not math.isfinite(v):
             raise FloatingPointError(
                 f"simulation fields are NaN or Inf at step {t} -- the run "
                 "diverged; meep aborts on the same condition "

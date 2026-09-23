@@ -53,6 +53,31 @@ SCOPE. Cartesian only, and no symmetry folds yet. `_reject_noncartesian`
 guards the cylindrical frame upstream (the bare ``E_phi / r`` term has no
 difference to attach to), and a fold changes which rows are live rather than
 which terms exist -- see ``cut_plane_row`` and ``tasks/fdtd_sympy-stepper-kernels``.
+
+STATUS, 2026-09-23: NOTHING IN THE ENGINE IMPORTS THIS YET. The only importer
+in the tree is ``tests/analytic/test_factory.py``, which builds steppers here
+and compares them BITWISE against the hand-written ``step_tm`` / ``step_te`` /
+``step_kz`` / ``step_1d`` / ``step_3d``. So today this module is a
+verification oracle: it proves the twelve hand-written steppers are what the
+spec says they are. Every PHYSICS gate -- meep parity, the analytic cavity and
+Fresnel solutions -- is still held by those hand-written steppers, and the
+factory's gates only compare it against them.
+
+Stated here because an audit had to grep for importers to find it out, and
+because the distinction matters when reading a failure: a red in
+``test_factory`` means the derived form and the hand form disagree, NOT that
+the engine is wrong. The hand form is what ran.
+
+THE INTENT IS TO REPLACE THE HAND-WRITTEN STEPPERS WITH THIS, not to retire
+it. The module stays in ``core/`` for that reason rather than moving to
+``symbolic_test/`` -- it is unlanded engine, not a test fixture that wandered
+in. What landing needs is the five open tasks:
+``fdtd_factory-3d-step-composition``, ``fdtd_factory-bloch-phase-on-the-wrap``,
+``fdtd_factory-kz-through-the-phased-axis``,
+``fdtd_factory-cylindrical-yee-table`` and
+``fdtd_factory-poles-and-kerr-in-the-phase-layer``. Until they land, a
+hand-written stepper is NOT dead weight duplicating this one: it is the thing
+under test.
 """
 from typing import NamedTuple
 

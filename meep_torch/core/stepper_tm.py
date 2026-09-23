@@ -7,7 +7,6 @@ import torch.nn.functional as F
 
 from .coeffs import TMCoeffs
 from .grid import Grid
-import sympy as sp
 from .kernels import ADE_POLE, CN_UPDATE, EH_FROM_D
 from .symbolic import (PSI_NEW, STRETCHED, compiled_curl_composition,
                        compiled_difference)

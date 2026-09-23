@@ -276,12 +276,11 @@ def _beam_amp(src_obj):
     single soft source rather than meep's six-component equivalent-current
     sheet -- that limitation is unchanged; only the amplitude is now meep's.
     """
-    from ..core.sources import beam_amp_func
-    idx = {"Ex": 0, "Ey": 1, "Ez": 2}.get(str(src_obj.component), 2)
+    from ..core.sources import beam_amplitude
     freq = getattr(src_obj.src, "frequency", None) or getattr(
         src_obj.src, "fcen", 1.0)
-    return beam_amp_func(src_obj.beam_E0, src_obj.beam_kdir, src_obj.beam_w0,
-                         src_obj.beam_x0, freq, idx)
+    return beam_amplitude(src_obj.beam_E0, src_obj.beam_kdir, src_obj.beam_w0,
+                          src_obj.beam_x0, freq)
 
 
 

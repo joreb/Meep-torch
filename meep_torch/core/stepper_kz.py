@@ -95,7 +95,6 @@ def build_kz_coeffs(nx: int, dx: float, kz: float, eps=None,
                                    R0=pml_R0, alpha_max=pml_alpha,
                                    dtype=dtype, device=device)
         bE, aE, kE = bE[1:-1], aE[1:-1], kE[1:-1]
-        one = torch.ones((), dtype=dtype, device=device)
         de1 = torch.ones(nx, dtype=dtype, device=device)
         de2 = torch.full((nx,), dt, dtype=dtype, device=device)
         dx1 = torch.ones(nx - 1, dtype=dtype, device=device)

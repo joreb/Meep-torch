@@ -89,7 +89,6 @@ def build_fv2d_coeffs(eps6, dx: float, npml: int = 0,
     else:
         one = _inv6(eps6)
         inv = (one, one, one)
-    ixx, ixy, ixz, iyy, iyz, izz = inv[0]
     nx = exx.shape[0]
     b_hx, a_hx, k_hx = cpml_profiles(nx - 1, npml, 0.5, dt, dx,
                                      dtype=dtype, device=device)

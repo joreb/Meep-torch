@@ -11,9 +11,16 @@ license of its source. Full license texts live in `LICENSES/`.
 | Reversible-gradient engine, S-param scaffold (planned, Q2/Phase 4) | MIT | fdtdx (© 2025 Yannik Mahlau) |
 | Kottke diagonal-projected averaging `meep_torch/geometry/smoothing.py` (shipped, Phase 2) | MIT | original from-paper implementation of Kottke, Farjadpour & Johnson, Phys. Rev. E 77, 036611 (2008); not a translation of MPB source |
 | Overlap/effective-area calculators (if ported, Phase 4) | GPL-3.0-only | femwell (© Helge Gehring) |
+| BiCGSTAB(L) solver `meep_torch/core/bicgstab.py` (shipped) | GPL-2.0-or-later | meep (© NanoComp), `src/bicgstab.cpp` -- torch rewrite; algorithm from Sleijpen & Fokkema (1993), implementation conventions from meep |
 
 Every ported file carries an attribution header naming the source project, its
 copyright holders, and its original license.
+
+**A GPL-2.0-or-later file ships today.** `meep_torch/core/bicgstab.py` is
+derived from meep and carries meep's license, so the DISTRIBUTION as a whole
+is subject to GPL-2.0-or-later terms. Every MIT file in it remains
+independently MIT and reusable as such; it is the combined package that is
+GPL. This is stated rather than hidden, per the licensing policy.
 
 **The tidy3d row above is a per-file carve-out, not the project's license.**
 tidy3d as a whole is LGPL-2.1 ("GNU LESSER GENERAL PUBLIC LICENSE Version 2.1,

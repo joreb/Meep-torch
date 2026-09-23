@@ -777,10 +777,18 @@ class Simulation:
             sb[i0:i1, j0:j1, k0:k1] = sbv
         has_cond = bool((sd.abs().sum() + sb.abs().sum()).item())
         self._eps3d = eps
+        # An axis with Absorber layers must be NAMED, or build_3d_coeffs
+        # leaves it with neither boundary: in mixed mode it gives every axis
+        # outside `absorber_axes` a CPML profile built from that axis's npml,
+        # which is (0, 0) here, and the absorber-sigma loop runs only over
+        # `absorber_axes`. PML on x/y with an Absorber on z therefore left z
+        # bare and reflecting. 14 coefficient tensors move when it is passed.
         self._coeffs3d = build_3d_coeffs(
             nx, ny, nz, g.dx, eps=eps,
             npml=tuple(tuple(p) for p in self._npml_sides),
             n_abs=tuple(tuple(p) for p in self._nabs_sides),
+            absorber_axes=tuple(ax for ax in range(3)
+                                if any(self._nabs_sides[ax])),
             sigma_d=(sd if has_cond else None), sigma_b=(sb if has_cond else None),
             dtype=dtype, device=self.device)
 

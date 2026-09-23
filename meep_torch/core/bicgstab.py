@@ -1,10 +1,26 @@
-# SPDX-License-Identifier: MIT
-# Copyright (C) 2026 meep-torch contributors (original code)
-"""BiCGSTAB(L) -- port of meep's src/bicgstab.cpp.
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Derived from meep (NanoComp), src/bicgstab.cpp, GPL-2.0-or-later.
+# Algorithm: Sleijpen and Fokkema, Electronic Trans. on Numerical Analysis 1,
+# 11-32 (1993).
+"""BiCGSTAB(L), a torch rewrite derived from meep's src/bicgstab.cpp.
 
 Sleijpen and Fokkema, "BiCGSTAB(L) for linear equations involving unsymmetric
 matrices with complex spectrum", Electronic Trans. on Numerical Analysis 1,
 11-32 (1993).
+
+LICENSE, corrected 2026-09-23. This file carried `SPDX: MIT` and "original
+code" while its own docstring said "port of meep's src/bicgstab.cpp", which
+cannot both be true under this project's per-file rule. The MATHS is the
+paper's -- Algorithm 3.1, and the gamma / gamma' / gamma'' / tau / sigma
+notation here is the paper's own. But three things are implementation
+conventions no paper specifies: the rtilde normalisation noted below as being
+"in his own code", the `ierr` return codes (0 / 1 / -1), and `breaktol`. Those
+came from reading meep, so the file is derived from meep and carries meep's
+license. It is the first GPL file actually shipping in the package; see
+LICENSE.md.
+
+A genuine clean-room rewrite from the paper alone would let this go back to
+MIT, and is worth doing if that ever matters. It is NOT done here.
 
 Why not scipy's ``bicgstab``: that is BiCGSTAB(1), and Sleijpen and Fokkema
 observed it stagnating exactly when the operator's eigenvalues are near-pure

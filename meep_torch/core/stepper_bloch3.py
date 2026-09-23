@@ -49,8 +49,6 @@ class Bloch3Coeffs(NamedTuple):
     eps: torch.Tensor        # (nx, ny, nz) real
     de1: torch.Tensor        # (1, 1, nz) absorber damping pairs (E)
     de2: torch.Tensor
-    dh1: torch.Tensor        # (1, 1, nz) (H)
-    dh2: torch.Tensor
 
 
 def build_bloch3_coeffs(eps: torch.Tensor, dx: float, kx: float, ky: float,
@@ -66,7 +64,7 @@ def build_bloch3_coeffs(eps: torch.Tensor, dx: float, kx: float, ky: float,
     de2 = dt / (1 + sig * dt / 2)
     return Bloch3Coeffs(dt=dt, dx=dx, kx=kx, ky=ky, kz=kz,
                         periodic_z=periodic_z, eps=eps,
-                        de1=de1, de2=de2, dh1=de1.clone(), dh2=de2.clone())
+                        de1=de1, de2=de2)
 
 
 def init_bloch3_state(nx, ny, nz, device=None) -> Bloch3State:
@@ -110,9 +108,9 @@ def step_bloch3(st: Bloch3State, c: Bloch3Coeffs, src_amp=0.0,
         dz_f = lambda F: _dz_f(F, dx)
         dz_b = lambda F: _dz_b(F, dx)
 
-    Hx = c.dh1 * st.Hx - c.dh2 * (_dp(st.Ez, 1, dx, ky) - dz_f(st.Ey))
-    Hy = c.dh1 * st.Hy - c.dh2 * (dz_f(st.Ex) - _dp(st.Ez, 0, dx, kx))
-    Hz = c.dh1 * st.Hz - c.dh2 * (_dp(st.Ey, 0, dx, kx) - _dp(st.Ex, 1, dx, ky))
+    Hx = c.de1 * st.Hx - c.de2 * (_dp(st.Ez, 1, dx, ky) - dz_f(st.Ey))
+    Hy = c.de1 * st.Hy - c.de2 * (dz_f(st.Ex) - _dp(st.Ez, 0, dx, kx))
+    Hz = c.de1 * st.Hz - c.de2 * (_dp(st.Ey, 0, dx, kx) - _dp(st.Ex, 1, dx, ky))
 
     Ex = (c.de1 * st.Ex * c.eps
           + c.de2 * (_dm(Hz, 1, dx, ky) - dz_b(Hy))) / c.eps

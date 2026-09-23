@@ -77,6 +77,7 @@ class DFTFieldsMonitor:
 
 
 class FluxMonitorTM:
+    pol = "tm"
     reduce = "sum"
 
     def __init__(
@@ -131,18 +132,40 @@ class FluxMonitorTM:
 
 
 class FluxMonitorTE:
+    """TE flux line, either orientation, as FluxMonitorTM already does.
+
+    x-normal takes ``ix`` and reads ``Ey`` against ``Hz`` averaged along x;
+    y-normal takes ``iy`` and reads ``Ex`` against ``Hz`` averaged along y.
+    The two differ ONLY in that slice and in the sign of the Poynting
+    component -- ``Sx = +Ey Hz`` against ``Sy = -Ex Hz`` -- which is why they
+    are one class and were two.
+    """
+
+    pol = "te"
     reduce = "sum"
 
-    def __init__(self, grid: Grid, freqs, *, ix: int, lo: int, hi: int):
-        if not (1 <= ix < grid.nx - 1):
-            raise ValueError(f"ix={ix} must be interior")
-        self.ix, self.lo, self.hi = ix, lo, hi
+    def __init__(self, grid: Grid, freqs, *, ix: int | None = None,
+                 iy: int | None = None, lo: int, hi: int):
+        if (ix is None) == (iy is None):
+            raise ValueError("pass exactly one of ix= (x-normal) or iy= (y-normal)")
+        self.x_normal = ix is not None
+        self.idx = ix if self.x_normal else iy
+        n = grid.nx if self.x_normal else grid.ny
+        if not (1 <= self.idx < n - 1):
+            raise ValueError(f"index {self.idx} must be interior")
+        self.ix = self.iy = self.idx        # both names kept for callers
+        self.lo, self.hi = lo, hi
         self.dt = grid.dt
         self.freqs = torch.tensor(freqs, dtype=grid.dtype, device=grid.device)
 
     def sample(self, state, t_idx: int) -> torch.Tensor:
-        E = state.Ey[self.ix, self.lo : self.hi]
-        H = 0.5 * (state.Hz[self.ix - 1, self.lo : self.hi] + state.Hz[self.ix, self.lo : self.hi])
+        i, lo, hi = self.idx, self.lo, self.hi
+        if self.x_normal:
+            E = state.Ey[i, lo:hi]
+            H = 0.5 * (state.Hz[i - 1, lo:hi] + state.Hz[i, lo:hi])
+        else:
+            E = state.Ex[lo:hi, i]
+            H = 0.5 * (state.Hz[lo:hi, i - 1] + state.Hz[lo:hi, i])
         # step_te advances E to (t_idx+1/2)*dt and Hz to (t_idx+1)*dt
         tE = (t_idx + 0.5) * self.dt
         tH = (t_idx + 1.0) * self.dt
@@ -153,36 +176,14 @@ class FluxMonitorTE:
 
     def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
         ReE, ImE, ReH, ImH = acc.unbind(1)
-        return (ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sx = +Ey*Hz  # meep's dft_flux::flux() (dft.cpp:551) sums real(E conj(H)) with NO 1/2
+        # meep's dft_flux::flux() (dft.cpp:551) sums real(E conj(H)), NO 1/2
+        s = (ReE * ReH + ImE * ImH).sum(-1) * dx
+        return s if self.x_normal else -s
 
 
-class FluxMonitorTEY:
-    """TE y-normal line: Ex + Hz averaged to the Ex nodes ((i+1/2, iy))."""
-
-    reduce = "sum"
-
-    def __init__(self, grid: Grid, freqs, *, iy: int, lo: int, hi: int):
-        if not (1 <= iy < grid.ny - 1):
-            raise ValueError(f"iy={iy} must be interior")
-        self.iy, self.lo, self.hi = iy, lo, hi
-        self.dt = grid.dt
-        self.freqs = torch.tensor(freqs, dtype=grid.dtype, device=grid.device)
-
-    def sample(self, state, t_idx: int) -> torch.Tensor:
-        E = state.Ex[self.lo : self.hi, self.iy]
-        H = 0.5 * (state.Hz[self.lo : self.hi, self.iy - 1]
-                   + state.Hz[self.lo : self.hi, self.iy])
-        # step_te advances E to (t_idx+1/2)*dt and Hz to (t_idx+1)*dt
-        tE = (t_idx + 0.5) * self.dt
-        tH = (t_idx + 1.0) * self.dt
-        w = 2 * torch.pi * self.freqs[:, None]
-        return self.dt * DFT_SCALE * torch.stack(
-            [torch.cos(w * tE) * E, torch.sin(w * tE) * E,
-             torch.cos(w * tH) * H, torch.sin(w * tH) * H], dim=1)
-
-    def flux(self, acc: torch.Tensor, dx: float) -> torch.Tensor:
-        ReE, ImE, ReH, ImH = acc.unbind(1)
-        return -(ReE * ReH + ImE * ImH).sum(-1) * dx   # TE: Sy = -Ex*Hz
+def FluxMonitorTEY(grid: Grid, freqs, *, iy: int, lo: int, hi: int):
+    """Back-compatible spelling for the y-normal FluxMonitorTE."""
+    return FluxMonitorTE(grid, freqs, iy=iy, lo=lo, hi=hi)
 
 
 def cyl_flux(dft, *, z_normal: bool, idx: int, dr: float, dz: float,
