@@ -43,8 +43,11 @@ sim = mp.Simulation(
     resolution=10,
     geometry=[mp.Block(size=mp.Vector3(mp.inf, 1, mp.inf), center=mp.Vector3(),
                        material=mp.Medium(epsilon=12))],
+    # POINT source, as upstream. This twin carried size=Vector3(0, 1, 0) --
+    # a 1-unit LINE -- which the meep twin and straight-waveguide.py do not,
+    # so the two runs were driving different problems.
     sources=[mp.Source(mp.ContinuousSource(frequency=0.15), component=mp.Ez,
-                       center=mp.Vector3(-7, 0), size=mp.Vector3(0, 1, 0))],
+                       center=mp.Vector3(-7, 0))],
     boundary_layers=[mp.PML(1.0)],
     default_material=mp.Medium(epsilon=1.0),
 )
