@@ -32,6 +32,10 @@ import torch
 
 import meep_torch.mp as mp
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+from _plotdata import savefig as _savefig  # PNG + .plotdata.json sidecar
+
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 
@@ -121,8 +125,7 @@ def main():
     ax.set_ylabel("Ez")
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(OUT / "chirped_pulse_mp.png", dpi=150)
-    plt.close(fig)
+    _savefig(fig, OUT / "chirped_pulse_mp.png", dpi=150)
 
     data=np.hstack((x.reshape(len(x),1),
                           ez_slice.reshape(len(x),1)))

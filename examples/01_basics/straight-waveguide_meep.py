@@ -13,6 +13,10 @@ import numpy as np
 
 import meep as mp
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+from _plotdata import savefig as _savefig  # PNG + .plotdata.json sidecar
+
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 
@@ -66,8 +70,7 @@ ax_ez.imshow(ez_data.transpose(), interpolation="spline36", cmap="RdBu", alpha=0
 ax_ez.set_title("time-domain fields ($E_z$)")
 ax_ez.axis("off")
 fig.tight_layout()
-fig.savefig(OUT / "straight-waveguide_meep.png", dpi=150)
-plt.close(fig)
+_savefig(fig, OUT / "straight-waveguide_meep.png", dpi=150)
 
 # Axes from the returned shape and the cell. PML sits inside the 16x8 cell
 # here, so the full span is the cell size -- the chirped_pulse 10%-compression

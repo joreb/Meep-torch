@@ -32,6 +32,10 @@ import numpy as np
 
 import meep_torch.mp as mp
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+from _plotdata import savefig as _savefig  # PNG + .plotdata.json sidecar
+
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 
@@ -69,7 +73,6 @@ def _animate(out_dir, eps):
     anim = animation.FuncAnimation(fig, step, frames=len(ez), interval=100, blit=True)
     gif = out_dir / "solve-cw_mp-ez.gif"
     anim.save(gif, writer=animation.PillowWriter(fps=10))
-    plt.close(fig)
     print(f"  {gif.name}  ({len(ez)} frames)")
 
 
@@ -136,8 +139,7 @@ def main():
     ax.set_xlabel("x (cells)")
     ax.set_ylabel("y (cells)")
     fig.tight_layout()
-    fig.savefig(OUT / "solve-cw_mp.png", dpi=150)
-    plt.close(fig)
+    _savefig(fig, OUT / "solve-cw_mp.png", dpi=150)
     n_h5 = len(list(OUT.glob("solve-cw_mp-*")))
     print(f"solve-cw_mp.png  peak|Ez|={best:.4g}  ({len(modes)} modes found, "
           f"{n_h5} field files in {OUT.name}/)")

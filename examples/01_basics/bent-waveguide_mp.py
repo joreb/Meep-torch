@@ -24,6 +24,10 @@ import numpy as np
 
 import meep_torch.mp as mp
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+from _plotdata import savefig as _savefig  # PNG + .plotdata.json sidecar
+
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 fcen = 1.0 / (2.0 * math.sqrt(11.0))
@@ -63,5 +67,5 @@ ax.imshow(eps.T, origin="lower", cmap="binary", alpha=0.9)
 ax.imshow(ez.T, origin="lower", cmap="RdBu", vmin=-v, vmax=v, alpha=0.8)
 ax.set_title("Bent waveguide (mp shim) -- CW Ez at f=%.4f" % fcen)
 ax.set_xlabel("x (cells)"); ax.set_ylabel("y (cells)")
-fig.tight_layout(); fig.savefig(OUT / "bent-waveguide_mp.png", dpi=150); plt.close(fig)
+fig.tight_layout(); _savefig(fig, OUT / "bent-waveguide_mp.png", dpi=150); plt.close(fig)
 print("bent-waveguide_mp.png  peak|Ez|=%.4g" % v)

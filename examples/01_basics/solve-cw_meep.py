@@ -16,6 +16,10 @@ import numpy as np
 
 import meep as mp
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+from _plotdata import savefig as _savefig  # PNG + .plotdata.json sidecar
+
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 
@@ -114,7 +118,7 @@ plt.loglog(tols[: num_tols - 1], err_dat, "bo-")
 plt.xlabel("frequency-domain solver tolerance")
 plt.ylabel("relative error in fields of resonant mode")
 plt.title("2d ring resonator")
-plt.savefig(OUT / "solve-cw_meep.png", dpi=150, bbox_inches="tight")
+_savefig(plt, OUT / "solve-cw_meep.png", dpi=150, bbox_inches="tight")
 plt.close()
 
 # the convergence data is what this example computes, so that is the export
@@ -145,7 +149,7 @@ plt.imshow(
 )
 plt.title("time-domain fields ($E_z$)")
 plt.axis("off")
-plt.savefig(OUT / "solve-cw_ez_meep.png", dpi=150, bbox_inches="tight")
+_savefig(plt, OUT / "solve-cw_ez_meep.png", dpi=150, bbox_inches="tight")
 plt.close()
 
 if np.all(np.diff(err_dat) < 0):
@@ -217,7 +221,7 @@ plt.imshow(
 )
 plt.title("DFT fields ($E_z$)")
 plt.axis("off")
-plt.savefig(OUT / "solve-cw_ez_dft_meep.png", dpi=150, bbox_inches="tight")
+_savefig(plt, OUT / "solve-cw_ez_dft_meep.png", dpi=150, bbox_inches="tight")
 plt.close()
 
 print(

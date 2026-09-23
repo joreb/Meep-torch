@@ -10,6 +10,10 @@ import numpy as np
 
 import meep as mp
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+from _plotdata import savefig as _savefig  # PNG + .plotdata.json sidecar
+
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 
@@ -93,8 +97,7 @@ def main():
     ax.set_title("2d ring resonator modes ($E_z$)")
     ax.axis("off")
     fig.tight_layout()
-    fig.savefig(OUT / "ring_meep.png", dpi=150)
-    plt.close(fig)
+    _savefig(fig, OUT / "ring_meep.png", dpi=150)
 
     freqs = ", ".join(f"{m.freq:.5f}" for m in modes)
     print(f"ring_meep.png  [{DEVICE}]  {len(modes)} modes: {freqs}")

@@ -25,6 +25,10 @@ import numpy as np
 
 import meep_torch.mp as mp
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+from _plotdata import savefig as _savefig  # PNG + .plotdata.json sidecar
+
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 fcen, fwidth = 0.15, 0.1
@@ -87,6 +91,6 @@ ax.plot(wl, T, "ro-", label="transmittance |S21|^2", ms=3)
 ax.plot(wl, 1 - R - T, "go-", label="loss 1-R-T", ms=3)
 ax.set_xlabel("wavelength (um)"); ax.set_ylabel("power")
 ax.set_title("90-degree bend R/T (mp shim)"); ax.legend(); ax.set_ylim(0, 1)
-fig.tight_layout(); fig.savefig(OUT / "bend-flux_mp.png", dpi=150); plt.close(fig)
+fig.tight_layout(); _savefig(fig, OUT / "bend-flux_mp.png", dpi=150); plt.close(fig)
 i = int(np.argmin(np.abs(freqs - fcen)))
 print("bend-flux_mp.png  at fcen=%.3f: R=%.3f T=%.3f loss=%.3f" % (fcen, R[i], T[i], 1 - R[i] - T[i]))

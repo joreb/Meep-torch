@@ -10,6 +10,10 @@ import numpy as np
 
 import meep as mp
 
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent.parent))
+from _plotdata import savefig as _savefig  # PNG + .plotdata.json sidecar
+
 OUT = pathlib.Path(__file__).parent / "output"
 OUT.mkdir(exist_ok=True)
 
@@ -147,7 +151,7 @@ if mp.am_master():
     plt.axis([5.0, 10.0, 0, 1])
     plt.xlabel("wavelength (μm)")
     plt.legend(loc="upper right")
-    plt.savefig(OUT / "bend-flux_meep.png", dpi=150)
+    _savefig(plt, OUT / "bend-flux_meep.png", dpi=150)
     plt.close()
 
     # the flux spectrum is what this example computes, so that is the export
