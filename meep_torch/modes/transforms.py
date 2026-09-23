@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from ..core.grid import to_numpy
+from ..core.grid import default_device, to_numpy
 
 __all__ = ["bend_dwdz", "apply_bend", "angled_eps_tensor"]
 
@@ -87,7 +87,12 @@ def apply_bend(eps_cc, dx: float, radius: float, center_x: float):
     dwdz = bend_dwdz(Nx, Ny, dx, radius, center_x)
     out = eps_np * dwdz
     if isinstance(eps_cc, torch.Tensor):
-        return torch.from_numpy(np.ascontiguousarray(out)).to(eps_cc.dtype)
+        # torch.from_numpy ALWAYS returns a CPU tensor, whatever the default
+        # device is, so the device has to be carried across with the dtype --
+        # otherwise a CUDA eps goes in and a CPU tensor comes out, and the
+        # mismatch only surfaces wherever the caller compares the two.
+        return torch.from_numpy(np.ascontiguousarray(out)).to(
+            device=eps_cc.device, dtype=eps_cc.dtype)
     return out
 
 
@@ -126,5 +131,11 @@ def angled_eps_tensor(eps_cc, theta: float, phi: float) -> torch.Tensor:
     eps_prime = eps_prime / det
 
     out = eps_prime.reshape(3, 3, Nx, Ny)
-    dtype = eps_cc.dtype if isinstance(eps_cc, torch.Tensor) else torch.float64
-    return torch.from_numpy(np.ascontiguousarray(out)).to(dtype)
+    # Same from_numpy trap as apply_bend: follow the INPUT's device, and fall
+    # back to the engine default when the input was a bare ndarray.
+    if isinstance(eps_cc, torch.Tensor):
+        dtype, device = eps_cc.dtype, eps_cc.device
+    else:
+        dtype, device = torch.float64, default_device()
+    return torch.from_numpy(np.ascontiguousarray(out)).to(
+        device=device, dtype=dtype)

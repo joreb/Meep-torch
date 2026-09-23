@@ -54,6 +54,7 @@ from .raster import RasterMixin, _eps_of
 
 from ..core.sources import GaussianPulse
 from ..core.stepper_bloch2 import init_bloch2_state, step_bloch2_tm
+from ..core.grid import to_numpy
 from ..modes.harminv import harminv
 from ..mp.geometry import (Block, Cylinder, Lattice, Sphere,
                            reciprocal_to_cartesian)
@@ -511,14 +512,15 @@ class ModeSolver(FindKMixin, Backend3DMixin, FieldsMixin, BackendMixin, RasterMi
                 "imaginary epsilon: with_hermitian_epsilon() is False")
         if not (0 <= c1 <= 2 and 0 <= c2 <= 2):
             raise ValueError(f"tensor components are 0/1/2, got {c1}, {c2}")
-        ezz = np.asarray(self.get_epsilon())
+        # host boundary: MPBArray is numpy
+        ezz = to_numpy(self.get_epsilon())
         if c1 != c2:
             return MPBArray(np.zeros_like(ezz), self.get_lattice())
         te = getattr(self, "_eps_te", None)
-        diag = ([np.asarray(te[0]), np.asarray(te[1]), ezz]
+        diag = ([to_numpy(te[0]), to_numpy(te[1]), ezz]
                 if te is not None else [ezz, ezz, ezz])
         out = 1.0 / diag[c1] if inv else diag[c1]
-        return MPBArray(np.asarray(out), self.get_lattice())
+        return MPBArray(to_numpy(out), self.get_lattice())
 
     def allow_negative_epsilon(self):
         self.is_negative_epsilon_ok = True

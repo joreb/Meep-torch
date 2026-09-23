@@ -486,6 +486,7 @@ _PSI3D_BITWISE = [
 
 @pytest.mark.parametrize("label,kw,want", _PSI3D_BITWISE,
                          ids=[c[0] for c in _PSI3D_BITWISE])
+@pytest.mark.usefixtures("cpu_rng_pinned")
 def test_3d_psi_trim_changed_no_number(label, kw, want):
     """Trimming the psi arrays must not move a single bit.
 

@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import meep_torch.mp as mp
+from meep_torch.core.grid import default_device
 
 RES = 10
 FCEN = 0.15
@@ -39,7 +40,13 @@ def _sim(force_complex=True, symmetries=None, src_x=-2.0):
 # meep: meep's curl is a flat four-term sum scaled once by the Courant number
 # and it carries no CPML at all, so the association this is about is ours. See
 # symbolic.compiled_curl_composition.
-CW_TOL = 1e-10
+# ...except on CUDA. A dot product is a reduction and CUDA reduces in a
+# different order, so BiCGSTAB(2)'s residual floor sits ~2 decades higher.
+# Measured, same problem, only the device changed:
+#     1e-10  cpu ok / cuda FAIL     1e-9  cpu ok / cuda FAIL     1e-8  both ok
+# CPU keeps the tighter gate: one number would retire it on the device that
+# can hold it.
+CW_TOL = 1e-10 if default_device() == "cpu" else 1e-8
 
 
 def test_solve_cw_matches_time_domain_steady_state():

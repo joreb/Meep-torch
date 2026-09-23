@@ -1847,14 +1847,6 @@ class Simulation:
             self._cyl_flux = getattr(self, "_cyl_flux", {})
             self._cyl_flux[nm] = h
             return self, nm, freqs      # the DftObj contract
-        if False:
-            raise NotImplementedError(
-                "flux monitors in a cylindrical run are not supported: the "
-                "surface element on an (r, z) cell is 2*pi*r dr dz, not dr "
-                "dz, and that weighting was deliberately left unguessed -- a "
-                "wrong constant silently scales a cross-section instead of "
-                "failing. Needs a meep.mpb/meep oracle to pin. Point probes "
-                "(get_field_point), near2far and dft_ldos do work")
         if self.dimensions == 3:
             if len(fluxes) != 1:
                 raise NotImplementedError("3D add_flux takes exactly one region (W9 wave 3)")

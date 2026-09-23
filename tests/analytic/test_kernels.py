@@ -129,6 +129,7 @@ _TM_PRE_KERNEL = [
 
 @pytest.mark.parametrize("label,kw,want", _TM_PRE_KERNEL,
                          ids=[c[0] for c in _TM_PRE_KERNEL])
+@pytest.mark.usefixtures("cpu_rng_pinned")
 def test_stepper_tm_on_kernels_is_bitwise_with_its_own_past(label, kw, want):
     """Wiring stepper_tm to the kernels must not move a bit.
 

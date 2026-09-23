@@ -19,6 +19,8 @@ not at fault: torch raises here by design rather than transferring silently.
 are exercising: set MEEP_TORCH_DEVICE=cpu and the whole suite runs on CPU,
 tensors included.
 """
+import os
+
 import pytest
 import torch
 
@@ -36,3 +38,20 @@ def _default_tensor_device():
         yield
     finally:
         torch.set_default_device("cpu")
+
+
+@pytest.fixture
+def cpu_rng_pinned(monkeypatch):
+    """CPU for gates whose hex constants are CPU-RNG values.
+
+    torch's CPU and CUDA generators are different streams for the same seed, so
+    a seeded bitwise gate starts from a different state on CUDA and its sums
+    change sign, not their last bits. Both knobs move: torch's default device
+    for the test's own tensors, and MEEP_TORCH_DEVICE for `Grid`, which asks
+    `default_device()` and never consults torch's default.
+    """
+    monkeypatch.setenv("MEEP_TORCH_DEVICE", "cpu")
+    prev = torch.get_default_device()
+    torch.set_default_device("cpu")
+    yield
+    torch.set_default_device(prev)
