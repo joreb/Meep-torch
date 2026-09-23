@@ -20,7 +20,7 @@ from meep_torch.core.coeffs import build_tm_coeffs
 from meep_torch.core.grid import Grid
 from meep_torch.core.monitors import FluxMonitorTM
 from meep_torch.core.run import run_tm
-from meep_torch.core.sources import LineSource
+from meep_torch.core.sources import LineSource, PointSource, delta_weights
 from meep_torch.core.stepper_tm import init_tm_state
 from meep_torch.mp.cpp.core import flux_vol as core_flux_vol
 
@@ -51,9 +51,13 @@ def test_step_matches_run_tm_bit_for_bit():
     for _ in range(100):
         f.step()
 
-    # same run through the engine's own runner (source at cell (20, 15))
+    # same run through the engine's own runner: the origin is a cell
+    # BOUNDARY on this even grid, so meep's placement spreads the delta over
+    # cells 19/20 x 14/15 (core.sources.delta_weights, gated against meep's
+    # measured footprint); the facade must build the identical mask
     prof = mp.GaussianSource(frequency=1.0, fwidth=0.3).profile()
-    src = LineSource(grid, 20, 15, 16, profile=prof)
+    src = PointSource(grid, delta_weights(0.0, NX * DX, DX, NX),
+                      delta_weights(0.0, NY * DX, DX, NY), prof)
     mon = FluxMonitorTM(grid, [1.0], x_normal=True, idx=30, lo=5, hi=25)
     ref, (acc,) = run_tm(init_tm_state(grid), build_tm_coeffs(grid, eps_inf=1.0),
                          100, source=src, monitors=[mon])

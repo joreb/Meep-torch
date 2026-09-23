@@ -84,6 +84,37 @@ def test_mirror_half_domain_matches_full(direction, phase):
     np.testing.assert_allclose(ez_half, phase * flip, atol=1e-12 * scale)
 
 
+def test_source_on_the_even_mirror_plane_is_driven_once():
+    """A source ON Mirror(X, +1)'s plane: half cell == full cell.
+
+    x = 0 on an even grid is a cell BOUNDARY, so meep's placement puts half
+    the delta in each neighbouring column. The fold keeps the column on the
+    kept side at half weight and the wall images it, which is the full-cell
+    current exactly. Snapping the whole delta onto the kept column and
+    letting the wall image THAT drove the source twice: the antenna-over-PEC
+    tutorial's near fields under Mirror(X) read 2.0x the full cell's
+    (wiki/bugs/point-source-snapped-not-interpolated.md).
+    """
+    def run(half):
+        sim = mp.Simulation(
+            cell_size=mp.Vector3(8, 8), resolution=RES,
+            boundary_layers=[mp.PML(1.0)],
+            sources=[mp.Source(mp.GaussianSource(FCEN, fwidth=0.2 * FCEN),
+                               component=mp.Ez, center=mp.Vector3(0, OFF))],
+            symmetries=[mp.Mirror(mp.X, phase=+1)] if half else None)
+        f = sim.add_flux(FCEN, 0, 1, mp.FluxRegion(center=mp.Vector3(0, 2.5),
+                                                   size=mp.Vector3(4, 0)))
+        sim.run(until=25)
+        return sim.get_array(component=mp.Ez), mp.get_fluxes(f)[0]
+    ez_full, p_full = run(False)
+    ez_half, p_half = run(True)
+    n = RES
+    rel_ez = np.abs(ez_half - ez_full)[n:-n, n:-n].max() / np.abs(ez_full).max()
+    rel_p = abs(p_half - p_full) / abs(p_full)
+    print(f"on-plane source under Mirror(X,+1): |dEz|/max={rel_ez:.2e} dP/P={rel_p:.2e}")
+    assert rel_ez < TOL and rel_p < TOL
+
+
 # --- Rotate2(Z): C2 fold, halves in y while keeping the full x extent ------
 
 def _run_rot2(phase, half):

@@ -95,7 +95,13 @@ def test_ring():
     inner = Polygon(np.stack([cx + r * np.cos(th), cy + r * np.sin(th)], 1))
     rm = rasterize_scene([(outer, n ** 2), (inner, 1.0)], g, background=1.0)
     c = build_tm_coeffs(g, eps_inf=rm.eps_tm, npml=20)
-    src = LineSource(g, 91, 80, 81, profile=GaussianPulse(0.15, 0.1))
+    # the shim source sits at (r + 0.1, 0): x is a cell centre, y = 0 a cell
+    # BOUNDARY on this even grid, so meep's placement (delta_weights, gated
+    # against meep's measured footprint) spreads it over rows 79/80
+    from meep_torch.core.sources import PointSource, delta_weights
+    src = PointSource(g, delta_weights(r + 0.1, sxy, g.dx, g.nx),
+                      delta_weights(0.0, sxy, g.dx, g.ny),
+                      GaussianPulse(0.15, 0.1))
     st = init_tm_state(g)
     st, _ = run_tm(st, c, 8000, source=src, monitors=())
     raw_ez = st.Ez

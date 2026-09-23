@@ -167,8 +167,12 @@ def test_phase_path_matches_fused_tm_kernel_500_steps():
     for _ in range(500):
         f.step()
 
-    src = LineSource(grid, 30, 22, 23,
-                     profile=mp.GaussianSource(frequency=1.0, fwidth=0.3).profile())
+    from meep_torch.core.sources import PointSource, delta_weights
+    # the origin is a cell boundary on a 60 x 44 grid: meep's placement is
+    # cells 29/30 x 21/22 at 1/4 each, and the facade builds the same mask
+    src = PointSource(grid, delta_weights(0.0, 60 * 0.05, 0.05, 60),
+                      delta_weights(0.0, 44 * 0.05, 0.05, 44),
+                      mp.GaussianSource(frequency=1.0, fwidth=0.3).profile())
     ref, _ = run_tm(init_tm_state(grid, n_poles=1), st.coeffs, 500, source=src)
     assert float(f._state.Ez.abs().max()) > 0
     for name in ("Ez", "Hx", "Hy", "Dz", "P_cur", "P_prev",

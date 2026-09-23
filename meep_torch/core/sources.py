@@ -143,7 +143,7 @@ class CWRamp:
 
 
 def delta_weights(coord: float, extent: float, dx: float, n: int,
-                  tol: float = 1e-9):
+                  tol: float = 1e-9, offset: float = 0.5):
     """Linear weights spreading a point source over its two neighbours.
 
     Injecting a delta on a discrete grid means distributing it over the
@@ -152,12 +152,20 @@ def delta_weights(coord: float, extent: float, dx: float, n: int,
     these tutorials, not an edge case -- the position falls exactly between two
     cell centres, and rounding displaces it half a cell on every axis.
 
-        g = (coord + extent/2) / dx - 1/2     position in cell-CENTRE units
+        g = (coord + extent/2) / dx - offset  position in lattice units
         i = floor(g);  f = g - i
         weight(i) = 1 - f,  weight(i+1) = f
 
+    ``offset`` names the lattice: 0.5 for a component on the cell CENTRES
+    (Ez, and the unstaggered axis of Ey/Ex), 1.0 for one on the cell
+    CORNERS along that axis (Hz on both, Ey along y, Ex along x; those
+    lattices have n-1 nodes, so pass that n). Which lattice decides whether
+    a given position is ON a node or BETWEEN two: a centred source on an
+    even grid is between two Ez cells and exactly on one Hz node, and the
+    two want different placements (the TE Hz parity fix, bc76d0a).
+
     Returns ``[(index, weight), ...]``, dropping zero weights and any index
-    outside ``[0, n)``. A position landing exactly on a cell centre therefore
+    outside ``[0, n)``. A position landing exactly on a node therefore
     comes back as a single ``(i, 1.0)`` and behaves exactly as the old
     round-to-one-cell did.
 
@@ -169,8 +177,8 @@ def delta_weights(coord: float, extent: float, dx: float, n: int,
     * Mirrored positions give weights equal only to ~4e-15, so any symmetry
       assertion built on this needs a tolerance and cannot use ``==``.
     """
-    g = (coord + extent / 2.0) / dx - 0.5
-    if abs(g - round(g)) < tol:          # exact cell centre: no spreading
+    g = (coord + extent / 2.0) / dx - offset
+    if abs(g - round(g)) < tol:          # exactly on a node: no spreading
         g = float(round(g))
     i = math.floor(g)
     f = g - i
@@ -214,6 +222,39 @@ def source_measure(spans, dx: float, ndim: int = 2) -> float:
     if len(spans) < ndim:                    # unlisted axes are deltas too
         n_delta += ndim - len(spans)
     return dx ** (-n_delta)
+
+
+class PointSource:
+    """Soft current point source placed with linear weights (meep's rule).
+
+    ``wx`` / ``wy`` are ``delta_weights`` lists on the grid this mask is built
+    on; the mask is their outer product times the point measure 1/dx^2 from
+    ``source_measure`` -- the same measure a one-cell LineSource carries, so
+    a point that happens to sit on a node is bitwise the old placement.
+
+    Under a mirror fold the SHIM shifts the indices into the kept half and
+    drops the rest before calling this; the wall supplies the image, so a
+    delta straddling the cut is driven once at half weight on the kept side
+    and once more by the mirror, which is exactly the full-cell current. That
+    is the rule the first attempt at this fix lacked (it folded indices
+    computed on the full cell and indexed off the half grid).
+    """
+
+    def __init__(self, grid: Grid, wx, wy, profile):
+        self.profile = profile
+        self.dt = grid.dt
+        bind_dt(profile, grid.dt)
+        mask = grid.zeros(grid.nx, grid.ny)
+        for i, a in wx:
+            for j, b in wy:
+                if not (0 <= i < grid.nx and 0 <= j < grid.ny):
+                    raise ValueError(f"point source weight at ({i}, {j}) "
+                                     f"outside grid {grid.nx}x{grid.ny}")
+                mask[i, j] = a * b
+        self.mask = mask * source_measure((1, 1), grid.dx)
+
+    def amplitude(self, t_idx: int) -> float:
+        return self.profile.amplitude((t_idx + 0.5) * self.dt)
 
 
 class LineSource:

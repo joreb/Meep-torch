@@ -861,8 +861,25 @@ class fields:
         return src.profile() if hasattr(src, "profile") else src
 
     def add_point_source(self, c, src, pt, amplitude=1.0):
-        self._add_mask_source(c, src, *_clamp_ij(pt, self.s.gs),
-                              None, None, amplitude)
+        """meep fields::add_point_source: the delta is placed with linear
+        weights on the cell-centre lattice (core.sources.delta_weights), the
+        same rule Simulation._point_source applies to an mp.Source, so the
+        two construction paths cannot disagree. Under a fold the indices
+        shift into the kept half and the rest is dropped (the wall images
+        it). wiki/bugs/point-source-snapped-not-interpolated.md"""
+        if c not in ("Ez", "Ex"):                # TM: Jz only (Ex = 1D alias)
+            raise NotImplementedError(f"component {c!r}: TM Ez current sources only")
+        from ...core.sources import PointSource, delta_weights
+        gs, g = self.s.gs, self.s.grid
+        # the fold, read off the grids: gs is the full cell, g the kept half
+        cx, cy = gs.nx - g.nx, gs.ny - g.ny
+        wx = [(i - cx, w) for i, w in delta_weights(pt.x, gs.sx, gs.dx, gs.nx) if i >= cx]
+        wy = [(j - cy, w) for j, w in delta_weights(pt.y, gs.sy, gs.dx, gs.ny) if j >= cy]
+        src = PointSource(g, wx, wy, self._profile_of(src))
+        if amplitude != 1.0:
+            src.mask = src.mask * float(amplitude)
+        if src.mask.abs().sum() > 0:             # wholly in a discarded half: dropped
+            self._sources.append(src)
 
     def add_volume_source(self, c, src, where, amplitude=1.0):
         v = where if isinstance(where, Volume) else Volume(center=where)

@@ -942,6 +942,11 @@ class Simulation:
                                                center, gs, spec))
                 continue
             ix, j0, j1 = a0, b0, b1
+            pt = self._point_source(spec, prof, amp, amp_func, center, gs)
+            if pt is not None:
+                if pt.mask.abs().sum() > 0:      # wholly in a discarded half: dropped
+                    out.append(pt)
+                continue
             if self._sym_cy or self._sym_cx:
                 if amp_func is not None:
                     raise NotImplementedError(
@@ -1757,6 +1762,54 @@ class Simulation:
                     return       # the Bloch driver samples from its own loop
             self.init_sim()
             self.fields._register(name, mon)
+
+    def _point_source(self, spec, prof, amp, amp_func, center, gs):
+        """A zero-extent mp.Source placed with meep's linear weights, or None
+        when this spec is not one this path handles (extended sources, an
+        amp_func, TE Ex).
+
+        WHY: cell_index rounds a position to ONE cell, so a source at an
+        exact multiple of dx -- every centred tutorial source, and the
+        antenna at y = 1.25 -- lands half a cell off. A full cell hides it
+        when a symmetric PAIR snaps the same way; a mirror fold does not,
+        because the wall images the snapped position exactly (antenna
+        tutorial: h read 1.255, pattern 0.042 vs 0.004). And a source ON the
+        plane snapped wholly to the kept side was driven twice: once by the
+        mask, once by the wall. Weights fix both at once: the delta is 1/2
+        on each side of the plane, the kept half keeps its 1/2, the wall
+        supplies the other. wiki/bugs/point-source-snapped-not-interpolated.md
+
+        TM Ez ONLY, on the cell-centre lattice get_array_metadata declares
+        ((i + 1/2) dx). TE point sources keep the snapping path on purpose:
+        the TE lattices are not pinned by the same evidence. Extending this
+        with Ey on (centres, corners) and Hz on (corners, corners), read off
+        _STAGGER, took test_te_symmetry_parity's FULL-cell run from symmetric
+        to 2e-8 to 57% asymmetric, while that gate's own placement (OFF_X on
+        an integer-x column, OFF_Y on a half-y row) says Ey is at x offset 0
+        and y offset 1/2 -- which is half a cell from the Hz column the
+        bc76d0a parity fix pinned. Measure the TE lattices before spreading a
+        TE source; do not infer them from the stagger table.
+
+        The fold is a SHIFT of the indices into the kept half plus dropping
+        what falls below it -- the crop the earlier attempt lacked."""
+        from ..core.sources import PointSource, delta_weights
+        size = spec.size
+        if amp_func is not None or self.dimensions != 2 or self._pol != "tm":
+            return None
+        if size is not None and (float(size.x) != 0.0 or float(size.y) != 0.0):
+            return None
+        if spec.component not in ("Ez", "Dz"):
+            return None
+        c = center or Vector3()
+        wx = delta_weights(c.x, gs.sx, gs.dx, gs.nx)
+        wy = delta_weights(c.y, gs.sy, gs.dx, gs.ny)
+        # the fold: full-cell index -> kept-half index, drop what lies below
+        cx, cy = self._sym_cx, self._sym_cy
+        wx = [(i - cx, w) for i, w in wx if i >= cx]
+        wy = [(j - cy, w) for j, w in wy if j >= cy]
+        src = PointSource(self.grid, wx, wy, prof)
+        src.mask = src.mask * amp
+        return src
 
     def _x_line_source(self, jy, i0, i1, prof, amp, amp_func, center, gs, spec):
         """Wire an x-extended source to the engine's HLineSource.

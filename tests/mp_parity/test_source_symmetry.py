@@ -58,10 +58,6 @@ def test_centred_geometry_is_symmetric():
         assert _mirror_residual(eps, axis) < 1e-12
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "point source is snapped to one cell instead of split across the two it "
-    "falls between; a centred source on an even grid always lands half a cell "
-    "off. wiki/bugs/point-source-snapped-not-interpolated.md"))
 def test_centred_point_source_gives_a_symmetric_field():
     """Ez from a centred Ez source is even in both x and y.
 
