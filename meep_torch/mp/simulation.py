@@ -1972,6 +1972,36 @@ class Simulation:
         E, H = farfield_3d(faces, ks, obs)
         return E, H, freqs
 
+    def _n2f_medium(self, specs):
+        """eps at the near2far faces, which the far-field kernel needs.
+
+        meep reads eps and mu at each region's CENTRE in add_dft_near2far and
+        errors if the regions disagree (src/near2far.cpp:587-592), because one
+        homogeneous exterior is what the analytic Green function assumes. Same
+        rule here: sample the rasterised eps at each face's own cells, and
+        raise rather than silently average an inhomogeneous boundary.
+
+        Without this the kernel ran at the VACUUM wavenumber in every
+        background, which is a SHAPE error and not a scale one: a single
+        dipole in n = 1.2 came out with eight spurious lobes where physics
+        demands a flat pattern.
+        """
+        vals = []
+        for key in specs:
+            _, _, meta = self._last_acc[key]
+            pts = np.asarray(meta["pts"], dtype=float)
+            ii = np.clip((pts[:, 0] / self.gs.dx).astype(int), 0, self.grid.nx - 1)
+            jj = np.clip((pts[:, 1] / self.gs.dx).astype(int), 0, self.grid.ny - 1)
+            e = self._rm.eps_tm if self._pol == "tm" else self._rm.eps_te_xx
+            vals.append(float(np.asarray(e.detach().cpu())[ii, jj].mean()))
+        lo, hi = min(vals), max(vals)
+        if hi - lo > 1e-6 * max(1.0, hi):
+            raise NotImplementedError(
+                "near2far regions must sit in ONE homogeneous medium (meep "
+                f"raises the same way): eps over the faces runs {lo:.6g} to "
+                f"{hi:.6g}. Move the box into uniform background.")
+        return 0.5 * (lo + hi)
+
     def _defold_face(self, acc, meta):
         """Rebuild a near2far face's full-span (nfreq, 4, N) accumulator from
         its folded half-grid monitor: mirrored span rows carry the mirror
@@ -2014,7 +2044,9 @@ class Simulation:
         faces = faces_from_accs(self.grid, mons, accs)
         obs = np.array([[point.x + self.gs.sx / 2.0, point.y + self.gs.sy / 2.0]])
         ks = [2 * math.pi * f for f in freqs]
-        E, H = (farfield_tm if self._pol == "tm" else farfield_te)(faces, ks, obs)
+        eps_med = self._n2f_medium(specs)
+        E, H = (farfield_tm if self._pol == "tm" else farfield_te)(
+            faces, ks, obs, eps=eps_med)
         out = np.concatenate([E[:, 0, :], H[:, 0, :]], axis=1)   # (nfreq, 6)
         return out[0] if len(freqs) == 1 else out
 

@@ -21,6 +21,8 @@ Vacuum far region, meep units (eps0 = mu0 = 1, k = omega = 2 pi f).
 """
 from dataclasses import dataclass
 
+import math
+
 import numpy as np
 from scipy.special import hankel2
 
@@ -62,23 +64,45 @@ def line_source_fields_te(k, pts, x0=0.0, y0=0.0):
     return Hz, -mHx, -mHy    # (Hx, Hy) -> (-Ex, -Ey) under duality
 
 
-def _far_out_of_plane(faces, ks, obs_pts, pol):
+def _far_out_of_plane(faces, ks, obs_pts, pol, eps=1.0, mu=1.0):
     """Out-of-plane far phasor (Ez for TM, Hz for TE) at obs_pts.
 
     Shape (nfreq, nobs). Sums, per face point: the z current radiating via
     H0^(2), and the in-plane current radiating via H1^(2).
+
+    ``ks`` is the VACUUM ``2 pi f``. The medium enters twice and differently,
+    which is the whole point of separating them:
+
+        Hankel argument   k = omega sqrt(eps mu)      (the wavenumber)
+        electric current  omega mu / 4                (TM)
+        magnetic current  omega eps / 4               (TE, the dual)
+
+    meep does the same at ``src/near2far.cpp:217-228`` and reads eps/mu at
+    each region's centre in ``add_dft_near2far``, erroring if the regions
+    disagree.
+
+    This was vacuum-only: ``k`` was used for BOTH the Hankel argument and the
+    current coefficient, so every far field computed in a non-unit background
+    was wrong -- not by a scale, which a normalised pattern would hide, but in
+    SHAPE. A single dipole in n = 1.2, which must radiate isotropically in 2D,
+    came out with 8 spurious lobes and an 82% spread; at n = 1.0 the same
+    probe is flat to 0.2%. The phase error across a box of half-width L is
+    ``2 pi L (n - 1) / lambda``, so the faces stop summing coherently as soon
+    as that approaches a cycle.
     """
     ks = np.asarray(ks, dtype=float)
     obs = np.asarray(obs_pts, dtype=float)
     out = np.zeros((len(ks), len(obs)), dtype=complex)
+    n_med = math.sqrt(eps * mu)
     for face in faces:
         nx, ny = face.normal
         dxo = obs[:, None, 0] - face.pts[None, :, 0]     # (nobs, N)
         dyo = obs[:, None, 1] - face.pts[None, :, 1]
         R = np.hypot(dxo, dyo)
         quad = face.w if face.w is not None else 1.0
-        for fi, k in enumerate(ks):
-            w = k
+        for fi, omega in enumerate(ks):
+            k = omega * n_med                 # wavenumber IN THE MEDIUM
+            w = omega * (mu if pol == "tm" else eps)
             Fz = face.E[fi] * quad                       # Ez (TM) / Hz (TE)
             Ht = face.H[fi] * quad                       # Hy or Hx (TM); Ey or Ex (TE)
             if pol == "tm":
@@ -111,29 +135,36 @@ def _rhat(faces, obs):
     return d[:, 0] / r, d[:, 1] / r
 
 
-def farfield_tm(faces, ks, obs_pts):
-    """Far (E, H) 3-vectors, shapes (nfreq, nobs, 3). H = R_hat x E."""
+def farfield_tm(faces, ks, obs_pts, eps=1.0, mu=1.0):
+    """Far (E, H) 3-vectors, shapes (nfreq, nobs, 3). H = R_hat x E / Z.
+
+    ``Z = sqrt(mu / eps)`` is the wave impedance OF THE MEDIUM, 1 only in
+    vacuum. A normalised radiation pattern cannot see this -- it is one
+    uniform factor on |E x H*| -- but an absolute far flux can, and did.
+    """
     obs = np.asarray(obs_pts, dtype=float)
-    Ez = _far_out_of_plane(faces, ks, obs, "tm")
+    Ez = _far_out_of_plane(faces, ks, obs, "tm", eps=eps, mu=mu)
     rx, ry = _rhat(faces, obs)
+    inv_Z = math.sqrt(eps / mu)
     E = np.zeros(Ez.shape + (3,), dtype=complex)
     H = np.zeros_like(E)
     E[..., 2] = Ez
-    H[..., 0] = Ez * ry
-    H[..., 1] = -Ez * rx
+    H[..., 0] = Ez * ry * inv_Z
+    H[..., 1] = -Ez * rx * inv_Z
     return E, H
 
 
-def farfield_te(faces, ks, obs_pts):
-    """Dual: far Hz; E = -R_hat x H."""
+def farfield_te(faces, ks, obs_pts, eps=1.0, mu=1.0):
+    """Dual: far Hz; E = -Z R_hat x H."""
     obs = np.asarray(obs_pts, dtype=float)
-    Hz = _far_out_of_plane(faces, ks, obs, "te")
+    Hz = _far_out_of_plane(faces, ks, obs, "te", eps=eps, mu=mu)
     rx, ry = _rhat(faces, obs)
+    Z = math.sqrt(mu / eps)
     E = np.zeros(Hz.shape + (3,), dtype=complex)
     H = np.zeros_like(E)
     H[..., 2] = Hz
-    E[..., 0] = -Hz * ry
-    E[..., 1] = Hz * rx
+    E[..., 0] = -Hz * ry * Z
+    E[..., 1] = Hz * rx * Z
     return E, H
 
 
