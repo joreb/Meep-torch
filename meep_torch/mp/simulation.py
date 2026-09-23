@@ -1954,7 +1954,20 @@ class Simulation:
                 "positive extent on all three axes")
         mon = Near2FarBox3D(self._coeffs.dt, list(freqs), box, gs.dx,
                             dtype=self.dtype)
-        self._register_monitor(name, "n2f3d", mon, {"freqs": list(freqs)})
+        # ONE homogeneous exterior: eps at each region's centre, as meep's
+        # add_dft_near2far reads it (src/near2far.cpp:587-592), and raise
+        # if the regions disagree. (3D carries no mu.)
+        eps3 = self._eps3d
+        vals = [float(eps3[max(0, min(gs.nx - 1, cell_index(r.center.x, gs))),
+                          max(0, min(gs.ny - 1, cell_index_y(r.center.y, gs))),
+                          max(0, min(gs.nz - 1, cell_index_z(r.center.z, gs)))])
+                for r in regions]
+        if max(vals) - min(vals) > 1e-6 * max(1.0, max(vals)):
+            raise NotImplementedError(
+                "near2far regions must sit in ONE homogeneous medium (meep "
+                f"add_dft_near2far rule); got eps {vals}")
+        self._register_monitor(name, "n2f3d", mon,
+                               {"freqs": list(freqs), "eps": vals[0]})
         self._n2f_specs = getattr(self, "_n2f_specs", {})
         self._n2f_specs[name] = ([name], list(freqs))
         return self, name, freqs
@@ -1963,13 +1976,13 @@ class Simulation:
         """Far (E, H), each (nfreq, nobs, 3), at meep-coordinate points."""
         from ..core.near2far_3d import farfield_3d
         specs, freqs = self._n2f_specs[dft_name(name)]
-        acc, mon, _meta = self._last_acc[specs[0]]
+        acc, mon, meta = self._last_acc[specs[0]]
         faces = mon.faces(acc)
         gs = self.gs
         obs = (np.asarray(obs_pts, dtype=float)
                + np.array([gs.sx / 2.0, gs.sy / 2.0, gs.sz / 2.0]))
         ks = [2 * math.pi * f for f in freqs]
-        E, H = farfield_3d(faces, ks, obs)
+        E, H = farfield_3d(faces, ks, obs, eps=meta.get("eps", 1.0))
         return E, H, freqs
 
     def _n2f_medium(self, specs):

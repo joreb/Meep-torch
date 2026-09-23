@@ -15,19 +15,37 @@ DATA = pathlib.Path(__file__).parent / "data" / "dipole_cyl_n2f.json"
 FCEN = 1.0
 
 
-def _pattern(thetas):
+def _pattern(thetas, eps=1.0, k_scale=None, Z=None):
+    """On-axis Ez dipole in a homogeneous ``eps``; the far pattern from the
+    medium kernel (k = n omega, Z = 1/n) unless overridden."""
+    import torch
     res = 25
     dr = 1.0 / res
     nr, nz = int(3.0 * res), int(6.0 * res)
-    c = build_bor_coeffs(nr, nz, dr, m=0, n_abs_r=res, n_abs_z=res)
+    n = math.sqrt(eps)
+    e = None if eps == 1.0 else torch.full((nr, nz), float(eps), dtype=torch.float64)
+    c = build_bor_coeffs(nr, nz, dr, m=0, eps=e, n_abs_r=res, n_abs_z=res)
     pulse = GaussianPulse(FCEN, 0.2)
     src = ("Ez", 0, nz // 2)
     n_steps = int(round(60.0 / c.dt))
     _, planes = run_bor_dft(init_bor_state(nr, nz), c, n_steps,
                             src=src, src_profile=pulse, freqs=[FCEN])
+    k = 2 * math.pi * FCEN * (n if k_scale is None else k_scale)
     return farfield_bor_m0(planes, c, ir=int(1.5 * res),
                            jz0=int(1.5 * res), jz1=int(4.5 * res),
-                           thetas=thetas, k=2 * math.pi * FCEN)[0]
+                           thetas=thetas, k=k, Z=(1.0 / n if Z is None else Z))[0]
+
+
+def test_dipole_pattern_sin2_in_medium():
+    """n = 1.5 background: sin^2 only when the kernel gets the medium k and
+    Z. The vacuum k on the same planes is a shape error, not a scale one."""
+    thetas = np.radians(np.linspace(5, 175, 35))
+    sin2 = np.sin(thetas) ** 2
+    got = _pattern(thetas, eps=2.25)
+    rms = float(np.sqrt(np.mean((got - sin2) ** 2)))
+    assert rms <= 0.03, f"rms vs sin^2 in n=1.5: {rms:.4f}"
+    wrong = _pattern(thetas, eps=2.25, k_scale=1.0, Z=1.0)
+    assert float(np.sqrt(np.mean((wrong - sin2) ** 2))) > 0.1
 
 
 def test_dipole_pattern_sin2_and_oracle():

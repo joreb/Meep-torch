@@ -10,7 +10,7 @@ accumulate int s(t) e^{-i w t} dt). Far zone (kR >> 1):
 
   A = INT J g dS,  F = INT M g dS
   E = -ik [ A - rhat (rhat . A) - rhat x F ] g-factored
-  H = rhat x E                        (Z0 = c = 1, exact to O(1/kR))
+  H = rhat x E / Z                    (Z = sqrt(mu/eps), exact to O(1/kR))
 
 Signs pinned by the analytic point-dipole self-test
 (test_near2far_3d.py::test_green3d_selftest).
@@ -43,10 +43,16 @@ class Face3D:
     H: np.ndarray            # (nfreq, N, 3) complex
 
 
-def dipole_fields_3d(k, pts, src_pt=(0.0, 0.0, 0.0), comp=2, f0=1.0):
-    """Exact fields of a unit point electric dipole (e^{+iwt} phasors,
-    vacuum): conjugate of the standard e^{-iwt} formulae. ``comp`` is the
-    dipole direction (0/1/2 = x/y/z). Returns (E, H), each (N, 3) complex."""
+def dipole_fields_3d(k, pts, src_pt=(0.0, 0.0, 0.0), comp=2, f0=1.0,
+                     eps=1.0, mu=1.0):
+    """Exact fields of a unit point electric dipole (e^{+iwt} phasors):
+    conjugate of the standard e^{-iwt} formulae. ``comp`` is the dipole
+    direction (0/1/2 = x/y/z). Returns (E, H), each (N, 3) complex.
+
+    ``k`` is the wavenumber IN THE MEDIUM. Relative to the vacuum formulae
+    at that k, a homogeneous (eps, mu) scales E by 1/eps (Jackson 9.18 with
+    1/(4 pi eps)) and H by omega/k = 1/sqrt(eps mu) (the c k^2 prefactor is
+    omega k), so H/E carries the medium admittance sqrt(eps/mu)."""
     p = np.zeros(3)
     p[comp] = f0
     rv = np.asarray(pts, dtype=float) - np.asarray(src_pt, dtype=float)
@@ -60,13 +66,32 @@ def dipole_fields_3d(k, pts, src_pt=(0.0, 0.0, 0.0), comp=2, f0=1.0):
         + (3 * n * pdotn[:, None] - p) * (1.0 / r ** 3 + 1j * k / r ** 2)[:, None]
     )
     H = (k * k * ph / (4 * np.pi))[:, None] * nxp * (1.0 / r - 1j / (k * r ** 2))[:, None]
+    if eps != 1.0 or mu != 1.0:
+        E = E / eps
+        H = H / math.sqrt(eps * mu)
     return E, H
 
 
-def farfield_3d(faces, ks, obs_pts):
+def farfield_3d(faces, ks, obs_pts, eps=1.0, mu=1.0):
     """Far (E, H) 3-vectors at obs_pts, shapes (nfreq, nobs, 3).
-    H = rhat x E (local plane wave, vacuum)."""
-    ks = np.asarray(ks, dtype=float)
+    H = rhat x E / Z (local plane wave).
+
+    ``ks`` is the VACUUM ``2 pi f``; the homogeneous exterior (eps, mu)
+    enters as in core/near2far.py and meep's green3d
+    (src/near2far.cpp:141-149): the wavenumber is ``k = omega sqrt(eps mu)``
+    everywhere a phase or 1/R appears, the electric-current potential A
+    radiates with ``omega mu = k Z`` (Z = sqrt(mu/eps)) while the magnetic
+    one F radiates with ``k``, and the far H is E / Z. Vacuum is bitwise the
+    old path (Z = 1.0 multiplies and divides exactly).
+
+    This was vacuum-only: the same scrambling the 2D kernel showed (eight
+    lobes on an isotropic source at n = 1.2) applies to every 3D far field
+    computed in a non-unit background, because the box-scale phase error
+    ``2 pi L (n - 1) / lambda`` is what breaks the coherent sum, not the
+    overall scale.
+    """
+    ks = np.asarray(ks, dtype=float) * math.sqrt(eps * mu)
+    Z = math.sqrt(mu / eps)
     obs = np.asarray(obs_pts, dtype=float)
     cen = np.mean([f.pts.mean(axis=0) for f in faces], axis=0)
     d = obs - cen
@@ -86,8 +111,8 @@ def farfield_3d(faces, ks, obs_pts):
             F = ph @ (M * (face.dA))
             At = A - rhat * (A * rhat).sum(axis=1, keepdims=True)
             g = np.exp(-1j * k * R) / (4 * np.pi * R)
-            E[fi] += -1j * k * g[:, None] * (At - np.cross(rhat, F))
-    H = np.cross(np.broadcast_to(rhat, E.shape), E)
+            E[fi] += -1j * k * g[:, None] * (Z * At - np.cross(rhat, F))
+    H = np.cross(np.broadcast_to(rhat, E.shape), E) / Z
     return E, H
 
 

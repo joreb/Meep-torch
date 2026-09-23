@@ -41,6 +41,43 @@ def test_green3d_selftest():
     assert relE < 2e-3 and relH < 2e-3
 
 
+def test_green3d_selftest_medium():
+    """Same box, homogeneous eps = 2.25 (n = 1.5) outside and in.
+
+    The kernel takes the VACUUM 2 pi f and the medium separately: the
+    wavenumber is n omega, the electric-current term carries omega mu, and
+    H = rhat x E / Z. The analytic dipole in the medium is the vacuum formula
+    at k = n omega with E / eps and H / n. Before the medium reached the
+    kernel this ran at the vacuum k and the six faces stopped summing
+    coherently -- the 2D twin of this defect gave an antenna tutorial
+    rel err 0.645 against meep's 0.005."""
+    eps = 2.25
+    n = math.sqrt(eps)
+    src = (0.13, -0.07, 0.21)
+    # 61 points, not 41: the box is n times larger in wavelengths, and the
+    # midpoint rule's error tracks samples per wavelength (41 -> 61 halves
+    # it here exactly as it does in vacuum), so this is the vacuum gate's
+    # quadrature at the medium's k, not a looser kernel.
+    faces = analytic_box_faces(K * n, (1.0, 61), src, comp=2)
+    for f in faces:                          # vacuum formula -> medium fields
+        f.E /= eps
+        f.H /= n
+    th = np.linspace(0.05, math.pi - 0.05, 24)
+    ph = np.linspace(-math.pi, math.pi, 12, endpoint=False)
+    thg, phg = np.meshgrid(th, ph, indexing="ij")
+    obs = np.stack([np.sin(thg) * np.cos(phg), np.sin(thg) * np.sin(phg),
+                    np.cos(thg)], axis=-1).reshape(-1, 3) * 1000.0
+    E, H = farfield_3d(faces, [K], obs, eps=eps)
+    Ea, Ha = dipole_fields_3d(K * n, obs, src_pt=src, comp=2, eps=eps)
+    relE = np.linalg.norm(E[0] - Ea) / np.linalg.norm(Ea)
+    relH = np.linalg.norm(H[0] - Ha) / np.linalg.norm(Ha)
+    print(f"green3d selftest n=1.5: rel E {relE:.2e}  rel H {relH:.2e}")
+    assert relE < 2e-3 and relH < 2e-3
+    # and the vacuum kernel on the same faces is NOT a small error
+    Ev, _ = farfield_3d(faces, [K], obs)
+    assert np.linalg.norm(Ev[0] - Ea) / np.linalg.norm(Ea) > 0.3
+
+
 def test_fdtd_dipole_pattern_3d():
     n = 64
     npml = 8

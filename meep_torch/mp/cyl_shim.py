@@ -626,6 +626,20 @@ def add_near2far(sim, fcen, df, nfreq, *regions):
     run.n2f_box = (int(round(max(rs) / g.dr)),
                    int(round((min(zs) + g.sz / 2) / g.dr)),
                    int(round((max(zs) + g.sz / 2) / g.dr)))
+    # The far-field kernel assumes ONE homogeneous exterior. meep reads eps
+    # at each region's centre in add_dft_near2far and errors if they
+    # disagree (src/near2far.cpp:587-592); same rule, same table the stepper
+    # solves with (cyl_array reports it for Dielectric).
+    eps = cyl_eps(sim, g).detach().cpu().numpy()
+    vals = []
+    for reg in regions:
+        i, j = g.index("Ez", reg.center)
+        vals.append(float(eps[max(0, min(g.nr - 1, i)),
+                              max(0, min(g.nz - 1, j))]))
+    if max(vals) - min(vals) > 1e-6 * max(1.0, max(vals)):
+        raise _NIE("near2far regions must sit in ONE homogeneous medium "
+                   f"(meep add_dft_near2far rule); got eps {vals}")
+    run.n2f_eps = vals[0]
     return run
 
 
@@ -650,7 +664,12 @@ def get_farfield(sim, n2f, point, tol=None):
     R = math.hypot(r, z)
     theta = math.atan2(r, z)
     ir, jz0, jz1 = run.n2f_box
-    k = 2 * math.pi * float(run.dft_freqs[0])
+    # Medium wavenumber and impedance (mu = 1: the cylindrical steppers
+    # carry no permeability). Before this the kernel ran at the VACUUM k in
+    # every background, which scrambles the pattern's shape, not its scale.
+    n_med = math.sqrt(float(getattr(run, "n2f_eps", 1.0)))
+    k = 2 * math.pi * float(run.dft_freqs[0]) * n_med
+    Z = 1.0 / n_med
     # The stored DFT carries meep's e^{+i w t} kernel, so a phasor here goes
     # as e^{-i k R} outward. farfield_bor_m_complex and the `i k e^{i k R}`
     # prefactor below were both written for the opposite (e^{-i w t} kernel)
@@ -664,11 +683,11 @@ def get_farfield(sim, n2f, point, tol=None):
     src = {kk: np.conj(vv) for kk, vv in run.dft.items()}
     Et, Epf = farfield_bor_m_complex(src, run.c, -int(sim.m), ir=ir,
                                      jz0=jz0, jz1=jz1,
-                                     thetas=np.array([theta]), k=k)
+                                     thetas=np.array([theta]), k=k, Z=Z)
     Et, Epf = Et[0, 0], Epf[0, 0]
     pref = 1j * k * np.exp(1j * k * R) / (4 * np.pi * R)
     Et, Epf = pref * Et, pref * Epf
-    Ht, Hpf = -Epf, Et
+    Ht, Hpf = -Epf / Z, Et / Z              # H = rhat x E / Z
     ct, st = math.cos(theta), math.sin(theta)
     return [Et * ct, Epf, -Et * st, Ht * ct, Hpf, -Ht * st]
 

@@ -39,9 +39,15 @@ def run_bor_dft(state, c, n_steps, *, src, src_profile, freqs):
     return state, acc
 
 
-def farfield_bor_m0(planes, c, *, ir, jz0, jz1, thetas, k):
+def farfield_bor_m0(planes, c, *, ir, jz0, jz1, thetas, k, Z=1.0):
     """Normalized |E_theta|^2 pattern from the (r, z) index box
-    [0, ir] x [jz0, jz1] for each frequency plane (m = 0)."""
+    [0, ir] x [jz0, jz1] for each frequency plane (m = 0).
+
+    ``k`` is the wavenumber IN THE MEDIUM and ``Z = sqrt(mu/eps)`` its wave
+    impedance: the electric-current vector potential N radiates as ``Z N``
+    against the magnetic one L (green3d, src/near2far.cpp:149). Both were
+    vacuum-only, and a normalised pattern hides the scale while the wrong k
+    scrambles the shape."""
     dr = c.dr
     nfreq = planes["Ez"].shape[0]
     out = np.empty((nfreq, len(thetas)))
@@ -79,23 +85,25 @@ def farfield_bor_m0(planes, c, *, ir, jz0, jz1, thetas, k):
                 Nx += sgn * (-1.0) * 2j * np.pi * dr * np.sum(rp2 * hphi_z * j1(b2)) * ph2
                 Ly += sgn * (-1.0) * 2j * np.pi * dr * np.sum(rp2 * er_z * j1(b2)) * ph2
             Nt = Nx * ct - Nz * st
-            Et[ti] = -(Nt + Ly)
+            Et[ti] = -(Z * Nt + Ly)
         p = np.abs(Et) ** 2
         out[fi] = p / p.max()
     return out
 
 
-def farfield_bor_m(planes, c, m, *, ir, jz0, jz1, thetas, k):
+def farfield_bor_m(planes, c, m, *, ir, jz0, jz1, thetas, k, Z=1.0):
     """General-m far pattern |E_theta|^2 + |E_phi|^2, normalized (W7.9)."""
     Et, Ep = farfield_bor_m_complex(planes, c, m, ir=ir, jz0=jz0, jz1=jz1,
-                                    thetas=thetas, k=k)
+                                    thetas=thetas, k=k, Z=Z)
     p = np.abs(Et) ** 2 + np.abs(Ep) ** 2
     return p / p.max(axis=1, keepdims=True)
 
 
-def farfield_bor_m_complex(planes, c, m, *, ir, jz0, jz1, thetas, k):
+def farfield_bor_m_complex(planes, c, m, *, ir, jz0, jz1, thetas, k, Z=1.0):
     """Complex (E_theta, E_phi) per frequency (un-normalized) -- the
     coherent building block for per-m source sums (off-axis dipoles).
+
+    ``k`` is the medium wavenumber, ``Z`` its impedance (see farfield_bor_m0).
 
     phi-integrals per current component (beta = k r' sin theta):
       plain:  A_m  = 2 pi i^m J_m(beta)
@@ -164,8 +172,8 @@ def farfield_bor_m_complex(planes, c, m, *, ir, jz0, jz1, thetas, k):
                          (sgn * ep_z, sgn * -er_z, np.zeros_like(er_z)), ct, st)
             Nt = N[0] * ct - N[2] * st
             Lt = L[0] * ct - L[2] * st
-            Et[ti] = -(Nt + L[1])
-            Ep_far[ti] = -(N[1] - Lt)
+            Et[ti] = -(Z * Nt + L[1])
+            Ep_far[ti] = -(Z * N[1] - Lt)
         out_t[fi] = Et
         out_p[fi] = Ep_far
     return out_t, out_p
