@@ -182,3 +182,35 @@ def test_a_3d_point_dipole_is_resolution_independent():
     # doubling the resolution must not move the field by anything like the
     # factor of 8 a missing dx^3 would produce
     assert 0.5 < ratio < 2.0, f"peak moved {ratio:.3f}x with resolution"
+
+
+def test_delta_weights_matches_meeps_measured_footprint():
+    """A point between cell centres spreads over both, as meep does.
+
+    The reference is meep's MEASURED footprint, not a derivation of ours: a
+    centred source on a 60-cell, 3.0 um grid gives cells 29 and 30 at 0.5 each
+    (wiki/bugs/point-source-snapped-not-interpolated). Snapping to round()
+    puts the whole delta on one cell, displaced up to half a cell.
+
+    Both edge cases here bit a real attempt and are not hypothetical: at an
+    exact cell centre floating point gives g = -1.8e-15, so floor() lands on
+    cell -1 and the weight leaks off the grid; and mirrored positions give
+    weights equal only to ~4e-15, so a symmetry check on top needs a
+    tolerance rather than ==.
+    """
+    from meep_torch.core.sources import delta_weights
+
+    assert delta_weights(0.0, 3.0, 0.05, 60) == [(29, 0.5), (30, 0.5)]
+    # on a cell centre: one weight, identical to the old placement
+    assert delta_weights(-1.475, 3.0, 0.05, 60) == [(0, 1.0)]
+    # at either edge the off-grid neighbour is dropped, never index -1 or n
+    assert delta_weights(-1.5, 3.0, 0.05, 60) == [(0, 0.5)]
+    assert delta_weights(1.5, 3.0, 0.05, 60) == [(59, 0.5)]
+    # weights always sum to 1 inside the grid: the delta is distributed,
+    # not rescaled
+    for c in (0.0, 0.013, -0.37, 1.0):
+        assert sum(w for _, w in delta_weights(c, 3.0, 0.05, 60)) == pytest.approx(1.0)
+    # mirrored positions mirror, to floating point
+    a = [w for _, w in delta_weights(0.3, 3.0, 0.05, 60)]
+    b = [w for _, w in delta_weights(-0.3, 3.0, 0.05, 60)][::-1]
+    assert a == pytest.approx(b, abs=1e-12)

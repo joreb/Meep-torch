@@ -142,6 +142,45 @@ class CWRamp:
         return math.sin(2 * math.pi * self.fcen * t) * ramp
 
 
+def delta_weights(coord: float, extent: float, dx: float, n: int,
+                  tol: float = 1e-9):
+    """Linear weights spreading a point source over its two neighbours.
+
+    Injecting a delta on a discrete grid means distributing it over the
+    neighbouring Yee points, which is what meep does and what rounding to one
+    cell does not. For a centred source on an EVEN grid -- the normal case for
+    these tutorials, not an edge case -- the position falls exactly between two
+    cell centres, and rounding displaces it half a cell on every axis.
+
+        g = (coord + extent/2) / dx - 1/2     position in cell-CENTRE units
+        i = floor(g);  f = g - i
+        weight(i) = 1 - f,  weight(i+1) = f
+
+    Returns ``[(index, weight), ...]``, dropping zero weights and any index
+    outside ``[0, n)``. A position landing exactly on a cell centre therefore
+    comes back as a single ``(i, 1.0)`` and behaves exactly as the old
+    round-to-one-cell did.
+
+    TWO TRAPS, both measured rather than anticipated:
+
+    * At an exact cell centre floating point gives ``g = -1.8e-15`` rather than
+      0, so ``floor`` lands on cell -1 and the weight leaks off the grid. The
+      ``tol`` snap is for that, not for tidiness.
+    * Mirrored positions give weights equal only to ~4e-15, so any symmetry
+      assertion built on this needs a tolerance and cannot use ``==``.
+    """
+    g = (coord + extent / 2.0) / dx - 0.5
+    if abs(g - round(g)) < tol:          # exact cell centre: no spreading
+        g = float(round(g))
+    i = math.floor(g)
+    f = g - i
+    out = []
+    for idx, w in ((i, 1.0 - f), (i + 1, f)):
+        if w > tol and 0 <= idx < n:
+            out.append((int(idx), float(w)))
+    return out
+
+
 def source_measure(spans, dx: float, ndim: int = 2) -> float:
     """The measure a source of these spans carries, derived, not typed.
 
