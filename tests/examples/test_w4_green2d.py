@@ -118,3 +118,81 @@ def test_periodic_tiling_grating_orders():
     for w in want:
         assert min(abs(pk - w) for pk in peaks) < math.radians(1.5), \
             f"no lobe at {math.degrees(w):.1f} deg; peaks {[round(math.degrees(x),1) for x in peaks]}"
+
+
+def _medium_faces(n_index, cx, cy, half, n_pts):
+    """Box faces carrying the exact TM line-source field of a MEDIUM.
+
+    The wave number is `k = n omega`, and with `mu = 1` the impedance is
+    `Z = 1/n`, so `H = n E` against the vacuum formula at the same k.
+    """
+    k_med = K * n_index
+
+    def fields(pts):
+        Ez, Hx, Hy = line_source_fields_tm(k_med, pts, 0.0, 0.0)
+        return Ez, n_index * Hx, n_index * Hy
+
+    return _box_faces(cx, cy, half, n_pts, fields)
+
+
+def test_tm_far_field_is_independent_of_box_size():
+    """The same source, enclosed by DIFFERENT boxes, must radiate the same.
+
+    Surface equivalence says the far field depends on the source, not on where
+    the equivalence contour was drawn. Translation is already gated above;
+    this pins the other freedom, the box SIZE, which is what actually
+    interrogates how the four faces sum: a wrong normal, quadrature weight or
+    relative phase scales with the contour and so moves when it grows.
+
+    Run in a MEDIUM (n = 1.2) because that is where it bites. Every far field
+    this repo produced in a non-unit background used the vacuum wavenumber and
+    was wrong in SHAPE -- see wiki/bugs/near2far-was-vacuum-only.md -- and the
+    error is an interference pattern at the BOX scale, so it is precisely a
+    box-size sweep that exposes it.
+
+    Measured margin, so nobody loosens the bound without knowing what it
+    costs. Boxes at half-width 0.5, 0.9 and 1.4:
+
+        correct kernel   0.0002   0.0002
+        vacuum kernel    0.8863   1.5520
+
+    Four orders of magnitude. This gate on its own would have caught the
+    vacuum-kernel defect with no meep, no tutorial and no FDTD run at all.
+    """
+    n_index = 1.2
+    th = np.linspace(0, 2 * math.pi, 24, endpoint=False)
+    obs = np.stack([800.0 * np.cos(th), 800.0 * np.sin(th)], axis=1)
+
+    ref = None
+    for half, n_pts in ((0.5, 80), (0.9, 144), (1.4, 224)):
+        faces = _medium_faces(n_index, 0.0, 0.0, half, n_pts)
+        E, _ = farfield_tm(faces, [K], obs, eps=n_index ** 2)
+        got = E[0, :, 2]
+        if ref is None:
+            ref = got
+            continue
+        err = np.abs(got - ref).max() / np.abs(ref).max()
+        assert err < 5e-3, f"half={half}: far field moved with the box, {err:.2e}"
+
+
+def test_the_box_size_gate_fails_on_the_vacuum_kernel():
+    """The gate above must BITE, so pin the defect it was written for.
+
+    Running the same medium faces through the vacuum kernel -- which is what
+    shipped until c5058bd -- has to move the answer between box sizes. Without
+    this, a regression that reverted the medium wavenumber would leave the
+    test above passing on whatever single box it happened to use.
+    """
+    n_index = 1.2
+    th = np.linspace(0, 2 * math.pi, 24, endpoint=False)
+    obs = np.stack([800.0 * np.cos(th), 800.0 * np.sin(th)], axis=1)
+
+    out = []
+    for half, n_pts in ((0.5, 80), (1.4, 224)):
+        faces = _medium_faces(n_index, 0.0, 0.0, half, n_pts)
+        E, _ = farfield_tm(faces, [K], obs)          # eps=1: the old behaviour
+        out.append(E[0, :, 2])
+    err = np.abs(out[1] - out[0]).max() / np.abs(out[0]).max()
+    assert err > 0.05, (
+        f"the vacuum kernel should NOT be box-size independent in a medium, "
+        f"but moved only {err:.2e} -- this gate has stopped discriminating")
