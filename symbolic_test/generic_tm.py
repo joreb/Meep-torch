@@ -22,6 +22,7 @@ from typing import NamedTuple
 import torch
 
 from meep_torch.core.symbolic import HALF, YEE, PSI_NEW, STRETCHED
+from meep_torch.core.grid import default_device
 
 _AXES = ("x", "y")
 
@@ -44,7 +45,12 @@ def _shape(comp, n, walled=(True, True)):
                  for a in range(len(n)))
 
 
-def init(nx, ny, dtype=torch.float64, device="cpu"):
+def init(nx, ny, dtype=torch.float64, device=None):
+    # Same rule as core: resolve INSIDE, not as a default argument, so
+    # MEEP_TORCH_DEVICE still works without a module reload. This file kept
+    # `device="cpu"` through 8cea3d5 because that sweep ran `pytest tests/`
+    # and symbolic_test/ is the other declared testpath.
+    device = device or default_device()
     n = (nx, ny)
     z = lambda s: torch.zeros(*s, dtype=dtype, device=device)
     return GState(

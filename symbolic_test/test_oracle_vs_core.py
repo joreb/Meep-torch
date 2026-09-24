@@ -14,6 +14,7 @@ from meep_torch.core import symbolic as core
 
 from . import maxwell_sympy as oracle
 from .step_operator import extract
+from meep_torch.core.grid import default_device
 
 _PAIRS = (("Ez", "y", "Hx"), ("Ez", "x", "Hy"), ("Hx", "y", "Ez"),
           ("Hy", "x", "Ez"), ("Ey", "x", "Hz"), ("Hz", "y", "Ex"))
@@ -83,8 +84,14 @@ def test_whole_curl_expression_matches_typed_assembly():
 def test_whole_curl_numeric_agreement():
     fn, names, want = _whole_curl_pair()
     oracle_fn = sp.lambdify([sp.Symbol(n) for n in names], want)
-    g = torch.Generator().manual_seed(0)
-    vals = {n: torch.rand(7, 5, dtype=torch.float64, generator=g) + 0.5 for n in names}
+    # torch.Generator() is a CPU generator whatever the default device is, so
+    # it has to be built on the device the tensors will live on -- the third
+    # instance of this trap today (core/sources.py noise source, modes/
+    # transforms from_numpy, here).
+    dev = default_device()
+    g = torch.Generator(device=dev).manual_seed(0)
+    vals = {n: torch.rand(7, 5, dtype=torch.float64, generator=g, device=dev) + 0.5
+            for n in names}
     a, b = fn(*[vals[n] for n in names]), oracle_fn(*[vals[n] for n in names])
     torch.testing.assert_close(a, b, rtol=1e-14, atol=0)
 

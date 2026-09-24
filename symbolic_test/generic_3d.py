@@ -20,6 +20,7 @@ interior trim of each term is on the OTHER axis of that pair.
 import torch
 
 from meep_torch.core.stepper_3d import _pad_interior, _pad_pmc, _trim_full
+from meep_torch.core.grid import default_device
 
 XYZ = "xyz"
 CYCLIC = [(0, 1, 2), (1, 2, 0), (2, 0, 1)]      # (i, j, k)
@@ -104,7 +105,8 @@ def _avg(v, axis):
     return 0.5 * (v[sl0] + v[sl1])
 
 
-def check(n=12, npml=3, steps=6, dtype=torch.float64, device="cpu"):
+def check(n=12, npml=3, steps=6, dtype=torch.float64, device=None):
+    device = device or default_device()
     """Bitwise against step_3d before anything is timed."""
     from meep_torch.core.stepper_3d import (build_3d_coeffs, init_3d_state,
                                             step_3d)
