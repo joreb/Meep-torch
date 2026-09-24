@@ -78,6 +78,34 @@ def test_green3d_selftest_medium():
     assert np.linalg.norm(Ev[0] - Ea) / np.linalg.norm(Ea) > 0.3
 
 
+def test_green3d_far_field_is_box_independent():
+    """Surface equivalence does not care where the box sits: the same
+    dipole enclosed by a box of half-size 0.7 and one of 1.3 must give the
+    same far field, in vacuum and in a medium. A kernel with the wrong k or
+    impedance passes the self-test at ONE box only by accident of that box;
+    this is the check nothing ran before."""
+    src = (0.13, -0.07, 0.21)
+    th = np.linspace(0.05, math.pi - 0.05, 16)
+    ph = np.linspace(-math.pi, math.pi, 8, endpoint=False)
+    thg, phg = np.meshgrid(th, ph, indexing="ij")
+    obs = np.stack([np.sin(thg) * np.cos(phg), np.sin(thg) * np.sin(phg),
+                    np.cos(thg)], axis=-1).reshape(-1, 3) * 1000.0
+    for eps in (1.0, 2.25):
+        n = math.sqrt(eps)
+        outs = []
+        for half in (0.7, 1.3):
+            npts = int(round(61 * half))          # same samples per wavelength
+            faces = analytic_box_faces(K * n, (half, npts), src, comp=2)
+            for f in faces:
+                f.E /= eps
+                f.H /= n
+            E, _ = farfield_3d(faces, [K], obs, eps=eps)
+            outs.append(E[0])
+        rel = np.linalg.norm(outs[0] - outs[1]) / np.linalg.norm(outs[1])
+        print(f"green3d box independence eps={eps}: rel {rel:.2e}")
+        assert rel < 3e-3
+
+
 def test_fdtd_dipole_pattern_3d():
     n = 64
     npml = 8

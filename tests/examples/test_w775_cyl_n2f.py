@@ -15,14 +15,12 @@ DATA = pathlib.Path(__file__).parent / "data" / "dipole_cyl_n2f.json"
 FCEN = 1.0
 
 
-def _pattern(thetas, eps=1.0, k_scale=None, Z=None):
-    """On-axis Ez dipole in a homogeneous ``eps``; the far pattern from the
-    medium kernel (k = n omega, Z = 1/n) unless overridden."""
+def _planes(eps=1.0):
+    """On-axis Ez dipole in a homogeneous ``eps``: (coeffs, DFT planes)."""
     import torch
     res = 25
     dr = 1.0 / res
     nr, nz = int(3.0 * res), int(6.0 * res)
-    n = math.sqrt(eps)
     e = None if eps == 1.0 else torch.full((nr, nz), float(eps), dtype=torch.float64)
     c = build_bor_coeffs(nr, nz, dr, m=0, eps=e, n_abs_r=res, n_abs_z=res)
     pulse = GaussianPulse(FCEN, 0.2)
@@ -30,10 +28,36 @@ def _pattern(thetas, eps=1.0, k_scale=None, Z=None):
     n_steps = int(round(60.0 / c.dt))
     _, planes = run_bor_dft(init_bor_state(nr, nz), c, n_steps,
                             src=src, src_profile=pulse, freqs=[FCEN])
+    return c, planes
+
+
+def _pattern(thetas, eps=1.0, k_scale=None, Z=None, box=(1.5, 1.5, 4.5)):
+    """Far pattern from the medium kernel (k = n omega, Z = 1/n) unless
+    overridden, through the (r, z0, z1) box in um."""
+    res = 25
+    n = math.sqrt(eps)
+    c, planes = _planes(eps)
     k = 2 * math.pi * FCEN * (n if k_scale is None else k_scale)
-    return farfield_bor_m0(planes, c, ir=int(1.5 * res),
-                           jz0=int(1.5 * res), jz1=int(4.5 * res),
+    return farfield_bor_m0(planes, c, ir=int(box[0] * res),
+                           jz0=int(box[1] * res), jz1=int(box[2] * res),
                            thetas=thetas, k=k, Z=(1.0 / n if Z is None else Z))[0]
+
+
+def test_dipole_pattern_is_box_independent():
+    """The same planes read through two boxes give the same pattern, in a
+    medium: surface equivalence does not care where the box sits, and a
+    kernel at the wrong k would agree with sin^2 at one box only by
+    accident of that box."""
+    thetas = np.radians(np.linspace(5, 175, 35))
+    res, n = 25, 1.5
+    c, planes = _planes(eps=2.25)
+    k, Z = 2 * math.pi * FCEN * n, 1.0 / n
+    pats = [farfield_bor_m0(planes, c, ir=int(r * res), jz0=int(z0 * res),
+                            jz1=int(z1 * res), thetas=thetas, k=k, Z=Z)[0]
+            for r, z0, z1 in ((1.0, 2.0, 4.0), (1.8, 1.2, 4.8))]
+    rms = float(np.sqrt(np.mean((pats[0] - pats[1]) ** 2)))
+    print(f"cyl box independence n=1.5: rms {rms:.4f}")
+    assert rms <= 0.02
 
 
 def test_dipole_pattern_sin2_in_medium():
