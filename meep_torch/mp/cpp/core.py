@@ -211,6 +211,21 @@ class structure:
         st._nabs_sides = [[0, 0], [0, 0]]        # sim folded its ramp already
         st._y_pmc = sim._y_pmc
         cut_by_rot = sim._sym_rot2 or sim._sym_rot4
+        # The wall parity is passed as the DECLARED PHASE. That looks wrong --
+        # meep multiplies the phase by each component's own sign under the
+        # mirror, and simulation.py:1372 does exactly that when de-mirroring
+        # outputs, while this does not. component_sign(mirror_*, Ez) = +1 so
+        # TM is unaffected either way, but Hz is -1 on both axes, so the TE
+        # wall would be inverted.
+        #
+        # MEASURED, AND THE FLIP IS WORSE. Multiplying by component_sign here
+        # took antenna-radiation's Jy panel from rms 0.6514 to 1.0478 against
+        # its own cos^2 theory. Both are wrong: with the fold removed entirely
+        # that same run gives 0.0134. So the TE fold is broken by something
+        # other than the parity SIGN -- the lattice offsets, which nobody has
+        # measured (Ey is pinned at x-offset 0 / y-offset 1/2 while bc76d0a
+        # pinned Hz's x at 1.0, half a cell apart). Left as the declared phase
+        # until those are measured; see wiki/bugs/te-fold-is-not-a-sign-error.
         st._y_mirror = (sim._sym_py if (sim._sym_cy and not cut_by_rot) else 0)
         st._x_mirror = (sim._sym_px if (sim._sym_cx and not cut_by_rot) else 0)
         st._y_rot2 = sim._sym_rot2 if sim._sym_cy else 0
@@ -573,20 +588,37 @@ class fields:
                     self._state = mod.step_source(self._state, m, "B",
                                                   src.h_amplitude(t), **hm)
             return
-        e_srcs = [s for s in self._sources if getattr(s, "mask", None) is not None]
+        # `mask` is the Dz (TM) / Dy (TE) current; `mask_x` is the TE Dx one,
+        # which lives on its OWN grid -- Ex is (nx-1, ny) against Ey's
+        # (nx, ny-1) -- so the two cannot be summed and are injected
+        # separately. A TE Ex source had no route at all before this.
+        e_srcs = [s for s in self._sources
+                  if getattr(s, "mask", None) is not None
+                  or getattr(s, "mask_x", None) is not None]
         if not e_srcs:
             return
-        if len(e_srcs) == 1:
-            self._state = mod.step_source(self._state, m, "D",
-                                          e_srcs[0].amplitude(t),
-                                          src_mask=e_srcs[0].mask)
-            return
-        # several sources: sum amp_i(t) * mask_i into one soft injection
-        # (meep sums current sources the same way)
-        mask = e_srcs[0].amplitude(t) * e_srcs[0].mask
-        for src in e_srcs[1:]:
-            mask = mask + src.amplitude(t) * src.mask
-        self._state = mod.step_source(self._state, m, "D", 1.0, src_mask=mask)
+
+        def _sum(attr):
+            have = [s for s in e_srcs if getattr(s, attr, None) is not None]
+            if not have:
+                return None, 0.0
+            if len(have) == 1:
+                return getattr(have[0], attr), have[0].amplitude(t)
+            # several sources: sum amp_i(t) * mask_i into one soft injection
+            # (meep sums current sources the same way)
+            acc = have[0].amplitude(t) * getattr(have[0], attr)
+            for src in have[1:]:
+                acc = acc + src.amplitude(t) * getattr(src, attr)
+            return acc, 1.0
+
+        my, amp_y = _sum("mask")
+        mx, amp_x = _sum("mask_x")
+        if my is not None:
+            self._state = mod.step_source(self._state, m, "D", amp_y,
+                                          src_mask=my)
+        if mx is not None:
+            self._state = mod.step_source(self._state, m, "D", amp_x,
+                                          src_mask_x=mx)
 
     def update_pols(self, ft="E"):
         """meep update_pols: advance the ADE Lorentz polarizations from the

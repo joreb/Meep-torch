@@ -40,7 +40,21 @@ _EZ_COMPONENTS = {Ez, Ex}      # Ex used in 1D -> TM Ez in meep-torch
 _HZ_COMPONENTS = {Hz, Hy, Ey}  # Ey drives the 2D TE (Hz) polarization
 
 
-def pol_for(component: str) -> str:
+def pol_for(component: str, one_d: bool = False) -> str:
+    """Polarization a source component drives.
+
+    EXPERIMENT 2026-10-10, not settled: `Ex` is listed in `_EZ_COMPONENTS` as
+    a 1D alias ("Ex used in 1D -> TM Ez"), which silently captures 2D runs
+    where Ex is a genuine in-plane TE component. A 2D
+    `mp.Source(component=mp.Ex)` therefore ran a TM simulation and injected
+    Ez: antenna-radiation's Jx panel came out FLAT (matching the Ez theory to
+    0.0023) instead of sin^2, missing its own curve by 1.166.
+
+    With `one_d=False` the alias is off and Ex is TE. The caller passes the
+    engine's own 1D marker (`_y_pmc`), so 1D keeps the alias it needs.
+    """
+    if component == Ex:
+        return "tm" if one_d else "te"
     if component in _EZ_COMPONENTS:
         return "tm"
     if component in _HZ_COMPONENTS:

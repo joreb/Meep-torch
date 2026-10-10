@@ -158,19 +158,36 @@ def step_db(state: TEState, m, ft: str) -> TEState:
 
 def step_source(state: TEState, m, ft: str, amp=0.0,
                 src_mask: torch.Tensor | None = None,
-                src_hz_mask: torch.Tensor | None = None) -> TEState:
-    """meep step_source(ft): soft current injection -- electric currents into
-    Dy (ft="D"; scaled by d2y under sigma_d, like the fused kernel), the
-    magnetic TFSF current into Hz (ft="B")."""
+                src_hz_mask: torch.Tensor | None = None,
+                src_mask_x: torch.Tensor | None = None) -> TEState:
+    """meep step_source(ft): soft current injection.
+
+    Electric currents into Dy (``src_mask``) or Dx (``src_mask_x``), each
+    scaled by its own ``d2`` under sigma_d like the fused kernel; the magnetic
+    TFSF current into Hz (``ft="B"``).
+
+    THE Dx PATH DID NOT EXIST. Only Dy and Hz were reachable, so an
+    ``mp.Source(component=mp.Ex)`` in a TE run was injected as an Ey current
+    -- the shim had no Ex branch either, and its comment said as much ("Ey
+    (and the 1D Hy alias)"). It produced a CORRECT dipole of the wrong
+    orientation: the antenna-radiation tutorial's Jx panel matched the Jy
+    theory curve (cos^2) to rms 0.0024 while missing its own sin^2 by 1.166.
+    Dx and d2x were already carried on the state and the coefficients; only
+    the injection was missing.
+    """
     dt = m.dt
     if ft == "B":
         if src_hz_mask is None:
             return state
         return _replaced(state, Hz=state.Hz - dt * amp * src_hz_mask)
-    if src_mask is None:
-        return state
-    scale = m.d2y if m.d1x is not None else dt
-    return _replaced(state, Dy=state.Dy - scale * amp * src_mask)
+    out = {}
+    if src_mask is not None:
+        scale = m.d2y if m.d1y is not None else dt
+        out["Dy"] = state.Dy - scale * amp * src_mask
+    if src_mask_x is not None:
+        scale = m.d2x if m.d1x is not None else dt
+        out["Dx"] = state.Dx - scale * amp * src_mask_x
+    return _replaced(state, **out) if out else state
 
 
 def update_pols(state: TEState, m) -> TEState:
@@ -215,12 +232,14 @@ def update_eh(state: TEState, m, ft: str) -> TEState:
 
 
 def step_te(state: TEState, m, src_amp=0.0, src_mask_ey: torch.Tensor | None = None,
-            src_h_amp: float = 0.0, src_hz_mask: torch.Tensor | None = None) -> TEState:
+            src_h_amp: float = 0.0, src_hz_mask: torch.Tensor | None = None,
+            src_mask_ex: torch.Tensor | None = None) -> TEState:
     """One TE step, composed of meep's phases entered at the D half (see the
     phase-block comment above): step_db(D) -> step_source(D) -> update_pols
     -> update_eh(E) -> step_db(B) -> step_source(B) -> update_eh(H)."""
     state = step_db(state, m, "D")
-    state = step_source(state, m, "D", src_amp, src_mask=src_mask_ey)
+    state = step_source(state, m, "D", src_amp, src_mask=src_mask_ey,
+                        src_mask_x=src_mask_ex)
     state = update_pols(state, m)
     state = update_eh(state, m, "E")
     state = step_db(state, m, "B")

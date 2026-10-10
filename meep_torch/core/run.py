@@ -56,15 +56,29 @@ def _integrated(source):
 
 
 def _step_source(step_fn, state, coeffs, source, t_idx):
-    """One step with `source` injected the way its `is_integrated` says."""
+    """One step with `source` injected the way its `is_integrated` says.
+
+    `source.mask` is the Dz (TM) / Dy (TE) current and rides the second
+    positional slot. `mask_x` is the TE Dx current, carried as a keyword and
+    ONLY when the source has one: `step_tm` has no `src_mask_ex`, so passing
+    it unconditionally would break every TM run.
+
+    This is the single-source chunk path, which is the path nearly every run
+    takes, and it had no route for Dx -- so an `mp.Source(component=mp.Ex)`
+    in 2D injected the zeroed Dy mask and the whole cell stayed at zero,
+    while `fields.step_source` (the multi-source phase loop) did carry it.
+    """
+    mask_x = getattr(source, "mask_x", None)
+    kw = {"src_mask_ex": mask_x} if mask_x is not None else {}
     h_masks = getattr(source, "h_masks", None)
     if h_masks:
         return step_fn(state, coeffs, source.amplitude(t_idx), source.mask,
-                       source.h_amplitude(t_idx), **h_masks)
+                       source.h_amplitude(t_idx), **h_masks, **kw)
     if _integrated(source):
         dip = source.profile.dipole((t_idx + 0.5) * source.dt).real
-        return step_fn(state, coeffs, 0.0, source.mask, src_dipole_amp=dip)
-    return step_fn(state, coeffs, source.amplitude(t_idx), source.mask)
+        return step_fn(state, coeffs, 0.0, source.mask, src_dipole_amp=dip,
+                       **kw)
+    return step_fn(state, coeffs, source.amplitude(t_idx), source.mask, **kw)
 
 
 def _check_integrated(step_fn, source):

@@ -38,7 +38,7 @@ from .run_control import (DftEnergy, DftFields, DftFlux, DftForce, DftLdos,
                           _eval_step_func, chunk_size, dft_name, fire_per_step,
                           fire_scheduled, plan_hooks)
 from .sources import (AUTOMATIC, EVEN_Y, EVEN_Z, NO_PARITY, ODD_Y, ODD_Z, Dielectric,
-                      DiffractedPlanewave, EigenModeSource, Ez,
+                      DiffractedPlanewave, EigenModeSource, Ex, Ez,
                       GaussianBeam3DSource, Hz, IndexedSource, Source,
                       _Quadrature, _point_or_span, build_line_source,
                       build_mode_source, pol_for)
@@ -422,7 +422,8 @@ class Simulation:
                                                         dimensions, dtype,
                                                         courant=self.Courant,
                                                         device=self.device)
-            self._pol = pol_for(self._sources[0].component) if self._sources else "tm"
+            self._pol = pol_for(self._sources[0].component,
+                                one_d=self._y_pmc) if self._sources else "tm"
             # S-param path: an EigenModeSource + mode monitors -> compute_smatrix.
             self._eig_source = next((s for s in self._sources
                                      if isinstance(s, EigenModeSource)), None)
@@ -1062,6 +1063,22 @@ class Simulation:
                     # slice.
                     src.h_masks = {"src_hz_mask": src.mask[1:, 1:].contiguous()}
                     src.h_amplitude = src.amplitude
+                    src.mask = torch.zeros_like(src.mask[:, :-1])
+                elif spec.component == Ex:
+                    # Ex IS ITS OWN COMPONENT, on its own grid. This branch did
+                    # not exist: every non-Hz TE source fell through to the Ey
+                    # case below, so `component=mp.Ex` injected an Ey current
+                    # and produced a correct dipole of the WRONG ORIENTATION.
+                    # Measured on antenna-radiation: the Jx panel matched the
+                    # Jy theory curve (cos^2) to rms 0.0024 -- FDTD accuracy --
+                    # while missing its own sin^2 by 1.166.
+                    #
+                    # Ex is (nx-1, ny) where Ey is (nx, ny-1): the trim is on
+                    # the OTHER axis, which is the whole difference. Dx and
+                    # d2x were already on the TE state and coefficients; only
+                    # the injection route was missing (core/stepper_te
+                    # step_source now takes src_mask_x).
+                    src.mask_x = src.mask[:-1, :].contiguous()
                     src.mask = torch.zeros_like(src.mask[:, :-1])
                 else:
                     # Ey (and the 1D Hy alias): an electric current into Dy,
@@ -2900,7 +2917,8 @@ class Simulation:
             # mirror state before compiling the structure
             self._eig_source = next((s for s in self._sources
                                      if isinstance(s, EigenModeSource)), None)
-            pol = pol_for(self._sources[0].component) if self._sources else "tm"
+            pol = pol_for(self._sources[0].component,
+                          one_d=self._y_pmc) if self._sources else "tm"
             if pol != self._pol:
                 self._pol = pol
                 self.structure = None
@@ -3036,7 +3054,8 @@ class Simulation:
             return
         self._eig_source = next((s for s in self._sources
                                  if isinstance(s, EigenModeSource)), None)
-        pol = pol_for(self._sources[0].component) if self._sources else "tm"
+        pol = pol_for(self._sources[0].component,
+                      one_d=self._y_pmc) if self._sources else "tm"
         if pol != self._pol:
             # a polarization flip changes the compiled coefficients: drop the
             # structure and fields; init_sim rebuilds them from the spec
