@@ -20,8 +20,9 @@ import pytest
 import torch
 
 from meep_torch.core.grid import Grid
-from meep_torch.core.symbolic import (PERIODIC, WALL, cut_plane_row,
-                                     field_shape, psi_extent)
+from meep_torch.core.symbolic import (FOLD, PERIODIC, WALL, BlockSpec,
+                                     component_sign, cut_plane_row,
+                                     field_shape, psi_extent, yee_table)
 
 NX, NY = 12, 10
 
@@ -613,3 +614,165 @@ def test_the_pole_name_follows_the_same_suffix_rule_as_the_shapes():
         shapes = spec.state_shapes()
         for c in names:
             assert spec.pole_name(c) in shapes, (c, sorted(shapes))
+
+
+# ---------------------------------------------------------------------------
+# Which on-cut rows a fold keeps, for EVERY component rather than for Hx.
+#
+# `test_the_cut_plane_row_follows_the_sector` above asks the rule about `Hx`
+# and nothing else, and `Hx` is the TM answer. The TM live rows under an odd
+# mirror are `Hx` (y cut) and `Hy` (x cut) -- both magnetic -- so a filter
+# reading `c[0] == "H"` reproduces TM exactly and says nothing about TE, whose
+# live rows are `Hz` AND an electric one. That is the gap these three close.
+# ---------------------------------------------------------------------------
+
+ALL_COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+TM, TE = ("Ez", "Hx", "Hy"), ("Hz", "Ex", "Ey")
+
+
+def _node_is_live_on_the_cut(component: str, axis: str, phase: int) -> bool:
+    """The rule re-derived from the Yee table and the mirror signs.
+
+    Two independent conditions, and both are needed:
+
+    1. The node EXISTS on the cut only if the component is half-offset along
+       the cut NORMAL. A component with integer offset there has its nodes
+       between cut planes, not on one.
+    2. It then SURVIVES only if ``phase * M_cc == +1``. The node is a fixed
+       point of the reflection, so the sector relation is
+       ``f = phase * M_cc * f``; at ``-1`` that forces ``f == 0`` and there is
+       nothing to store.
+
+    Written from `yee_table` and `component_sign` so that this is a second
+    derivation rather than a restatement of `cut_plane_row`. It reproduces the
+    rule on all 36 (component, axis, phase) combinations, which is what makes
+    the comparison below worth running.
+    """
+    import sympy
+
+    if yee_table("cartesian")[component]["xyz".index(axis)] != sympy.Rational(1, 2):
+        return False
+    return phase * component_sign(f"mirror_{axis}", component) == 1
+
+
+@pytest.mark.parametrize("component", ALL_COMPONENTS)
+@pytest.mark.parametrize("axis", ("x", "y", "z"))
+@pytest.mark.parametrize("phase", (-1, +1))
+def test_the_cut_plane_rule_holds_for_every_component(component, axis, phase):
+    """`cut_plane_row` against the Yee offset and the mirror sign, everywhere.
+
+    The previous gate covered one of the thirty-six cases.
+    """
+    assert cut_plane_row(component, axis, phase) is _node_is_live_on_the_cut(
+        component, axis, phase), (component, axis, phase)
+
+
+def _allocated_cut_rows(components, axis, phase):
+    """The `<comp>0` keys `BlockSpec.state_shapes` emits for one fold."""
+    bc = (WALL, FOLD) if axis == "y" else (FOLD, WALL)
+    spec = BlockSpec(components=components, extents=(NX, NY), boundaries=bc,
+                     folds=((axis, phase),))
+    return sorted(k for k in spec.state_shapes() if k.endswith("0"))
+
+
+def _required_cut_rows(components, axis, phase):
+    return sorted(f"{c}0" for c in components if cut_plane_row(c, axis, phase))
+
+
+@pytest.mark.parametrize("axis", ("x", "y"))
+@pytest.mark.parametrize("phase", (-1, +1))
+def test_the_allocator_stores_every_live_tm_cut_row(axis, phase):
+    """TM: the allocator and the rule agree. This is the control.
+
+    It has to pass for the TE case below to mean anything -- otherwise that
+    failure could be the allocator being broken for folds in general rather
+    than for TE specifically.
+    """
+    assert _allocated_cut_rows(TM, axis, phase) == _required_cut_rows(TM, axis, phase)
+
+
+@pytest.mark.parametrize("axis,phase", [("y", +1), ("x", +1)])
+def test_the_allocator_stores_every_live_te_cut_row_even_mirror(axis, phase):
+    """TE under an EVEN mirror: no live cut row either way, so this passes.
+
+    Pinned so that a fix to the odd case cannot start inventing rows here.
+    """
+    assert _allocated_cut_rows(TE, axis, phase) == _required_cut_rows(TE, axis, phase)
+    assert _allocated_cut_rows(TE, axis, phase) == []
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "symbolic.py's allocator filters cut-plane rows with `c[0] == \"H\"`, "
+    "which is the TM answer: TM's live odd-mirror rows are Hx and Hy, both "
+    "magnetic. TE's are Hz AND an electric component (Ey on a y cut, Ex on an "
+    "x cut), and the electric one is dropped in silence. See "
+    "wiki/bugs/te-fold-is-not-a-sign-error.md"))
+@pytest.mark.parametrize("axis,phase", [("y", -1), ("x", -1)])
+def test_the_allocator_stores_every_live_te_cut_row_odd_mirror(axis, phase):
+    """TE under an ODD mirror -- the case antenna-radiation actually declares.
+
+    An Ex dipole asks for `Mirror(X, phase=-1)` + `Mirror(Y, phase=+1)` and an
+    Ey dipole for the transpose, so each in-plane orientation carries exactly
+    ONE odd mirror -- on the axis where TE stores no electric cut row and TM
+    stores its magnetic one.
+
+    Expected `['Ey0', 'Hz0']` on a y cut; the allocator gives `['Hz0']`.
+    """
+    assert _allocated_cut_rows(TE, axis, phase) == _required_cut_rows(TE, axis, phase)
+
+
+def test_init_tm_state_takes_a_mirror_and_init_te_state_does_not():
+    """The gap, stated as it is rather than as an xfail on a TypeError.
+
+    `init_tm_state` carries `y_mirror` / `x_mirror` and allocates `Hx0` / `Hy0`
+    from them. `init_te_state` takes NO fold argument at all, so the TE
+    stepper cannot represent a cut-plane row even for `Hz`, which the
+    allocator does emit. The defect is therefore larger on the hand-written
+    side than on the derived one, and this pins the asymmetry so the next
+    reader does not have to discover it twice.
+
+    Delete this test when `init_te_state` grows the parameter -- at which
+    point `test_init_te_state_carries_its_cut_rows` below starts doing the
+    real work.
+    """
+    import inspect
+
+    from meep_torch.core.stepper_te import init_te_state
+    from meep_torch.core.stepper_tm import init_tm_state
+
+    tm = inspect.signature(init_tm_state).parameters
+    te = inspect.signature(init_te_state).parameters
+    assert {"y_mirror", "x_mirror"} <= set(tm), sorted(tm)
+    assert not ({"y_mirror", "x_mirror"} & set(te)), sorted(te)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "init_te_state takes no mirror argument, so the TE stepper cannot hold a "
+    "cut-plane row at all -- not even Hz0, which the allocator does emit. "
+    "stepper_tm declares Hx0 and Hy0 and allocates them on an odd mirror. "
+    "See wiki/bugs/te-fold-is-not-a-sign-error.md"))
+@pytest.mark.parametrize("axis,phase", [("y", -1), ("x", -1)])
+def test_init_te_state_carries_its_cut_rows(axis, phase):
+    """The same question of the hand-written stepper, not of the derivation.
+
+    `test_the_cut_plane_row_follows_the_sector` pairs the rule with
+    `init_tm_state` and finds them agreeing. This is that pairing for TE.
+
+    The parameter check comes FIRST and as an assertion, so this xfails on the
+    claim it is making. Passing the keyword blind raises `TypeError`, which
+    would xfail for a reason that has nothing to do with cut-plane rows -- and
+    an xfail that fires on the wrong error is a check that cannot fail for its
+    stated cause.
+    """
+    import inspect
+
+    from meep_torch.core.stepper_te import init_te_state
+
+    name = f"{axis}_mirror"
+    assert name in inspect.signature(init_te_state).parameters, (
+        f"init_te_state has no {name} parameter, so it cannot fold on "
+        f"{axis}; stepper_tm has both")
+    s = init_te_state(Grid(nx=NX, ny=NY, dx=0.05), **{name: phase})
+    for c in TE:
+        want = cut_plane_row(c, axis, phase)
+        assert (getattr(s, f"{c}0", None) is not None) is want, (c, axis, phase)
