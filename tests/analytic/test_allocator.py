@@ -701,12 +701,6 @@ def test_the_allocator_stores_every_live_te_cut_row_even_mirror(axis, phase):
     assert _allocated_cut_rows(TE, axis, phase) == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "symbolic.py's allocator filters cut-plane rows with `c[0] == \"H\"`, "
-    "which is the TM answer: TM's live odd-mirror rows are Hx and Hy, both "
-    "magnetic. TE's are Hz AND an electric component (Ey on a y cut, Ex on an "
-    "x cut), and the electric one is dropped in silence. See "
-    "wiki/bugs/te-fold-is-not-a-sign-error.md"))
 @pytest.mark.parametrize("axis,phase", [("y", -1), ("x", -1)])
 def test_the_allocator_stores_every_live_te_cut_row_odd_mirror(axis, phase):
     """TE under an ODD mirror -- the case antenna-radiation actually declares.
@@ -716,7 +710,10 @@ def test_the_allocator_stores_every_live_te_cut_row_odd_mirror(axis, phase):
     ONE odd mirror -- on the axis where TE stores no electric cut row and TM
     stores its magnetic one.
 
-    Expected `['Ey0', 'Hz0']` on a y cut; the allocator gives `['Hz0']`.
+    Measured from the engine rather than argued: at ny = 20 the UNFOLDED y
+    extents are Hz 19, Ey 19, Ex 20. An odd extent means exactly one row sits
+    ON the cut (19 = 9 + 1 + 9), so Hz and Ey each own one and Ex straddles.
+    The fold kept 9 for Hz and Ey and stored no cut row, dropping both.
     """
     assert _allocated_cut_rows(TE, axis, phase) == _required_cut_rows(TE, axis, phase)
 

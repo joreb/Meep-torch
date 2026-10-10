@@ -1113,12 +1113,29 @@ class BlockSpec(NamedTuple):
             else:
                 out[f"M{axis}_" + role.split("_")[1]] = shape
 
+        # A fold keeps one extra row per component whose node sits ON the cut
+        # and survives the sector relation -- `cut_plane_row` decides, from the
+        # Yee offset and the mirror sign. There is no polarization branch here
+        # and there must not be: an earlier `c[0] == "H"` guard reproduced TM
+        # exactly (its live rows, Hx on a y cut and Hy on an x cut, are both
+        # magnetic) and dropped half of TE's, whose live rows are Hz AND an
+        # ELECTRIC component -- Ey on a y cut, Ex on an x cut. See
+        # wiki/bugs/te-fold-is-not-a-sign-error.md.
+        #
+        # The name is axis-qualified only when a component folds on more than
+        # one axis, which happens exactly when it is half-offset on both: Hz
+        # is (1/2, 1/2, 0), so a doubly-folded TE block wants Hz0x AND Hz0y
+        # and an unqualified `f"{c}0"` would silently keep one of the two.
+        # TM's Hx/Hy each fold on a single axis, so their names do not move.
+        multi = {c: sum(cut_plane_row(c, ax, ph) for ax, ph in self.folds) > 1
+                 for c in self.components}
         for axis, phase in self.folds:
             for c in self.components:
-                if c[0] == "H" and cut_plane_row(c, axis, phase):
+                if cut_plane_row(c, axis, phase):
                     perp = [a for a in range(len(self.extents))
                             if a != AXES.index(axis)][0]
-                    out[f"{c}0"] = (self.extents[perp],)
+                    name = f"{c}0{axis}" if multi[c] else f"{c}0"
+                    out[name] = (self.extents[perp],)
         return out
 
     def psi_shapes(self) -> dict:
