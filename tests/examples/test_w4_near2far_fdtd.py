@@ -61,3 +61,34 @@ def test_shim_add_near2far_ez():
     Sr = _radial_flux(E, H, th)
     assert (Sr > 0).all()
     assert Sr.std() / Sr.mean() < 0.02, f"anisotropy {Sr.std() / Sr.mean():.4f}"
+
+
+def test_near2far_flux_closed_box_matches_near_flux_box():
+    """Ez dipole inside a closed square: the far-box flux (DftNear2Far.flux)
+    must equal the near flux-box power. Both are Re(E x H*) with no 1/2, as in
+    meep; flux() once halved the far value (ratio 0.5)."""
+    sim = mp.Simulation(cell_size=mp.Vector3(10, 10, 0), resolution=20,
+        sources=[mp.Source(mp.GaussianSource(FCEN, fwidth=0.2), component=mp.Ez,
+                           center=mp.Vector3())],
+        boundary_layers=[mp.PML(1.0)], default_material=mp.Medium(epsilon=1.0))
+    sides = [(mp.Vector3(0, 1.5), mp.Vector3(3, 0), +1),
+             (mp.Vector3(0, -1.5), mp.Vector3(3, 0), -1),
+             (mp.Vector3(1.5, 0), mp.Vector3(0, 3), +1),
+             (mp.Vector3(-1.5, 0), mp.Vector3(0, 3), -1)]
+    n2f = sim.add_near2far(FCEN, 0, 1,
+        *[mp.Near2FarRegion(center=c, size=s, weight=w) for c, s, w in sides])
+    fl = sim.add_flux(FCEN, 0, 1,
+        *[mp.FluxRegion(center=c, size=s, weight=w) for c, s, w in sides])
+    sim.run(until=80)
+    near = mp.get_fluxes(fl)[0]
+
+    def far_side(d, center, size):
+        return n2f.flux(d, mp.Volume(center=center, size=size), 0.5)[0]
+
+    R = 50.0
+    far = (far_side(mp.Y, mp.Vector3(0, R), mp.Vector3(2 * R, 0))
+           - far_side(mp.Y, mp.Vector3(0, -R), mp.Vector3(2 * R, 0))
+           + far_side(mp.X, mp.Vector3(R, 0), mp.Vector3(0, 2 * R))
+           - far_side(mp.X, mp.Vector3(-R, 0), mp.Vector3(0, 2 * R)))
+    assert near > 0
+    assert abs(far - near) <= 0.03 * near, f"far {far:.4f} vs near {near:.4f}"

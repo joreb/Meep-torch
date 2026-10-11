@@ -118,7 +118,8 @@ class DftNear2Far(DftObj):
         """meep DftNear2Far.flux(direction, where, resolution): far fields
         over the line ``where`` (2D; may lie outside the cell) sampled at
         ``resolution`` points per unit length, reduced to the time-averaged
-        Poynting flux 0.5*Re(E x H*) component ``direction`` (mp.X / mp.Y;
+        Poynting flux Re(E x H*) component ``direction`` (mp.X / mp.Y;
+        NO 1/2, as meep's dft_flux::flux() and core/monitors.py;
         None/AUTOMATIC = the line normal), trapezoid-integrated along the
         line. Returns one value per frequency."""
         c, s = where.center, where.size
@@ -128,19 +129,11 @@ class DftNear2Far(DftObj):
         ts = np.linspace(-length / 2.0, length / 2.0, n)
         if direction is None or direction < 0:   # AUTOMATIC: line normal
             direction = 0 if along_y else 1      # X for a y-line, Y for an x-line
-        rows = []
-        for t in ts:
-            pt = Vector3(c.x, c.y + t) if along_y else Vector3(c.x + t, c.y)
-            eh = np.atleast_2d(self.sim.get_farfield(self, pt))  # (nfreq, 6)
-            ex, ey, ez, hx, hy, hz = eh.T
-            if direction == 0:
-                rows.append(0.5 * np.real(ey * np.conj(hz) - ez * np.conj(hy)))
-            else:
-                rows.append(0.5 * np.real(ez * np.conj(hx) - ex * np.conj(hz)))
-        rows = np.array(rows)                    # (npts, nfreq)
-        if length == 0.0:
-            return rows[0].tolist()              # 0d where: flux density at the point
-        return np.trapezoid(rows, ts, axis=0).tolist()
+        from ..core.near2far import line_poynting_flux
+        eh = np.array([np.atleast_2d(self.sim.get_farfield(
+            self, Vector3(c.x, c.y + t) if along_y else Vector3(c.x + t, c.y)))
+            for t in ts])                        # (npts, nfreq, 6)
+        return line_poynting_flux(eh, ts, direction).tolist()
 
 
 class DftLdos(DftObj):

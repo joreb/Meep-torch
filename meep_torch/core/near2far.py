@@ -236,3 +236,21 @@ def tile_faces(faces, n_periods: int, Ly: float, ky: float = 0.0):
             out.append(Face(pts=pts, normal=f.normal, dl=f.dl,
                             E=f.E * ph, H=f.H * ph, w=f.w))
     return out
+
+
+def line_poynting_flux(eh, ts, direction):
+    """Far-field Poynting flux along a line (meep DftNear2Far.flux reduction).
+
+    ``eh`` is (npts, nfreq, 6) far fields [Ex,Ey,Ez,Hx,Hy,Hz] sampled at the
+    line parameters ``ts``. Returns the trapezoid of Re(E x H*) component
+    ``direction`` (0 = X, 1 = Y), one value per frequency. NO 1/2: meep's
+    flux convention is Re(E conj(H)), the same as dft_flux::flux().
+    """
+    ex, ey, ez, hx, hy, hz = np.moveaxis(np.asarray(eh), -1, 0)
+    if direction == 0:
+        rows = np.real(ey * np.conj(hz) - ez * np.conj(hy))
+    else:
+        rows = np.real(ez * np.conj(hx) - ex * np.conj(hz))
+    if len(ts) < 2 or ts[-1] == ts[0]:
+        return rows[0]                       # 0-length line: flux density at the point
+    return np.trapezoid(rows, ts, axis=0)
