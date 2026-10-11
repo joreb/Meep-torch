@@ -945,7 +945,9 @@ class Simulation:
             ix, j0, j1 = a0, b0, b1
             pt = self._point_source(spec, prof, amp, amp_func, center, gs)
             if pt is not None:
-                if pt.mask.abs().sum() > 0:      # wholly in a discarded half: dropped
+                live = pt.mask.abs().sum() + (pt.mask_x.abs().sum()
+                                              if hasattr(pt, "mask_x") else 0)
+                if live > 0:                     # wholly in a discarded half: dropped
                     out.append(pt)
                 continue
             if self._sym_cy or self._sym_cx:
@@ -1796,36 +1798,50 @@ class Simulation:
         on each side of the plane, the kept half keeps its 1/2, the wall
         supplies the other. wiki/bugs/point-source-snapped-not-interpolated.md
 
-        TM Ez ONLY, on the cell-centre lattice get_array_metadata declares
-        ((i + 1/2) dx). TE point sources keep the snapping path on purpose:
-        the TE lattices are not pinned by the same evidence. Extending this
-        with Ey on (centres, corners) and Hz on (corners, corners), read off
-        _STAGGER, took test_te_symmetry_parity's FULL-cell run from symmetric
-        to 2e-8 to 57% asymmetric, while that gate's own placement (OFF_X on
-        an integer-x column, OFF_Y on a half-y row) says Ey is at x offset 0
-        and y offset 1/2 -- which is half a cell from the Hz column the
-        bc76d0a parity fix pinned. Measure the TE lattices before spreading a
-        TE source; do not infer them from the stagger table.
+        TM Ez sits on the cell-centre lattice get_array_metadata declares
+        ((i + 1/2) dx). TE Ex/Ey sit on meep's layout, Ex (1/2, 0) and Ey
+        (0, 1/2) with integer nodes on the cell corners -- the layout
+        test_te_symmetry_parity's own placement pins (OFF_X on an integer-x
+        column, OFF_Y on a half-y row). The _STAGGER reading (Ey on
+        centres-in-x, corners-in-y) is half a cell off and took that gate's
+        full-cell run to 57% asymmetric. Snapping a TE source cost the
+        antenna tutorial 4x flux under a fold: the straddled node kept
+        weight 1 and the wall added an image of weight 1, where meep's
+        delta puts 1/2 on each. Hz still snaps: its lattice is unpinned.
 
         The fold is a SHIFT of the indices into the kept half plus dropping
         what falls below it -- the crop the earlier attempt lacked."""
         from ..core.sources import PointSource, delta_weights
         size = spec.size
-        if amp_func is not None or self.dimensions != 2 or self._pol != "tm":
+        if amp_func is not None or self.dimensions != 2:
             return None
         if size is not None and (float(size.x) != 0.0 or float(size.y) != 0.0):
             return None
-        if spec.component not in ("Ez", "Dz"):
+        # (x offset, nodes along x, y offset, nodes along y) per lattice.
+        # TE is meep's layout, pinned by test_te_symmetry_parity's own
+        # placements: Ex at (1/2, 0) on (nx-1, ny), Ey at (0, 1/2) on
+        # (nx, ny-1). Hz stays on the snapping path: its lattice is unpinned.
+        lattice = ({"Ez": (0.5, gs.nx, 0.5, gs.ny), "Dz": (0.5, gs.nx, 0.5, gs.ny)}
+                   if self._pol == "tm" else
+                   {"Ex": (0.5, gs.nx - 1, 0.0, gs.ny), "Dx": (0.5, gs.nx - 1, 0.0, gs.ny),
+                    "Ey": (0.0, gs.nx, 0.5, gs.ny - 1), "Dy": (0.0, gs.nx, 0.5, gs.ny - 1)})
+        if spec.component not in lattice:
             return None
+        ox, nx, oy, ny = lattice[spec.component]
         c = center or Vector3()
-        wx = delta_weights(c.x, gs.sx, gs.dx, gs.nx)
-        wy = delta_weights(c.y, gs.sy, gs.dx, gs.ny)
+        wx = delta_weights(c.x, gs.sx, gs.dx, nx, offset=ox)
+        wy = delta_weights(c.y, gs.sy, gs.dx, ny, offset=oy)
         # the fold: full-cell index -> kept-half index, drop what lies below
         cx, cy = self._sym_cx, self._sym_cy
         wx = [(i - cx, w) for i, w in wx if i >= cx]
         wy = [(j - cy, w) for j, w in wy if j >= cy]
         src = PointSource(self.grid, wx, wy, prof)
         src.mask = src.mask * amp
+        if spec.component in ("Ex", "Dx"):     # Dx route, Ex grid (nx-1, ny)
+            src.mask_x = src.mask[:-1, :].contiguous()
+            src.mask = torch.zeros_like(src.mask[:, :-1])
+        elif spec.component in ("Ey", "Dy"):   # Dy route, Ey grid (nx, ny-1)
+            src.mask = src.mask[:, :-1]
         return src
 
     def _x_line_source(self, jy, i0, i1, prof, amp, amp_func, center, gs, spec):
@@ -2096,7 +2112,18 @@ class Simulation:
         span, lo, hi = meta["span"]
         c = self._sym_cy if span == "y" else self._sym_cx
         p = float(self._sym_py if span == "y" else self._sym_px)
-        if c:
+        if c and self._pol == "te":
+            # TE: the span's tangential E and Hz both sit on the cut line, so
+            # the mirror partner of full index j is 2c - j and the kept row is
+            # c - j (not the straddle c - 1 - j used for TM). Both flip once
+            # under the span mirror (Ex/Ey polar, Hz axial), so the common sign
+            # is -phase. Gated by tests/mp_parity/test_te_symmetry_parity.py and
+            # by the antenna-radiation near/far fields.
+            j = np.arange(lo, hi)
+            fold = np.where(j >= c, j - c, c - j) - meta["lo_half"]
+            fold = np.clip(fold, 0, a.shape[-1] - 1)
+            a = a[..., fold] * np.where(j >= c, 1.0, -p)
+        elif c:
             j = np.arange(lo, hi)
             fold = np.where(j >= c, j - c, c - 1 - j) - meta["lo_half"]
             fold = np.clip(fold, 0, a.shape[-1] - 1)

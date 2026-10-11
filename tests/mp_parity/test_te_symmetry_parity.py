@@ -232,3 +232,31 @@ def test_te_get_array_hz_demirror():
         print(f"TE get_array(Hz) Mirror({'XY'[direction == mp.Y]}, {phase:+d}): "
               f"|dHz|/max={rel:.2e}")
         assert rel < 0.01, f"get_array(Hz) de-mirror {rel:.4e}"
+
+@pytest.mark.parametrize("comp", ["Ex", "Ey"])
+def test_te_on_cut_dipole_flux_matches_full_cell(comp):
+    """A TE dipole AT the origin under antenna-radiation's two mirrors
+    radiates the full-cell flux. The dipole straddles the odd cut (Ex along
+    x, Ey along y), so meep's delta puts 1/2 on each node; the fold keeps
+    one 1/2 and the wall supplies the other. Snapped at full weight, the
+    kept node plus its image doubled the current: 4x flux (19.71 vs 4.92
+    on the tutorial)."""
+    c = getattr(mp, comp)
+    syms = ([mp.Mirror(mp.X, phase=-1), mp.Mirror(mp.Y, phase=+1)] if comp == "Ex"
+            else [mp.Mirror(mp.X, phase=+1), mp.Mirror(mp.Y, phase=-1)])
+
+    def flux(symmetries):
+        sim = mp.Simulation(cell_size=mp.Vector3(6, 6), resolution=RES,
+                            boundary_layers=[mp.PML(1.0)], symmetries=symmetries,
+                            sources=[mp.Source(mp.GaussianSource(FCEN, fwidth=0.2 * FCEN),
+                                               component=c, center=mp.Vector3())])
+        box = sim.add_flux(FCEN, 0, 1,
+                           mp.FluxRegion(center=mp.Vector3(0, 1.5), size=mp.Vector3(3, 0)),
+                           mp.FluxRegion(center=mp.Vector3(0, -1.5), size=mp.Vector3(3, 0), weight=-1),
+                           mp.FluxRegion(center=mp.Vector3(1.5, 0), size=mp.Vector3(0, 3)),
+                           mp.FluxRegion(center=mp.Vector3(-1.5, 0), size=mp.Vector3(0, 3), weight=-1))
+        sim.run(until=40)
+        return mp.get_fluxes(box)[0]
+
+    full, half = flux(None), flux(syms)
+    assert abs(half / full - 1) < 0.02, f"{comp}: folded {half:.4f} vs full {full:.4f}"
