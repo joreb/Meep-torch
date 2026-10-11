@@ -260,3 +260,41 @@ def test_te_on_cut_dipole_flux_matches_full_cell(comp):
 
     full, half = flux(None), flux(syms)
     assert abs(half / full - 1) < 0.02, f"{comp}: folded {half:.4f} vs full {full:.4f}"
+
+
+@pytest.mark.parametrize("comp", ["Ex", "Ey"])
+def test_te_on_cut_dipole_farfield_pattern_matches_full_cell(comp):
+    """The near2far faces of a folded TE run rebuild the full span from the
+    kept half. The normalised far-field pattern of an on-origin dipole must
+    equal the unfolded run's. Before the fix (TE span used c - j and the
+    position fold used c - 1 - j) the max difference was 0.28 for Ex; the
+    correct maps give 0 to float32 precision."""
+    c = getattr(mp, comp)
+    syms = ([mp.Mirror(mp.X, phase=-1), mp.Mirror(mp.Y, phase=+1)] if comp == "Ex"
+            else [mp.Mirror(mp.X, phase=+1), mp.Mirror(mp.Y, phase=-1)])
+    box = 1.0
+
+    def pattern(symmetries):
+        kw = {"symmetries": symmetries} if symmetries else {}
+        sim = mp.Simulation(cell_size=mp.Vector3(4, 4), resolution=20,
+                            boundary_layers=[mp.PML(0.5)],
+                            sources=[mp.Source(mp.GaussianSource(1.0, fwidth=0.2),
+                                               component=c, center=mp.Vector3())], **kw)
+        n2f = sim.add_near2far(1.0, 0, 1,
+                               mp.Near2FarRegion(center=mp.Vector3(0, 0.5 * box), size=mp.Vector3(box, 0)),
+                               mp.Near2FarRegion(center=mp.Vector3(0, -0.5 * box), size=mp.Vector3(box, 0), weight=-1),
+                               mp.Near2FarRegion(center=mp.Vector3(0.5 * box, 0), size=mp.Vector3(0, box)),
+                               mp.Near2FarRegion(center=mp.Vector3(-0.5 * box, 0), size=mp.Vector3(0, box), weight=-1))
+        sim.run(until_after_sources=mp.stop_when_dft_decayed())
+        th = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+        ff = np.array([sim.get_farfield(n2f, mp.Vector3(40 * np.cos(t), 40 * np.sin(t), 0))
+                       for t in th])
+        E, H = ff[:, :3], ff[:, 3:]
+        fx = np.real(np.conj(E[:, 1]) * H[:, 2] - np.conj(E[:, 2]) * H[:, 1])
+        fy = np.real(np.conj(E[:, 2]) * H[:, 0] - np.conj(E[:, 0]) * H[:, 2])
+        r = np.hypot(fx, fy)
+        return r / r.max()
+
+    full, half = pattern(None), pattern(syms)
+    dev = np.abs(half - full).max()
+    assert dev < 0.01, f"{comp}: folded pattern differs from full by {dev:.4f}"

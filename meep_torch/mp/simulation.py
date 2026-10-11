@@ -1109,6 +1109,18 @@ class Simulation:
             return j, False
         return (j - c, False) if j >= c else (c - 1 - j, True)
 
+    def _foldface(self, j, axis="y"):
+        """Face index -> (half-grid index, mirrored), TE rule. A TE face's
+        normal-direction position is an integer node (Ex on a y-normal row,
+        Ey on an x-normal column), so its partner is 2c - j and the half index
+        is c - j. TM and the point maps use the cell-centred c - 1 - j."""
+        if self._pol != "te":
+            return self._foldpt(j, axis)
+        c = self._sym_cy if axis == "y" else self._sym_cx
+        if not c:
+            return j, False
+        return (j - c, False) if j >= c else (c - j, True)
+
     def _rot2_guard(self, what, *below_plane):
         """Reject a monitor that reaches below the C2 cut plane. A mirror
         image sits at the same x, so the folded half plus a phase is the
@@ -1989,7 +2001,8 @@ class Simulation:
             idx2, lo2, hi2 = idx, lo, hi
             if self._sym_cy or self._sym_cx:
                 span = "y" if axis == "x" else "x"
-                idx2, pos_mir = self._foldpt(idx, "x" if axis == "x" else "y")
+                fold_axis = "x" if axis == "x" else "y"
+                idx2, pos_mir = self._foldface(idx, fold_axis)
                 lo2, hi2, n2f_cross, n2f_mir = self._fold(lo, hi, span)
                 self._rot2_guard("a near2far face", pos_mir, n2f_cross,
                                  n2f_mir)
@@ -2113,14 +2126,14 @@ class Simulation:
         c = self._sym_cy if span == "y" else self._sym_cx
         p = float(self._sym_py if span == "y" else self._sym_px)
         if c and self._pol == "te":
-            # TE: the span's tangential E and Hz both sit on the cut line, so
-            # the mirror partner of full index j is 2c - j and the kept row is
-            # c - j (not the straddle c - 1 - j used for TM). Both flip once
-            # under the span mirror (Ex/Ey polar, Hz axial), so the common sign
-            # is -phase. Gated by tests/mp_parity/test_te_symmetry_parity.py and
-            # by the antenna-radiation near/far fields.
+            # TE: the span's tangential E (Ex on a y-normal face, Ey on an
+            # x-normal one) and Hz are cell-centred along the span, like TM's
+            # Ez, so the mirror partner of full index j is c - 1 - j (the
+            # straddle map). Both flip once under the span mirror (Ex/Ey polar,
+            # Hz axial), so the common sign is -phase. Checked sample by sample
+            # against the unfolded run (tests/mp_parity/test_te_symmetry_parity.py).
             j = np.arange(lo, hi)
-            fold = np.where(j >= c, j - c, c - j) - meta["lo_half"]
+            fold = np.where(j >= c, j - c, c - 1 - j) - meta["lo_half"]
             fold = np.clip(fold, 0, a.shape[-1] - 1)
             a = a[..., fold] * np.where(j >= c, 1.0, -p)
         elif c:
@@ -2157,7 +2170,11 @@ class Simulation:
         eps_med = self._n2f_medium(specs)
         E, H = (farfield_tm if self._pol == "tm" else farfield_te)(
             faces, ks, obs, eps=eps_med)
-        out = np.concatenate([E[:, 0, :], H[:, 0, :]], axis=1)   # (nfreq, 6)
+        # conj back to meep's e^{-i w t}: the kernels are e^{+i w t}/H^(2) and
+        # faces_from_accs conjugated the monitors on the way IN. Without this
+        # the far field was the conjugate of get_dft_array's -- invisible to
+        # |E x H*| patterns and fluxes, a sign flip on Im (cavity-farfield).
+        out = np.conj(np.concatenate([E[:, 0, :], H[:, 0, :]], axis=1))   # (nfreq, 6)
         return out[0] if len(freqs) == 1 else out
 
     def get_farfields(self, near2far, resolution=None, where=None,
@@ -2461,7 +2478,7 @@ class Simulation:
             # its (assumed symmetric) upper half and doubles back (mir2); a
             # face below a cut plane maps onto its image, where the mirrored
             # tangential H flips relative to E -> flux sign flips (msign)
-            idx, pos_mir = self._foldpt(idx, "x" if x_normal else "y")
+            idx, pos_mir = self._foldface(idx, "x" if x_normal else "y")
             lo, hi, meta["mir2"], span_mir = self._fold(
                 lo, hi, "y" if x_normal else "x")
             self._rot2_guard("a flux/mode region", pos_mir, meta["mir2"],

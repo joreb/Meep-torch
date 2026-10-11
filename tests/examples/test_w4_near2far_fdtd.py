@@ -92,3 +92,28 @@ def test_near2far_flux_closed_box_matches_near_flux_box():
            - far_side(mp.X, mp.Vector3(-R, 0), mp.Vector3(0, 2 * R)))
     assert near > 0
     assert abs(far - near) <= 0.03 * near, f"far {far:.4f} vs near {near:.4f}"
+
+
+def test_get_farfield_phase_matches_get_dft_array():
+    """get_farfield at a point outside the box must be get_dft_array's
+    complex Ez there, not its conjugate. The kernels run e^{+i w t}; the
+    output once skipped the conj back to meep's e^{-i w t}, which left |.|
+    and fluxes intact but flipped Im (cavity-farfield)."""
+    sim = mp.Simulation(cell_size=mp.Vector3(10, 10, 0), resolution=20,
+        sources=[mp.Source(mp.GaussianSource(FCEN, fwidth=0.2), component=mp.Ez,
+                           center=mp.Vector3())],
+        boundary_layers=[mp.PML(1.0)], default_material=mp.Medium(epsilon=1.0))
+    n2f = sim.add_near2far(FCEN, 0, 1,
+        mp.Near2FarRegion(center=mp.Vector3(1.0, 0), size=mp.Vector3(0, 2), weight=+1),
+        mp.Near2FarRegion(center=mp.Vector3(-1.0, 0), size=mp.Vector3(0, 2), weight=-1),
+        mp.Near2FarRegion(center=mp.Vector3(0, 1.0), size=mp.Vector3(2, 0), weight=+1),
+        mp.Near2FarRegion(center=mp.Vector3(0, -1.0), size=mp.Vector3(2, 0), weight=-1))
+    mon = sim.add_dft_fields([mp.Ez], FCEN, 0, 1, center=mp.Vector3(0, 3),
+                             size=mp.Vector3(4, 0))
+    sim.run(until=80)
+    dft = np.asarray(sim.get_dft_array(mon, mp.Ez, 0)).ravel()
+    x, y, _, _ = sim.get_array_metadata(dft_cell=mon)
+    ff = np.array([sim.get_farfield(n2f, mp.Vector3(xc, y[0]))[2] for xc in x])
+    rel = np.linalg.norm(ff - dft) / np.linalg.norm(dft)
+    rel_conj = np.linalg.norm(np.conj(ff) - dft) / np.linalg.norm(dft)
+    assert rel < 0.3 < 0.8 < rel_conj, f"rel {rel:.3f}, rel(conj) {rel_conj:.3f}"
