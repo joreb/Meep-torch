@@ -133,3 +133,34 @@ def test_fdtd_dipole_pattern_3d():
     rms = float(np.sqrt(np.mean((got - ref) ** 2)))
     print(f"3D dipole pattern: rms vs sin^2 {rms:.4f}")
     assert rms <= 0.02, f"normalized rms vs analytic dipole {rms:.4f}"
+
+
+def test_get_farfield_3d_phase_advances_outgoing():
+    """meep's get_farfield is e^{-i w t}, so an outgoing wave's phase grows
+    along a ray as e^{+ikR}: the phase of get_farfield(R2)/get_farfield(R1)
+    is +k (R2 - R1). Meep gives +44.9 deg per 0.25 at k = pi; the shim once
+    returned the conjugate (-k dR), because the 3D kernel is e^{-ikR} and its
+    output was never conjugated back. Checked in the shim, not in the core
+    kernel, which is convention-blind to a global conjugate."""
+    import meep_torch.mp as mp
+    fcen = 0.5
+    k = 2 * math.pi * fcen
+    sim = mp.Simulation(cell_size=mp.Vector3(8, 8, 8), resolution=10, dimensions=3,
+        sources=[mp.Source(mp.GaussianSource(fcen, fwidth=0.2), component=mp.Ez,
+                           center=mp.Vector3())],
+        boundary_layers=[mp.PML(1.0)], default_material=mp.Medium(epsilon=1.0))
+    regs = []
+    for ax in range(3):
+        for s in (+1, -1):
+            c = [0.0, 0.0, 0.0]
+            c[ax] = s * 1.0
+            sz = [2.0 if o != ax else 0.0 for o in range(3)]
+            regs.append(mp.Near2FarRegion(center=mp.Vector3(*c), size=mp.Vector3(*sz),
+                                          weight=s))
+    n2f = sim.add_near2far(fcen, 0, 1, *regs)
+    sim.run(until=80)
+    ez = np.array([complex(sim.get_farfield(n2f, mp.Vector3(r, 0, 0))[2])
+                   for r in (6.0, 6.25, 6.5, 6.75)])
+    dph = np.angle(ez[1:] / ez[:-1])
+    assert np.all(np.abs(dph - k * 0.25) < 0.2), \
+        f"phase steps {np.degrees(dph)} deg, expect +{math.degrees(k * 0.25):.1f}"

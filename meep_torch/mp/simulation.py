@@ -2082,7 +2082,11 @@ class Simulation:
                + np.array([gs.sx / 2.0, gs.sy / 2.0, gs.sz / 2.0]))
         ks = [2 * math.pi * f for f in freqs]
         E, H = farfield_3d(faces, ks, obs, eps=meta.get("eps", 1.0))
-        return E, H, freqs
+        # conj back to meep's e^{-i w t}: the 3D kernel is e^{-ikR} (outgoing
+        # e^{+i w t} phasor), so its output runs the wrong way. Along a ray the
+        # phase of get_farfield must advance as +k dR (meep: +44.9 deg per 0.25
+        # at k = pi); unconjugated it advanced -k dR. Same fix as the 2D path.
+        return np.conj(E), np.conj(H), freqs
 
     def _n2f_medium(self, specs):
         """eps at the near2far faces, which the far-field kernel needs.
@@ -2249,17 +2253,9 @@ class Simulation:
     def _add_dft_fields(self, freqs, components, name, region=(None, None)):
         name = name or f"dft{len(self._monitors)}"
         center, size = region
-        box = None
-        if center is not None or size is not None:
-            if self.dimensions == 3:
-                raise NotImplementedError(
-                    "add_dft_fields with a region: 2D runs only")
-            gs = self.gs
-            x0, y0, x1, y1 = rect_corners(center or Vector3(),
-                                          size or Vector3(), gs)
-            i0, i1 = span_index_range(x0, x1, gs, "x")
-            j0, j1 = span_index_range(y0, y1, gs, "y")
-            box = (i0, i1, j0, j1)
+        if (center is not None or size is not None) and self.dimensions == 3:
+            raise NotImplementedError(
+                "add_dft_fields with a region: 2D runs only")
         for c in components:
             if (self._sym_cy or self._sym_cx) and c not in ("Ez", "Dz"):
                 raise NotImplementedError(
@@ -2271,19 +2267,22 @@ class Simulation:
             else:
                 mon = DFTFieldsMonitor(self.grid, freqs, component=c)
                 self._register_monitor(f"{name}:{c}", "dft", mon,
-                                       {"freqs": freqs, "box": box})
+                                       {"freqs": freqs, "region": (center, size)})
         return self, name, freqs
 
     def get_dft_array(self, name, component, num_freq):
-        """Complex (nx, ny) DFT plane of `component` at frequency index."""
+        """Complex DFT of `component` on meep's (center, size) array at
+        frequency index `num_freq`. The accumulator sits on the Yee lattice,
+        so it goes onto the cell centres first (_to_centres, as get_array does
+        for the instantaneous field), then gets the same window and
+        collapsed-axis rule as get_array (_subvolume)."""
         acc, mon, meta = self._last_acc[f"{dft_name(name)}:{component}"]
         a = acc[num_freq].detach().cpu().numpy()
         out = self._demirror(a[0] + 1j * a[1], self._comp_parity(component))
-        box = meta.get("box")
-        if box is not None:
-            i0, i1, j0, j1 = box
-            out = out[i0:i1, j0:j1]
-        return out
+        if self.dimensions != 3:
+            out = _to_centres(out, _STAGGER.get(component, ()))
+        center, size = meta.get("region", (None, None))
+        return self._subvolume(out, center, size)
 
     # --- MST force + field-energy monitors (2D TM; core.forces machinery) ---
     def _region_box(self, region):
@@ -2723,13 +2722,32 @@ class Simulation:
         out, drop = arr, []
         for ax, (i0, npts) in enumerate(self._slice_window(center, size)):
             if npts == 0:                     # meep collapses a zero extent
-                out = out[i0:i0 + 1] if ax == 0 else out[:, i0:i0 + 1]
+                k, w = self._collapsed_taps(center, ax, out.shape[ax])
+                k1 = min(k + 1, out.shape[ax] - 1)
+                lo = np.take(out, [k], axis=ax)
+                hi = np.take(out, [k1], axis=ax)
+                out = (1.0 - w) * lo + w * hi
                 drop.append(ax)
                 continue
             out = out[i0:i0 + npts] if ax == 0 else out[:, i0:i0 + npts]
         for ax in reversed(drop):
             out = np.squeeze(out, axis=ax)
         return out
+
+    def _collapsed_taps(self, center, ax, n):
+        """(k, w) for a zero-thickness axis: the field at the requested
+        coordinate is ``(1 - w) * a[k] + w * a[k + 1]`` on the cell centres
+        ``(k + 1/2) dx - L/2``. meep reads the point by linear interpolation
+        between the two bracketing centres: a line at y = 2.8 on a grid whose
+        centres sit at 2.775 and 2.825 returns their mean, exactly. A
+        coordinate on a centre gives w = 0, the old nearest-cell answer."""
+        gs = self.gs
+        c = center if center is not None else Vector3()
+        coord, L = (float(c.x), gs.sx) if ax == 0 else (float(c.y), gs.sy)
+        u = (coord + L / 2.0) / gs.dx - 0.5
+        k = int(min(max(np.floor(u), 0), n - 1))
+        w = float(min(max(u - k, 0.0), 1.0)) if k < n - 1 else 0.0
+        return k, w
 
     def _slice_window(self, center, size):
         """Per-axis ``(i0, npts)`` of meep's (center, size) array slice.
@@ -2756,6 +2774,9 @@ class Simulation:
                 (float(c.y), float(sz.y), gs.ny, lambda v: cell_index_y(v, gs))):
             if ext == 0:
                 win.append((max(0, min(n - 1, idx(lo_c))), 0))
+                continue
+            if math.isinf(ext):          # mp.inf: the whole axis, as rect_corners clips it
+                win.append((0, n))
                 continue
             npts = min(n, int(round(ext / gs.dx)) + 2)
             i0 = max(0, min(n - npts, idx(lo_c - ext / 2.0) - 1))
@@ -2913,26 +2934,16 @@ class Simulation:
         if vol is not None:
             center, size = vol.center, vol.size
         if dft_cell is not None:
-            # A DFT region's raster is cut by span_index_range, two cells
-            # narrower than the window meep uses for both get_array and
-            # get_dft_array (meep: a 2x1 region at resolution 10 is 22x12,
-            # this engine 20x10 -- wiki/tasks/fix_dft-region-window.md).
-            # Describe the array the caller actually holds: metadata that
-            # does not match its own array is worse than metadata that
-            # inherits a known window bug.
             center, size = dft_cell.args[3] if len(dft_cell.args) > 3 else (None, None)
-            x0, y0, x1, y1 = rect_corners(center or Vector3(), size or Vector3(), gs)
-            i0, i1 = span_index_range(x0, x1, gs, "x")
-            j0, j1 = span_index_range(y0, y1, gs, "y")
-        elif center is None and size is None:
-            i0, i1, j0, j1 = 0, gs.nx, 0, gs.ny
-        else:
-            # the same window get_array slices, or the coordinates would not
-            # describe the array they are handed out with
-            (i0, ni), (j0, nj) = self._slice_window(center, size)
-            i1, j1 = i0 + max(ni, 1), j0 + max(nj, 1)
-        x = (np.arange(i0, i1) + 0.5) * gs.dx - gs.sx / 2.0
-        y = (np.arange(j0, j1) + 0.5) * gs.dx - gs.sy / 2.0
+        # the same window and collapsed-axis rule get_array / get_dft_array use,
+        # so the coordinates describe the array they are handed out with
+        (i0, ni), (j0, nj) = self._slice_window(center, size)
+        x = (np.arange(i0, i0 + max(ni, 1)) + 0.5) * gs.dx - gs.sx / 2.0
+        y = (np.arange(j0, j0 + max(nj, 1)) + 0.5) * gs.dx - gs.sy / 2.0
+        if ni == 0:       # zero-thickness axis: meep reports the requested coordinate
+            x = np.array([float((center or Vector3()).x)])
+        if nj == 0:
+            y = np.array([float((center or Vector3()).y)])
         z = np.zeros(1)
         wshape = [n for n in (len(x), len(y)) if n > 1]
         w = np.full(wshape or [1], gs.dx ** max(1, len(wshape)))

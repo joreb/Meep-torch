@@ -210,3 +210,40 @@ def test_continuous_source_is_not_silenced_in_a_cylindrical_run():
     sim.run(until=8)
     assert np.abs(np.asarray(sim.get_epsilon())).max() > 0      # built
     assert abs(complex(sim.get_field_point(mp.Ez, mp.Vector3(1.1)))) > 0.0
+
+
+@pytest.mark.parametrize("m", [0, 1])
+def test_get_farfield_cyl_phase_advances_outgoing(m):
+    """Guard for the cylindrical get_farfield phase convention (meep e^{-iwt},
+    outgoing e^{+ikR}): along a ray the phase of get_farfield(R2)/get_farfield(R1)
+    advances +k dR. Meep gives +35.7 deg (m=0) and +34.5 deg (m=1) per 0.1 at
+    k = 2 pi; the shim gives +36. Passes both before and after the 3D fix:
+    it pins the cylindrical output, whose mixed internal conjugations cancel."""
+    fcen = 1.0
+    k = 2 * math.pi * fcen
+    if m == 0:
+        sources = [mp.Source(src=mp.GaussianSource(fcen, fwidth=0.1 * fcen),
+                             component=mp.Ez, center=mp.Vector3(0, 0, 0))]
+    else:
+        sr = 1.5 / RES
+        sources = [mp.Source(src=mp.GaussianSource(fcen, fwidth=0.1 * fcen),
+                             component=mp.Er, center=mp.Vector3(sr, 0, 0)),
+                   mp.Source(src=mp.GaussianSource(fcen, fwidth=0.1 * fcen),
+                             component=mp.Ep, center=mp.Vector3(sr, 0, 0),
+                             amplitude=1j if m == 1 else -1j)]
+    sim = mp.Simulation(resolution=RES, cell_size=mp.Vector3(SR + PML, 0, SZ + 2 * PML),
+                        dimensions=mp.CYLINDRICAL, m=m,
+                        boundary_layers=[mp.PML(thickness=PML)],
+                        sources=sources, force_complex_fields=True)
+    n2f = sim.add_near2far(
+        FCEN, 0, 1,
+        mp.FluxRegion(center=mp.Vector3(0.5 * SR, 0, 0.5 * SZ), size=mp.Vector3(SR, 0, 0)),
+        mp.FluxRegion(center=mp.Vector3(SR, 0, 0), size=mp.Vector3(0, 0, SZ)),
+        mp.FluxRegion(center=mp.Vector3(0.5 * SR, 0, -0.5 * SZ), size=mp.Vector3(SR, 0, 0)))
+    sim.run(until_after_sources=40.0)
+    comp = 2 if m == 0 else 0                   # Ez for m=0, Er for the m=+-1 pair
+    fld = np.array([complex(sim.get_farfield(n2f, mp.Vector3(R, 0, 0))[comp])
+                    for R in (6.0, 6.1, 6.2, 6.3)])
+    dph = np.angle(fld[1:] / fld[:-1])
+    assert np.all(np.abs(dph - k * 0.1) < 0.2), \
+        f"m={m} phase steps {np.degrees(dph)} deg, expect +{math.degrees(k * 0.1):.1f}"

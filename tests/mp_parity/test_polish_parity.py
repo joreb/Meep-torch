@@ -367,7 +367,10 @@ def test_add_dft_fields_region_slices_array():
                            size=mp.Vector3(2, 1))
     sim.run(until=10)
     arr = sim.get_dft_array(d, mp.Ez, 0)
-    assert arr.shape == (20, 10)                # 2x1 region at resolution 10
+    # 2x1 region at resolution 10: pymeep's window is 22x12 (the cells whose
+    # centres span the region plus one each side); was 20x10 before the DFT
+    # window moved onto _slice_window (wiki/tasks/fix_dft-region-window.md)
+    assert arr.shape == (22, 12)
     x, y, z, w = sim.get_array_metadata(dft_cell=d)
     assert len(x) == arr.shape[0] and len(y) == arr.shape[1]
 
