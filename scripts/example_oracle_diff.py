@@ -382,6 +382,18 @@ def compare_files(d, rtol=2e-2, atol=1e-12):
                 findings.append(("file-shape", f"{suffix}:{key}",
                                  f"port{list(x.shape)} oracle{list(y.shape)}"))
                 continue
+            if not (_np.issubdtype(x.dtype, _np.number)
+                    and _np.issubdtype(y.dtype, _np.number)):
+                # Non-numeric datasets -- h5 writes string/bytes arrays for
+                # things like component names. `np.abs` has no loop for them
+                # and raised, killing the whole sweep on the first one rather
+                # than reporting the 80 pairs behind it. Compare exactly
+                # instead: for a label, "identical or not" IS the question.
+                if not _np.array_equal(x, y):
+                    findings.append(("file-diff", f"{suffix}:{key}",
+                                     f"non-numeric datasets differ ({x.dtype})"))
+                n_cmp += 1
+                continue
             n_cmp += 1
             scale = _np.maximum(_np.abs(x), _np.abs(y))
             bad = _np.abs(x - y) > atol + rtol * scale
